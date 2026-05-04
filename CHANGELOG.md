@@ -2,6 +2,18 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.5.9 — 2026-05-04
+
+### Fixed
+
+- Hotfix for 0.5.8: `download_series_canonical` /
+  `download_movie_canonical` weren't actually accepting the new
+  `preferred_overrides` keyword, so every series/movie build failed
+  with `TypeError: unexpected keyword argument 'preferred_overrides'`
+  once a preferred artwork source was active. Signatures corrected;
+  NFO was still written before the crash, so re-running Build on
+  affected shows now also downloads the preferred artwork.
+
 ## 0.5.8 — 2026-05-04
 
 ### Added

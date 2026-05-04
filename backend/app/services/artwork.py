@@ -187,7 +187,8 @@ async def download_series_canonical(folder: Path, series: dict,
                                     artworks: Iterable[dict],
                                     episodes: Optional[Iterable[dict]] = None,
                                     *, prefer_languages: Optional[list[str]] = None,
-                                    force: bool = False) -> dict:
+                                    force: bool = False,
+                                    preferred_overrides: Optional[dict[str, str]] = None) -> dict:
     """Download poster/background/banner/season-posters and episode thumbnails
     directly into `folder` using Plex canonical naming.
 
@@ -319,7 +320,8 @@ def _season_number_for_artwork(art: dict, series: dict) -> Optional[int]:
 async def download_movie_canonical(folder: Path, movie: dict,
                                    artworks: Iterable[dict],
                                    *, prefer_languages: Optional[list[str]] = None,
-                                   force: bool = False) -> dict:
+                                   force: bool = False,
+                                   preferred_overrides: Optional[dict[str, str]] = None) -> dict:
     """Download movie poster/background/banner directly to `folder`.
 
     Plex movies use file-stem-anchored names too, but `poster.jpg` /
