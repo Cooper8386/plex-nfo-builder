@@ -2,6 +2,28 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.5.6 — 2026-05-04
+
+### Added
+
+- **Disable / remove libraries.** Each library row in the sidebar now has a
+  kebab menu with `Disable` (greys it out, hides items, scans skip it) and
+  `Remove from app…` (forgets every binding, override, and item-state row
+  for the library). Files on disk — NFOs, artwork, and the
+  `.plex-nfo-builder.json` sidecars — are never touched, so re-detecting
+  brings everything back from sidecars.
+- A footer toggle in the sidebar to show disabled libraries again, with a
+  count.
+- New `DELETE /api/libraries/{name}` endpoint and `db.delete_library` that
+  cascades cleanly across `bindings`, `nfo_overrides`, `artwork_selections`,
+  and `episode_overrides`.
+
+### Changed
+
+- `scan_library` skips disabled libraries with an info-level log.
+- Re-detect preserves the `enabled` flag on existing rows, so disabling a
+  library is sticky across rescans.
+
 ## 0.5.5 — 2026-05-03
 
 ### Fixed

@@ -372,6 +372,48 @@ def set_library_enabled(name: str, enabled: bool) -> None:
         c.execute("UPDATE libraries SET enabled = ? WHERE name = ?", (1 if enabled else 0, name))
 
 
+def delete_library(name: str) -> dict:
+    """Forget a library and every database row that belongs to it.
+
+    Removes the libraries row, item_state rows, and the bindings/overrides/
+    artwork_selections/episode_overrides for every folder that lived under the
+    library. Files on disk (NFOs, artwork, sidecars) are not touched, so
+    re-detecting + re-scanning later restores the library from sidecars.
+    """
+    c = conn()
+    summary = {"items": 0, "bindings": 0}
+    with _lock:
+        # Find all folder paths attributed to this library.
+        rows = c.execute(
+            "SELECT folder_path FROM item_state WHERE library = ?", (name,)
+        ).fetchall()
+        folders = [r["folder_path"] for r in rows]
+        if folders:
+            placeholders = ",".join(["?"] * len(folders))
+            for table in (
+                "bindings",
+                "nfo_overrides",
+                "artwork_selections",
+                "episode_overrides",
+            ):
+                cur = c.execute(
+                    f"DELETE FROM {table} WHERE folder_path IN ({placeholders})",
+                    folders,
+                )
+                if table == "bindings":
+                    summary["bindings"] = cur.rowcount
+        cur = c.execute("DELETE FROM item_state WHERE library = ?", (name,))
+        summary["items"] = cur.rowcount
+        c.execute("DELETE FROM libraries WHERE name = ?", (name,))
+    return summary
+
+
+def get_library(name: str) -> Optional[sqlite3.Row]:
+    c = conn()
+    with _lock:
+        return c.execute("SELECT * FROM libraries WHERE name = ?", (name,)).fetchone()
+
+
 # ---- Artwork selections (v0.4.0 picker) ------------------------------------
 
 def set_artwork_selection(folder_path: str, slot: str, url: str,

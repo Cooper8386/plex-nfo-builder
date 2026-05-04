@@ -73,7 +73,11 @@ def scan_library(name: str) -> int:
     if not lib_path.is_dir():
         return 0
     rows = db.list_libraries()
-    kind = next((r["kind"] for r in rows if r["name"] == name), "mixed")
+    lib_row = next((r for r in rows if r["name"] == name), None)
+    if lib_row is not None and not int(lib_row["enabled"] or 0):
+        logger.info("scan_library skipped (disabled): {}", name)
+        return 0
+    kind = lib_row["kind"] if lib_row else "mixed"
     count = 0
     for entry in sorted(lib_path.iterdir()):
         if not entry.is_dir() or entry.name.startswith("."):

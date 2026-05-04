@@ -165,6 +165,19 @@ async def libraries_update(name: str, body: LibraryUpdate):
     return {"ok": True}
 
 
+@router.delete("/libraries/{name}")
+async def libraries_delete(name: str):
+    """Forget a library and every database row that belongs to it.
+
+    Files on disk are never touched. Sidecar files survive, so re-detecting
+    + re-scanning later restores everything from disk.
+    """
+    if not db.get_library(name):
+        raise HTTPException(status_code=404, detail="library not found")
+    summary = db.delete_library(name)
+    return {"ok": True, **summary}
+
+
 @router.post("/libraries/{name}/scan")
 async def library_scan(name: str, background: BackgroundTasks):
     def _run():

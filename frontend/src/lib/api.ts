@@ -88,6 +88,10 @@ export const api = {
       ),
     scan: (name: string) =>
       J(fetch(`/api/libraries/${encodeURIComponent(name)}/scan`, { method: "POST" })),
+    remove: (name: string) =>
+      J<{ ok: true; items: number; bindings: number }>(
+        fetch(`/api/libraries/${encodeURIComponent(name)}`, { method: "DELETE" })
+      ),
   },
   items: {
     list: (params: { library?: string; status?: string; q?: string; hide_organized?: boolean }) => {

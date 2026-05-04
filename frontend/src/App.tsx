@@ -129,7 +129,7 @@ export default function App() {
       <div className="flex flex-1 min-h-0">
         <Sidebar
           activeLibrary={activeLibrary}
-          onSelectLibrary={(l) => navigate({ name: "library", library: l })}
+          onSelectLibrary={(l) => navigate(l ? { name: "library", library: l } : { name: "home" })}
           collapsed={sidebarCollapsed}
           onToggle={toggleSidebar}
         />
