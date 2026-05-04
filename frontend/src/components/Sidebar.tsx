@@ -32,6 +32,12 @@ export default function Sidebar(props: {
     qc.invalidateQueries({ queryKey: ["items"] });
   }
 
+  async function setMetadataSource(name: string, source: "" | "tvdb" | "tmdb") {
+    // Empty string clears the override and inherits the global setting.
+    await api.libraries.update(name, { metadata_source: source });
+    qc.invalidateQueries({ queryKey: ["libraries"] });
+  }
+
   async function removeLib(name: string) {
     const ok = confirm(
       `Remove "${name}" from the app?\n\n` +
@@ -118,16 +124,21 @@ export default function Sidebar(props: {
         )}
         {visible.map((l) => {
           const enabled = Number(l.enabled) === 1;
+          const override = (l.metadata_source as string | null | undefined) || "";
+          const effective = (l.effective_metadata_source as string | undefined) || "";
           return (
             <LibraryRow
               key={l.name}
               name={l.name}
               kind={l.kind}
               enabled={enabled}
+              metadataSource={override}
+              effectiveSource={effective}
               active={props.activeLibrary === l.name}
               onSelect={() => props.onSelectLibrary(l.name)}
               onToggleEnabled={() => setEnabled(l.name, !enabled)}
               onRemove={() => removeLib(l.name)}
+              onSetMetadataSource={(src) => setMetadataSource(l.name, src)}
             />
           );
         })}
@@ -152,18 +163,24 @@ function LibraryRow({
   name,
   kind,
   enabled,
+  metadataSource,
+  effectiveSource,
   active,
   onSelect,
   onToggleEnabled,
   onRemove,
+  onSetMetadataSource,
 }: {
   name: string;
   kind: string;
   enabled: boolean;
+  metadataSource: string;
+  effectiveSource: string;
   active: boolean;
   onSelect: () => void;
   onToggleEnabled: () => void;
   onRemove: () => void;
+  onSetMetadataSource: (src: "" | "tvdb" | "tmdb") => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -219,7 +236,7 @@ function LibraryRow({
         </svg>
       </button>
       {open && (
-        <div className="absolute right-1 top-full mt-1 z-30 w-44 rounded-md border border-slate-700 bg-slate-900 shadow-lg py-1 text-sm">
+        <div className="absolute right-1 top-full mt-1 z-30 w-56 rounded-md border border-slate-700 bg-slate-900 shadow-lg py-1 text-sm">
           <button
             className="w-full text-left px-3 py-1.5 hover:bg-slate-800"
             onClick={() => {
@@ -229,6 +246,32 @@ function LibraryRow({
           >
             {enabled ? "Disable" : "Enable"}
           </button>
+          <div className="border-t border-slate-800 my-1" />
+          <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-slate-500">
+            Metadata source
+          </div>
+          <div className="px-3 pb-1.5">
+            <select
+              value={metadataSource || ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                onSetMetadataSource(v === "tvdb" || v === "tmdb" ? v : "");
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs"
+            >
+              <option value="">Default (global setting)</option>
+              <option value="tvdb">TVDB</option>
+              <option value="tmdb">TMDB</option>
+            </select>
+            {effectiveSource && (
+              <div className="mt-1 text-[10px] text-slate-500">
+                Currently using: <span className="text-slate-300 uppercase">{effectiveSource}</span>
+                {!metadataSource && <span className="text-slate-600"> (inherited)</span>}
+              </div>
+            )}
+          </div>
+          <div className="border-t border-slate-800 my-1" />
           <button
             className="w-full text-left px-3 py-1.5 text-rose-300 hover:bg-rose-900/30"
             onClick={() => {

@@ -8,7 +8,7 @@ from loguru import logger
 from rapidfuzz import fuzz
 
 from .. import db
-from ..config import get_user_settings
+from ..config import effective_metadata_source, get_user_settings
 from .parser import parse_folder_name, parse_movie_filename, is_video
 from .tmdb import get_client as get_tmdb_client
 from .tvdb import get_client
@@ -122,15 +122,17 @@ def _pick_best(results: list[dict], title: str, year: Optional[int]) -> Optional
 async def manual_search(query: str, type_: str = "series",
                         year: Optional[int] = None,
                         language: Optional[str] = None,
-                        provider: Optional[str] = None) -> list[dict]:
+                        provider: Optional[str] = None,
+                        library: Optional[str] = None) -> list[dict]:
     """Manual search.
 
-    `provider` defaults to the configured metadata_source if unset. Returns a
-    list of dicts in a normalised shape:
+    `provider` defaults to the effective metadata source for ``library`` (the
+    library override if set, otherwise the global setting). Returns a list of
+    dicts in a normalised shape:
       {provider, id, name, year, image_url, overview}
     """
     if provider is None:
-        provider = get_user_settings().metadata_source or "tvdb"
+        provider = effective_metadata_source(library)
     if provider == "tmdb":
         c = get_tmdb_client()
         results = await c.search(query, type_="tv" if type_ == "series" else "movie",

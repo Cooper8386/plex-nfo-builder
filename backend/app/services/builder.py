@@ -10,7 +10,7 @@ from typing import Optional
 from loguru import logger
 
 from .. import db
-from ..config import get_user_settings
+from ..config import effective_metadata_source, get_user_settings
 from ..logging_setup import job_logger, close_job_logger
 from .artwork import download_movie_canonical, download_series_canonical
 from .artwork_resolver import (
@@ -102,11 +102,14 @@ async def build_series(folder: Path, *, force: bool = False,
     job = _jobs[jid]
     log.info("Starting series build for {}", folder)
     binding = db.get_binding(str(folder))
+    library_name = folder.parent.name
+    lib_source = effective_metadata_source(library_name)
     # TMDB-bound series take a separate path because the data shape differs.
     if binding and binding["provider"] == "tmdb":
         return await _build_series_tmdb(folder, binding, settings, lang, fallbacks,
                                         force=force, jid=jid, log=log, job=job)
-    if not binding and (settings.metadata_source or "tvdb") == "tmdb":
+    if not binding and lib_source == "tmdb":
+        log.info("Library {!r} resolved to TMDB metadata source", library_name)
         return await _build_series_tmdb(folder, None, settings, lang, fallbacks,
                                         force=force, jid=jid, log=log, job=job)
     try:
@@ -343,10 +346,13 @@ async def build_movie(folder: Path, *, force: bool = False,
     log = job_logger(jid)
     job = _jobs[jid]
     binding = db.get_binding(str(folder))
+    library_name = folder.parent.name
+    lib_source = effective_metadata_source(library_name)
     if binding and binding["provider"] == "tmdb":
         return await _build_movie_tmdb(folder, binding, settings, lang, fallbacks,
                                        force=force, jid=jid, log=log, job=job)
-    if not binding and (settings.metadata_source or "tvdb") == "tmdb":
+    if not binding and lib_source == "tmdb":
+        log.info("Library {!r} resolved to TMDB metadata source", library_name)
         return await _build_movie_tmdb(folder, None, settings, lang, fallbacks,
                                        force=force, jid=jid, log=log, job=job)
     try:

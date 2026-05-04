@@ -2,6 +2,43 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.7.0 — 2026-05-04
+
+### Added
+
+- **Per-library metadata source override.** You can now pin a specific
+  library to TVDB or TMDB independently of the global setting, so a
+  setup with multiple TV libraries (e.g. `tv` on TVDB, `anime` on TMDB,
+  another mixed library on the global default) works the way you'd
+  expect without per-show binding gymnastics. Set it from the sidebar
+  by opening the ⋮ menu next to a library and picking a metadata
+  source; the dropdown also tells you which source is currently in
+  effect when the library is inheriting from the global setting.
+- The override flows through every entry point that picks a provider:
+  per-folder builds (`build_series` / `build_movie`), bulk auto-match
+  (`/api/match/auto-bulk`), and manual search (`/api/match/search` now
+  accepts an optional `library` query param to scope the default).
+- `/api/libraries` responses include a new `metadata_source` (the raw
+  override or `null`) plus `effective_metadata_source` (resolved
+  source after applying the override) so the UI can display "using
+  TVDB (inherited)" without re-implementing the resolution logic.
+
+### Changed
+
+- `POST /api/libraries/{name}` now accepts `metadata_source` in the body.
+  Pass `"tvdb"` or `"tmdb"` to set an override; pass `""`, `"default"`,
+  or `null` to clear it and inherit the global setting. Unknown values
+  are silently treated as "clear" so a typo can't break a build.
+- New DB column `libraries.metadata_source` (nullable). Existing
+  databases are migrated automatically on first launch via the same
+  additive `ALTER TABLE` pattern used for `bindings.source_locked`.
+
+### Notes
+
+- Per-folder bindings still win over the per-library override — if you
+  manually pinned a single show to TVDB and locked it, switching the
+  library to TMDB won't silently flip that show.
+
 ## 0.6.3 — 2026-05-04
 
 ### Fixed

@@ -153,7 +153,12 @@ export default function HelpView() {
         <Bullets>
           <li>
             <b>Primary metadata source</b> drives auto-match, descriptions,
-            cast, release dates, and every other text field in the NFO.
+            cast, release dates, and every other text field in the NFO. You
+            can also override this <b>per library</b> from the sidebar's
+            ⋮ menu — handy when one TV library should pull from TVDB and
+            another from TMDB. The override applies to auto-match, manual
+            search, and the build pipeline; folders that already have a
+            locked source binding are left alone.
           </li>
           <li>
             <b>Preferred artwork source</b> drives which provider's images

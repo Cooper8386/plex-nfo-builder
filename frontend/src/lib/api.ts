@@ -1,4 +1,16 @@
-export type Library = { name: string; kind: string; enabled: number; detected_at: number };
+export type Library = {
+  name: string;
+  kind: string;
+  enabled: number;
+  detected_at: number;
+  /**
+   * Per-library override for the metadata source. `null`/missing means the
+   * library follows the global setting. v0.7.0+.
+   */
+  metadata_source?: string | null;
+  /** Resolved source after applying the override (if any). v0.7.0+. */
+  effective_metadata_source?: string;
+};
 
 export type ArtworkProvider = "tvdb" | "tmdb" | "fanart" | "custom";
 

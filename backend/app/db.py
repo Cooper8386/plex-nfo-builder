@@ -79,7 +79,8 @@ def _init_schema(c: sqlite3.Connection) -> None:
                 name TEXT PRIMARY KEY,         -- folder name under MEDIA_ROOT
                 kind TEXT NOT NULL,            -- tv | movies | mixed
                 enabled INTEGER NOT NULL DEFAULT 1,
-                detected_at INTEGER NOT NULL
+                detected_at INTEGER NOT NULL,
+                metadata_source TEXT           -- NULL | tvdb | tmdb (overrides global)
             );
 
             CREATE TABLE IF NOT EXISTS artwork_selections (
@@ -140,6 +141,12 @@ def _migrate(c: sqlite3.Connection) -> None:
         if "source_locked" not in cols:
             try:
                 c.execute("ALTER TABLE bindings ADD COLUMN source_locked INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                pass
+        lib_cols = {r[1] for r in c.execute("PRAGMA table_info(libraries)").fetchall()}
+        if lib_cols and "metadata_source" not in lib_cols:
+            try:
+                c.execute("ALTER TABLE libraries ADD COLUMN metadata_source TEXT")
             except Exception:
                 pass
 
@@ -370,6 +377,25 @@ def set_library_enabled(name: str, enabled: bool) -> None:
     c = conn()
     with _lock:
         c.execute("UPDATE libraries SET enabled = ? WHERE name = ?", (1 if enabled else 0, name))
+
+
+def set_library_metadata_source(name: str, source: Optional[str]) -> None:
+    """Set per-library metadata source override. Pass None to clear and inherit global."""
+    c = conn()
+    with _lock:
+        norm: Optional[str]
+        if source is None:
+            norm = None
+        else:
+            s = str(source).strip().lower()
+            if s in ("", "default", "inherit", "global"):
+                norm = None
+            elif s in ("tvdb", "tmdb"):
+                norm = s
+            else:
+                # Reject unknown values silently to keep API forgiving.
+                norm = None
+        c.execute("UPDATE libraries SET metadata_source = ? WHERE name = ?", (norm, name))
 
 
 def delete_library(name: str) -> dict:

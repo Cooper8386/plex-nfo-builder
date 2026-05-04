@@ -108,3 +108,33 @@ def effective_tmdb_credentials() -> Optional[str]:
 def effective_fanart_credentials() -> Optional[str]:
     s = get_user_settings()
     return s.fanart_api_key or env.fanart_api_key or os.environ.get("FANART_API_KEY")
+
+
+def effective_metadata_source(library_name: Optional[str] = None) -> str:
+    """Return the active metadata source for a given library.
+
+    Resolution order:
+      1. Per-library override (libraries.metadata_source) when set to tvdb/tmdb.
+      2. Global UserSettings.metadata_source.
+      3. Hardcoded fallback "tvdb".
+    Imported lazily to avoid a circular import (db -> config -> db).
+    """
+    s = get_user_settings()
+    global_src = (s.metadata_source or "tvdb").strip().lower() or "tvdb"
+    if library_name:
+        try:
+            from . import db as _db  # local import to avoid cycle at module load
+            row = _db.get_library(library_name)
+            if row is not None:
+                try:
+                    override = row["metadata_source"]
+                except (IndexError, KeyError):
+                    override = None
+                if override:
+                    o = str(override).strip().lower()
+                    if o in ("tvdb", "tmdb"):
+                        return o
+        except Exception:
+            # Defensive: never let library lookup break a build.
+            pass
+    return global_src if global_src in ("tvdb", "tmdb") else "tvdb"

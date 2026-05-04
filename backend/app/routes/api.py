@@ -22,6 +22,7 @@ from ..config import (
     MEDIA_ROOT,
     UserSettings,
     effective_fanart_credentials,
+    effective_metadata_source,
     effective_tmdb_credentials,
     effective_tvdb_credentials,
     get_user_settings,
@@ -179,22 +180,39 @@ async def libraries_detect():
 
 @router.get("/libraries")
 async def libraries_list():
-    libs = [dict(r) for r in db.list_libraries()]
+    libs: list[dict] = []
+    for r in db.list_libraries():
+        d = dict(r)
+        # Surface the resolved source so the UI can show "default → TVDB" etc.
+        d["effective_metadata_source"] = effective_metadata_source(d.get("name"))
+        libs.append(d)
     return {"libraries": libs}
 
 
 class LibraryUpdate(BaseModel):
     kind: Optional[str] = None
     enabled: Optional[bool] = None
+    # v0.7.0: per-library metadata source override.
+    # Pass "tvdb" or "tmdb" to override the global setting; pass "", "default",
+    # or null to clear and inherit the global value.
+    metadata_source: Optional[str] = None
 
 
 @router.post("/libraries/{name}")
 async def libraries_update(name: str, body: LibraryUpdate):
-    if body.kind:
-        db.set_library_kind(name, body.kind)
-    if body.enabled is not None:
-        db.set_library_enabled(name, body.enabled)
-    return {"ok": True}
+    payload = body.model_dump(exclude_unset=True)
+    if "kind" in payload and payload["kind"]:
+        db.set_library_kind(name, payload["kind"])
+    if "enabled" in payload and payload["enabled"] is not None:
+        db.set_library_enabled(name, bool(payload["enabled"]))
+    if "metadata_source" in payload:
+        db.set_library_metadata_source(name, payload["metadata_source"])
+    row = db.get_library(name)
+    return {
+        "ok": True,
+        "library": dict(row) if row else None,
+        "effective_metadata_source": effective_metadata_source(name),
+    }
 
 
 @router.delete("/libraries/{name}")
@@ -433,11 +451,12 @@ async def item_detail(path: str):
 @router.get("/match/search")
 async def match_search(q: str, type: str = "series", year: Optional[int] = None,
                         language: Optional[str] = None,
-                        provider: Optional[str] = None):
+                        provider: Optional[str] = None,
+                        library: Optional[str] = None):
     return {
         "results": await matcher.manual_search(q, type_=type, year=year, language=language,
-                                                provider=provider),
-        "provider": provider or get_user_settings().metadata_source or "tvdb",
+                                                provider=provider, library=library),
+        "provider": provider or effective_metadata_source(library),
     }
 
 
@@ -662,10 +681,12 @@ async def match_auto_bulk(payload: BulkIn):
     paths = _filter_locked(_resolve_bulk_paths(payload))
     settings = get_user_settings()
     lang = payload.language or settings.preferred_language
-    source = (settings.metadata_source or "tvdb").lower()
 
     async def _run_one(p: Path) -> dict:
         kind = _detect_kind(p)
+        # v0.7.0: pick the metadata source per the folder's library, falling
+        # back to the global setting when the library has no override.
+        source = effective_metadata_source(p.parent.name)
         try:
             if source == "tmdb":
                 if kind == "series":
