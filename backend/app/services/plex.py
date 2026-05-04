@@ -152,8 +152,16 @@ class PlexClient:
         For shows each item has ``locations`` (folder paths). For movies
         each item has ``files`` (individual media file paths).
         Returns: ``[{rating_key, title, type, locations: [...], files: [...]}]``.
+
+        Note: ``includeLocations=1`` is required — without it Plex returns
+        show ``<Directory>`` elements with no ``<Location>`` child, so we
+        can't match them against an on-disk folder.
         """
-        params = {"type": str(type_code), "includeCollections": "0"}
+        params = {
+            "type": str(type_code),
+            "includeCollections": "0",
+            "includeLocations": "1",
+        }
         try:
             r = await self._http.get(
                 f"/library/sections/{section_id}/all", params=params,
@@ -179,8 +187,30 @@ class PlexClient:
                 "type": el.attrib.get("type"),
                 "locations": locations,
                 "files": files,
+                "grandparent_rating_key": el.attrib.get("grandparentRatingKey"),
+                "grandparent_title": el.attrib.get("grandparentTitle"),
+                "parent_rating_key": el.attrib.get("parentRatingKey"),
             })
         return out
+
+    async def find_show_by_folder(self,
+                                  section_id: str,
+                                  folder_path: str,
+                                  ) -> Optional[dict]:
+        """Fallback show lookup: ask Plex to scan the folder, then list
+        the section and return whichever show now claims that folder.
+
+        Used when ``list_section_items`` (with includeLocations=1) doesn't
+        return Locations — happens with some older Plex builds and very
+        large libraries where the metadata response is truncated.
+        """
+        items = await self.list_section_items(section_id, 2)
+        target = folder_path.rstrip("/")
+        for it in items:
+            for loc in it.get("locations") or []:
+                if (loc or "").rstrip("/") == target:
+                    return it
+        return None
 
     async def refresh_metadata_item(self, rating_key: str, *, force: bool = False) -> None:
         """Tell Plex to re-read metadata for a single item (show or movie).
@@ -227,16 +257,28 @@ def _item_matches_folder(item: dict, translated_path: str) -> bool:
     target = translated_path.rstrip("/")
     for loc in item.get("locations") or []:
         loc_norm = (loc or "").rstrip("/")
-        if loc_norm and (loc_norm == target or loc_norm.startswith(target + "/")
-                         or target.startswith(loc_norm + "/")):
+        if not loc_norm:
+            continue
+        if (loc_norm == target
+                or loc_norm.startswith(target + "/")
+                or target.startswith(loc_norm + "/")):
             return True
     for f in item.get("files") or []:
         if not f:
             continue
-        # Compare the file's folder — handles movies where the folder
-        # contains one or more .mkv/.mp4 files directly.
-        folder = f.rsplit("/", 1)[0].rstrip("/")
-        if folder == target or folder.startswith(target + "/") or target.startswith(folder + "/"):
+        # Compare every parent directory of the media file against the
+        # target. Movies often live at <folder>/<movie>.mkv but can also
+        # nest deeper, and shows have files inside Season folders.
+        parts = f.rstrip("/").split("/")
+        for i in range(len(parts) - 1, 0, -1):
+            folder = "/".join(parts[:i]).rstrip("/")
+            if not folder:
+                continue
+            if folder == target:
+                return True
+        # Also keep the previous prefix-style check for robustness.
+        immediate = f.rsplit("/", 1)[0].rstrip("/")
+        if immediate == target or target.startswith(immediate + "/"):
             return True
     return False
 
@@ -324,6 +366,7 @@ async def refresh_for_folder(local_path: str, *,
             # artwork). Without this step Plex ignores NFO-only changes.
             type_code = _plex_type_code(sec.get("type"))
             matched = None
+            items: list[dict] = []
             if type_code:
                 try:
                     items = await pc.list_section_items(sec["id"], type_code)
@@ -334,6 +377,31 @@ async def refresh_for_folder(local_path: str, *,
                     if _item_matches_folder(it, translated):
                         matched = it
                         break
+            # Fallback for show sections: if no show matched by Location
+            # (some Plex builds omit <Location> even with
+            # includeLocations=1), search episode file paths and
+            # back-derive the parent show's ratingKey.
+            if not matched and type_code == 2:
+                try:
+                    episodes = await pc.list_section_items(sec["id"], 4)
+                except PlexError as e:
+                    logger.warning("Plex episode listing failed: {}", e)
+                    episodes = []
+                target = translated.rstrip("/") + "/"
+                grandparent_keys: dict[str, str] = {}
+                for ep in episodes:
+                    for f in ep.get("files") or []:
+                        if not f:
+                            continue
+                        if f == translated or f.startswith(target):
+                            gp = ep.get("grandparent_rating_key")
+                            gpt = ep.get("grandparent_title") or ""
+                            if gp:
+                                grandparent_keys[gp] = gpt
+                            break
+                if len(grandparent_keys) == 1:
+                    rk, title = next(iter(grandparent_keys.items()))
+                    matched = {"rating_key": rk, "title": title}
             if matched and matched.get("rating_key"):
                 summary["rating_key"] = matched["rating_key"]
                 summary["item_title"] = matched.get("title")
@@ -342,14 +410,18 @@ async def refresh_for_folder(local_path: str, *,
                 summary["refreshed"] = True
             else:
                 # Fallback: the partial scan already fired; report refreshed
-                # but note we couldn't find the item. Common for brand-new
-                # folders Plex hasn't indexed yet — the scan will add them.
+                # but note we couldn't find the item. Include a bit of
+                # diagnostic so the UI / logs can show why.
                 summary["strategy"] = "partial-scan-only"
                 summary["refreshed"] = True
+                summary["item_count"] = len(items)
                 summary["error"] = (
-                    "Plex hasn't indexed this folder yet, so a partial scan "
-                    "was triggered but no item metadata refresh. Re-run after "
-                    "Plex finishes the scan to force an NFO re-read."
+                    f"Partial scan sent to section {sec.get('title')!r} but "
+                    f"no item in that section claims folder {translated!r} "
+                    f"(listed {len(items)} items). If the show is clearly "
+                    "visible in Plex, this is usually a path-mapping "
+                    "mismatch — compare the path above to the Location "
+                    "shown by Test Connection in Settings."
                 )
         finally:
             await pc.aclose()

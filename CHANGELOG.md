@@ -2,6 +2,31 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.6.3 — 2026-05-04
+
+### Fixed
+
+- **Plex auto-refresh now actually finds the show.** v0.6.1/0.6.2's
+  per-item refresh always fell through to "item not yet indexed"
+  even for shows that were clearly visible in Plex, because
+  `GET /library/sections/{id}/all?type=2` returns show `<Directory>`
+  elements **without** `<Location>` children unless you explicitly
+  request them. The matcher therefore had no folder paths to compare
+  against and bailed out. Fix: pass `includeLocations=1`.
+- Added a belt-and-braces fallback for the rare case where Plex
+  still doesn't return Locations: list episodes in the section
+  (`type=4`), match an episode file under the target folder, and
+  back-derive the parent show's `ratingKey` from
+  `grandparentRatingKey`. So even on edge-case Plex builds, the
+  metadata refresh fires for the right show.
+- Folder matcher now walks every parent directory of a media file
+  path — fixes movies whose `Part.file` is nested deeper than one
+  level under the folder.
+- The fallback "partial-scan-only" message now reports how many
+  items were listed in the section and points at the most likely
+  cause (path-mapping mismatch), instead of misleadingly claiming
+  the item isn't indexed yet.
+
 ## 0.6.2 — 2026-05-04
 
 ### Fixed
