@@ -2,6 +2,30 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.6.1 — 2026-05-04
+
+### Fixed
+
+- **Plex refresh now actually re-reads the NFO.** v0.6.0 only called
+  `GET /library/sections/{id}/refresh?path=...`, which tells Plex to
+  scan the folder for _new media files_ — but Plex deliberately skips
+  re-reading metadata for items whose `.mkv`/`.mp4` files already
+  exist. So after a build the updated `.nfo` / artwork were ignored
+  even though Plex returned 200 OK to the scan call. The hook now
+  does a two-step dance:
+  1. Partial scan of the folder (picks up any newly-added episodes).
+  2. `GET /library/sections/{id}/all` to locate the show or movie
+     whose location/file path lives under the target folder, then
+     `PUT /library/metadata/{ratingKey}/refresh` to force Plex to
+     re-read that specific item's metadata.
+- Job messages and the "Refresh in Plex" toast now report which
+  strategy fired (`metadata-refresh` vs fallback `partial-scan-only`)
+  and include the matched item title and ratingKey so it's obvious
+  whether Plex really re-read the NFO.
+- Help entry for Plex integration now explains the two-step behavior
+  and the one edge case where only a partial scan fires (brand-new
+  folders Plex hasn't indexed yet).
+
 ## 0.6.0 — 2026-05-04
 
 ### Added

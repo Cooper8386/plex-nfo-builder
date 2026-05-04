@@ -301,12 +301,23 @@ def _maybe_schedule_plex_refresh(folder: Path, settings, job: dict, log) -> None
                 str(folder), delay_seconds=delay, settings=settings,
             )
             if res.get("refreshed"):
-                msg = (
-                    f"Plex refresh queued for section {res.get('section_title')!r} "
-                    f"path={res.get('translated_path')}"
-                )
+                strategy = res.get("strategy") or "refresh"
+                if strategy == "metadata-refresh":
+                    msg = (
+                        f"Plex metadata refresh sent for {res.get('item_title') or 'item'} "
+                        f"(ratingKey={res.get('rating_key')}) in section "
+                        f"{res.get('section_title')!r}"
+                    )
+                else:
+                    msg = (
+                        f"Plex partial scan queued for section {res.get('section_title')!r} "
+                        f"path={res.get('translated_path')} (item not yet indexed; "
+                        f"NFO won't be re-read until Plex finishes scanning)"
+                    )
                 log.info(msg)
                 job["messages"].append(msg)
+                if res.get("error") and strategy != "metadata-refresh":
+                    job["messages"].append(f"Plex note: {res['error']}")
             elif res.get("error"):
                 log.warning("Plex auto-refresh skipped: {}", res["error"])
                 job["messages"].append(f"Plex auto-refresh skipped: {res['error']}")

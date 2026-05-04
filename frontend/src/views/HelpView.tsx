@@ -175,6 +175,22 @@ export default function HelpView() {
           right after a build finishes — so changes show up without you having
           to click refresh in Plex.
         </p>
+        <p>
+          Internally this is a <b>two-step dance</b>, because a plain Plex
+          section scan only looks for <i>new media files</i> — it won't
+          re-read an existing item's NFO or artwork on its own:
+        </p>
+        <Bullets>
+          <li>
+            Step 1: partial scan of the folder so any newly-added
+            <code>.mkv</code>/<code>.mp4</code> files get picked up.
+          </li>
+          <li>
+            Step 2: locate the matching show/movie by folder path and call
+            Plex's per-item metadata refresh. This is what actually makes
+            Plex re-read the updated <code>.nfo</code> and artwork.
+          </li>
+        </Bullets>
         <Bullets>
           <li>
             <b>Auto-refresh</b> fires after every successful Build NFOs / Force
@@ -190,6 +206,12 @@ export default function HelpView() {
             view. If the app sees <Code>/media/tv</Code> but Plex sees the same
             folder at <Code>/data/tv</Code>, add a mapping{" "}
             <Code>/media → /data</Code>. Longest matching prefix wins.
+          </li>
+          <li>
+            If a brand-new folder hasn't been indexed by Plex yet, only
+            the partial scan fires — there's no item to refresh until
+            Plex finishes scanning. Re-run the refresh once the show
+            appears in Plex and the NFO will be re-read.
           </li>
           <li>
             Refresh failures are logged but never fail the build itself — your

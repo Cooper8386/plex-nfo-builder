@@ -347,6 +347,9 @@ export const api = {
         translated_path: string | null;
         section_id: string | null;
         section_title: string | null;
+        rating_key: string | null;
+        item_title: string | null;
+        strategy: "metadata-refresh" | "partial-scan-only" | null;
         refreshed: boolean;
         error: string | null;
       }>(

@@ -170,9 +170,13 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
               setMsg("Asking Plex to refresh…");
               try {
                 const r = await api.plex.refresh(path, 0);
-                if (r.refreshed) {
+                if (r.refreshed && r.strategy === "metadata-refresh") {
                   setMsg(
-                    `Plex refresh sent for \"${r.section_title || "section"}\" (${r.translated_path ?? path}).`,
+                    `Plex re-reading metadata for \"${r.item_title || r.section_title}\" (ratingKey ${r.rating_key}). Updated NFO and artwork should appear in a moment.`,
+                  );
+                } else if (r.refreshed) {
+                  setMsg(
+                    `Plex partial scan queued for \"${r.section_title}\" but no item matched ${r.translated_path ?? path}. ${r.error || "Plex hasn't indexed this folder yet \u2014 wait for the scan to finish, then click Refresh in Plex again to force the NFO re-read."}`,
                   );
                 } else {
                   setMsg(`Plex refresh failed: ${r.error || "unknown error"}`);
