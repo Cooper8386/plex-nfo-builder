@@ -70,7 +70,8 @@ def _ovr(overrides: Optional[dict], scope: str, field: str,
 def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[str],
                      translation: Optional[dict] = None,
                      folder_path: Optional[str] = None,
-                     overrides: Optional[dict] = None) -> str:
+                     overrides: Optional[dict] = None,
+                     preferred_overrides: Optional[dict] = None) -> str:
     s = series_extended
     title = _ovr(overrides, "series", "title",
                  _t(translation, "name", s.get("name")) or "")
@@ -121,8 +122,14 @@ def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[st
             _el(root, "uniqueid", str(rm.get("id") or ""),
                 attrib={"type": _provider_slug(rm.get("sourceName"))})
 
-    # Artwork: always TVDB CDN URLs.
-    urls = series_image_urls(s, s.get("artworks") or [], prefer_languages=[language, *fallbacks], folder_path=folder_path)
+    # Artwork: always TVDB CDN URLs, unless the user's preferred-artwork-source
+    # has supplied cross-provider URLs (e.g. TMDB images while bound to TVDB).
+    urls = series_image_urls(
+        s, s.get("artworks") or [],
+        prefer_languages=[language, *fallbacks],
+        folder_path=folder_path,
+        preferred_overrides=preferred_overrides,
+    )
     if urls.get("poster"):
         _el(root, "thumb", urls["poster"], attrib={"aspect": "poster"})
     if urls.get("banner"):
@@ -185,7 +192,8 @@ def build_episode_nfo(episode_extended: dict, *, language: str, fallbacks: list[
 def build_movie_nfo(movie_extended: dict, *, language: str, fallbacks: list[str],
                     translation: Optional[dict] = None,
                     folder_path: Optional[str] = None,
-                    overrides: Optional[dict] = None) -> str:
+                    overrides: Optional[dict] = None,
+                    preferred_overrides: Optional[dict] = None) -> str:
     m = movie_extended
     title = _ovr(overrides, "movie", "title",
                  _t(translation, "name", m.get("name")) or "")
@@ -222,7 +230,12 @@ def build_movie_nfo(movie_extended: dict, *, language: str, fallbacks: list[str]
             _el(root, "uniqueid", str(rm.get("id") or ""),
                 attrib={"type": _provider_slug(rm.get("sourceName"))})
 
-    urls = movie_image_urls(m, m.get("artworks") or [], prefer_languages=[language, *fallbacks], folder_path=folder_path)
+    urls = movie_image_urls(
+        m, m.get("artworks") or [],
+        prefer_languages=[language, *fallbacks],
+        folder_path=folder_path,
+        preferred_overrides=preferred_overrides,
+    )
     if urls.get("poster"):
         _el(root, "thumb", urls["poster"], attrib={"aspect": "poster"})
     if urls.get("banner"):

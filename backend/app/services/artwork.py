@@ -335,11 +335,15 @@ async def download_movie_canonical(folder: Path, movie: dict,
                 manifest[key] = str(dest)
 
         selections = db.get_artwork_selections(str(folder))
+        prefs = preferred_overrides or {}
 
         def _pick(slot: str, default_url: Optional[str]) -> Optional[str]:
             sel = selections.get(slot)
             if sel and sel.get("url"):
                 return sel["url"]
+            pv = prefs.get(slot)
+            if pv:
+                return pv
             return default_url
 
         poster = _pick(
@@ -366,14 +370,19 @@ async def download_movie_canonical(folder: Path, movie: dict,
 
 def series_image_urls(series: dict, artworks: Iterable[dict],
                       prefer_languages: Optional[list[str]] = None,
-                      folder_path: Optional[str] = None) -> dict[str, Optional[str]]:
+                      folder_path: Optional[str] = None,
+                      preferred_overrides: Optional[dict[str, str]] = None) -> dict[str, Optional[str]]:
     arts = list(artworks or [])
     selections = db.get_artwork_selections(folder_path) if folder_path else {}
+    prefs = preferred_overrides or {}
 
     def _pick(slot: str, default: Optional[str]) -> Optional[str]:
         sel = selections.get(slot)
         if sel and sel.get("url"):
             return sel["url"]
+        pv = prefs.get(slot)
+        if pv:
+            return pv
         return default
 
     return {
@@ -391,14 +400,19 @@ def series_image_urls(series: dict, artworks: Iterable[dict],
 
 def movie_image_urls(movie: dict, artworks: Iterable[dict],
                      prefer_languages: Optional[list[str]] = None,
-                     folder_path: Optional[str] = None) -> dict[str, Optional[str]]:
+                     folder_path: Optional[str] = None,
+                     preferred_overrides: Optional[dict[str, str]] = None) -> dict[str, Optional[str]]:
     arts = list(artworks or [])
     selections = db.get_artwork_selections(folder_path) if folder_path else {}
+    prefs = preferred_overrides or {}
 
     def _pick(slot: str, default: Optional[str]) -> Optional[str]:
         sel = selections.get(slot)
         if sel and sel.get("url"):
             return sel["url"]
+        pv = prefs.get(slot)
+        if pv:
+            return pv
         return default
 
     return {

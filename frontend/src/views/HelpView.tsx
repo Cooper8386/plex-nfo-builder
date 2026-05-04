@@ -146,6 +146,28 @@ export default function HelpView() {
         </p>
       </Section>
 
+      <Section title="Mixing metadata and artwork sources">
+        <p>
+          Settings has two independent provider knobs:
+        </p>
+        <Bullets>
+          <li>
+            <b>Primary metadata source</b> drives auto-match, descriptions,
+            cast, release dates, and every other text field in the NFO.
+          </li>
+          <li>
+            <b>Preferred artwork source</b> drives which provider's images
+            (poster, background, banner, clearlogo, season posters) win
+            during a build. Set it to <Code>tmdb</Code> while keeping
+            metadata on <Code>tvdb</Code> if you prefer TMDB's poster
+            library but TVDB's episode data — or the other way round.
+            Per-show manual picks always override this, and if the
+            preferred provider has no image for a slot the metadata
+            source's own artwork fills in.
+          </li>
+        </Bullets>
+      </Section>
+
       <Section title="Libraries: disable vs remove">
         <Bullets>
           <li>

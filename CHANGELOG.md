@@ -2,6 +2,29 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.5.8 — 2026-05-04
+
+### Added
+
+- **Preferred artwork source** setting (`auto` / `tvdb` / `tmdb`). When
+  set to a specific provider, that provider's images (poster,
+  background, banner, clearlogo, per-season posters) win during every
+  build, independent of which provider supplies the metadata. Common
+  use case: keep TVDB as the metadata source for descriptions, cast,
+  and release dates while pulling artwork from TMDB. Per-show manual
+  picks still override the preference, and the metadata source's own
+  artwork is used as a fallback whenever the preferred provider has
+  nothing suitable or is unreachable.
+- Artwork Picker candidate ordering now honours the preferred-artwork
+  source so what you see in the UI matches what the build writes to
+  disk by default.
+
+### Changed
+
+- NFO `<thumb>` and `<fanart>` URLs on TVDB-bound shows/movies now
+  reference the preferred provider's CDN when an override is active,
+  so Plex's network fallback uses the same image set you see locally.
+
 ## 0.5.7 — 2026-05-04
 
 ### Added

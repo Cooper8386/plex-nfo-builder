@@ -13,6 +13,10 @@ from .. import db
 from ..config import get_user_settings
 from ..logging_setup import job_logger, close_job_logger
 from .artwork import download_movie_canonical, download_series_canonical
+from .artwork_resolver import (
+    resolve_preferred_artwork_movie,
+    resolve_preferred_artwork_series,
+)
 from .matcher import (
     auto_match_movie,
     auto_match_movie_tmdb,
@@ -132,11 +136,28 @@ async def build_series(folder: Path, *, force: bool = False,
             log.warning("No translation in {}/{} for series {} — using TVDB default name",
                         lang, fallbacks, data.get("id"))
         nfo_overrides = db.get_nfo_overrides(str(folder))
+        # Resolve preferred-artwork-source overrides (e.g. user prefers TMDB
+        # artwork while bound to TVDB metadata).
+        local_season_nums: list[int] = []
+        for sd in detect_season_dirs(folder):
+            local_season_nums.append(season_number_from_dir(sd.name))
+        preferred_overrides = await resolve_preferred_artwork_series(
+            settings=settings,
+            bound_provider="tvdb",
+            tvdb_data=data,
+            local_season_numbers=local_season_nums,
+            prefer_languages=[lang, *fallbacks],
+            force=force,
+        )
+        if preferred_overrides:
+            log.info("Preferred artwork source override applied for {} slot(s): {}",
+                     len(preferred_overrides), sorted(preferred_overrides.keys()))
         nfo_text = build_series_nfo(
             data, language=lang, fallbacks=fallbacks,
             translation=series_translation,
             folder_path=str(folder),
             overrides=nfo_overrides,
+            preferred_overrides=preferred_overrides,
         )
         (folder / "tvshow.nfo").write_text(nfo_text, encoding="utf-8")
         job["progress"] += 1
@@ -240,6 +261,7 @@ async def build_series(folder: Path, *, force: bool = False,
             episodes=list(episode_local_map.values()),
             prefer_languages=[lang, *fallbacks],
             force=force,
+            preferred_overrides=preferred_overrides,
         )
         log.info("Artwork download complete")
         # rescan state
@@ -307,11 +329,22 @@ async def build_movie(folder: Path, *, force: bool = False,
             log.info("Movie translation resolved to language={}",
                      movie_translation.get("_resolved_language"))
         nfo_overrides = db.get_nfo_overrides(str(folder))
+        preferred_overrides = await resolve_preferred_artwork_movie(
+            settings=settings,
+            bound_provider="tvdb",
+            tvdb_data=data,
+            prefer_languages=[lang, *fallbacks],
+            force=force,
+        )
+        if preferred_overrides:
+            log.info("Preferred artwork source override applied for {} slot(s): {}",
+                     len(preferred_overrides), sorted(preferred_overrides.keys()))
         nfo_text = build_movie_nfo(
             data, language=lang, fallbacks=fallbacks,
             translation=movie_translation,
             folder_path=str(folder),
             overrides=nfo_overrides,
+            preferred_overrides=preferred_overrides,
         )
         main.with_suffix(".nfo").write_text(nfo_text, encoding="utf-8")
 
@@ -321,6 +354,7 @@ async def build_movie(folder: Path, *, force: bool = False,
                 folder, data, data.get("artworks") or [],
                 prefer_languages=[lang, *fallbacks],
                 force=force,
+                preferred_overrides=preferred_overrides,
             )
         except Exception as e:
             log.warning("Movie artwork: {}", e)
@@ -389,6 +423,19 @@ def _selections_or(folder: Path, slot: str, fallback: Optional[str]) -> Optional
     return fallback
 
 
+def _pick_art(folder: Path, slot: str, preferred_overrides: dict,
+              fallback: Optional[str]) -> Optional[str]:
+    """Priority: user per-folder selection > preferred-source override > fallback."""
+    sels = db.get_artwork_selections(str(folder))
+    sel = sels.get(slot)
+    if sel and sel.get("url"):
+        return sel["url"]
+    pv = (preferred_overrides or {}).get(slot)
+    if pv:
+        return pv
+    return fallback
+
+
 async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
                              fallbacks: list[str], *, force: bool,
                              jid: str, log, job: dict) -> str:
@@ -407,23 +454,33 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
 
         # Series NFO
         nfo_overrides = db.get_nfo_overrides(str(folder))
-        nfo_text = build_series_nfo_tmdb(data, language=lang, fallbacks=fallbacks,
-                                         folder_path=str(folder),
-                                         extra_artwork={
-            "poster": _selections_or(folder, "poster", None),
-            "background": _selections_or(folder, "background", None),
-            "banner": _selections_or(folder, "banner", None),
-        },
-                                         overrides=nfo_overrides)
-        (folder / "tvshow.nfo").write_text(nfo_text, encoding="utf-8")
-        log.info("Wrote tvshow.nfo (TMDB tv_id={})", data.get("id"))
-
-        # Per-season + per-episode NFOs.
         # We only fetch seasons whose folders exist locally.
         local_seasons: dict[int, list] = {}
         for sd in detect_season_dirs(folder):
             snum = season_number_from_dir(sd.name)
             local_seasons[snum] = list(list_season_episodes(sd))
+        preferred_overrides = await resolve_preferred_artwork_series(
+            settings=settings,
+            bound_provider="tmdb",
+            tmdb_tv=data,
+            local_season_numbers=list(local_seasons.keys()),
+            prefer_languages=[lang, *fallbacks],
+            force=force,
+        )
+        if preferred_overrides:
+            log.info("Preferred artwork source override applied for {} slot(s): {}",
+                     len(preferred_overrides), sorted(preferred_overrides.keys()))
+        nfo_text = build_series_nfo_tmdb(data, language=lang, fallbacks=fallbacks,
+                                         folder_path=str(folder),
+                                         extra_artwork={
+            "poster": _pick_art(folder, "poster", preferred_overrides, None),
+            "background": _pick_art(folder, "background", preferred_overrides, None),
+            "banner": _pick_art(folder, "banner", preferred_overrides, None),
+            "clearlogo": _pick_art(folder, "clearlogo", preferred_overrides, None),
+        },
+                                         overrides=nfo_overrides)
+        (folder / "tvshow.nfo").write_text(nfo_text, encoding="utf-8")
+        log.info("Wrote tvshow.nfo (TMDB tv_id={})", data.get("id"))
 
         unmatched: list[str] = []
         for snum, parsed_list in local_seasons.items():
@@ -479,19 +536,29 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
             job["messages"].append(f"{len(unmatched)} episode file(s) unmatched")
 
         # Series-level artwork: poster + backdrop, plus per-season posters.
-        poster = _selections_or(folder, "poster", tmdb_image_url(data.get("poster_path"), "original"))
-        bg = _selections_or(folder, "background", tmdb_image_url(data.get("backdrop_path"), "original"))
-        banner = _selections_or(folder, "banner", None)
+        poster = _pick_art(folder, "poster", preferred_overrides,
+                           tmdb_image_url(data.get("poster_path"), "original"))
+        bg = _pick_art(folder, "background", preferred_overrides,
+                       tmdb_image_url(data.get("backdrop_path"), "original"))
+        banner = _pick_art(folder, "banner", preferred_overrides, None)
+        clearlogo = _pick_art(folder, "clearlogo", preferred_overrides, None)
         await _download_url(poster, folder / "poster.jpg", force=force)
         await _download_url(bg, folder / "background.jpg", force=force)
         if banner:
             await _download_url(banner, folder / "banner.jpg", force=force)
-        # Per-season posters (use TMDB season poster_path; user selections override)
+        if clearlogo:
+            await _download_url(clearlogo, folder / "clearlogo.png", force=force)
+        # Per-season posters: user selection > preferred-source override > TMDB season poster_path
         for snum, parsed_list in local_seasons.items():
             slot = f"season-{snum:02d}-poster"
-            override = _selections_or(folder, slot, None)
-            if override:
-                await _download_url(override, folder / f"Season{snum:02d}-poster.jpg", force=force)
+            sels = db.get_artwork_selections(str(folder))
+            user_sel = sels.get(slot)
+            if user_sel and user_sel.get("url"):
+                await _download_url(user_sel["url"], folder / f"Season{snum:02d}-poster.jpg", force=force)
+                continue
+            pref_url = (preferred_overrides or {}).get(slot)
+            if pref_url:
+                await _download_url(pref_url, folder / f"Season{snum:02d}-poster.jpg", force=force)
                 continue
             try:
                 season_data = await client.tv_season(data["id"], snum, language=lang, force=force)
@@ -544,19 +611,31 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
             return jid
         main = videos[0]
         nfo_overrides = db.get_nfo_overrides(str(folder))
+        preferred_overrides = await resolve_preferred_artwork_movie(
+            settings=settings,
+            bound_provider="tmdb",
+            tmdb_mv=data,
+            prefer_languages=[lang, *fallbacks],
+            force=force,
+        )
+        if preferred_overrides:
+            log.info("Preferred artwork source override applied for {} slot(s): {}",
+                     len(preferred_overrides), sorted(preferred_overrides.keys()))
         nfo_text = build_movie_nfo_tmdb(data, language=lang, fallbacks=fallbacks,
                                         folder_path=str(folder),
                                         extra_artwork={
-            "poster": _selections_or(folder, "poster", None),
-            "background": _selections_or(folder, "background", None),
-            "banner": _selections_or(folder, "banner", None),
+            "poster": _pick_art(folder, "poster", preferred_overrides, None),
+            "background": _pick_art(folder, "background", preferred_overrides, None),
+            "banner": _pick_art(folder, "banner", preferred_overrides, None),
         },
                                         overrides=nfo_overrides)
         main.with_suffix(".nfo").write_text(nfo_text, encoding="utf-8")
 
-        poster = _selections_or(folder, "poster", tmdb_image_url(data.get("poster_path"), "original"))
-        bg = _selections_or(folder, "background", tmdb_image_url(data.get("backdrop_path"), "original"))
-        banner = _selections_or(folder, "banner", None)
+        poster = _pick_art(folder, "poster", preferred_overrides,
+                           tmdb_image_url(data.get("poster_path"), "original"))
+        bg = _pick_art(folder, "background", preferred_overrides,
+                       tmdb_image_url(data.get("backdrop_path"), "original"))
+        banner = _pick_art(folder, "banner", preferred_overrides, None)
         await _download_url(poster, folder / "poster.jpg", force=force)
         await _download_url(bg, folder / "background.jpg", force=force)
         if banner:

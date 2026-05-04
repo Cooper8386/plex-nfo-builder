@@ -108,6 +108,26 @@ export default function SettingsView() {
       </Field>
 
       <hr className="my-4 border-slate-800" />
+      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">Artwork</h3>
+      <Field label="Preferred artwork source">
+        <select
+          className="bg-slate-800 px-2 py-1 rounded"
+          value={s.preferred_artwork_source || "auto"}
+          onChange={(e) => update("preferred_artwork_source", e.target.value)}
+          title="Which provider's images win during a build. Independent of the metadata source — e.g. use TVDB for descriptions/cast and TMDB for artwork."
+        >
+          <option value="auto">Auto (match metadata source)</option>
+          <option value="tvdb">Prefer TheTVDB artwork</option>
+          <option value="tmdb">Prefer TheMovieDB artwork</option>
+        </select>
+      </Field>
+      <div className="text-xs text-slate-500 mb-3 ml-64 pl-3">
+        Applies to posters, backgrounds, and season posters. Your per-show
+        manual picks always override this. When the preferred provider can't
+        be reached for a show, the metadata source's own artwork is used.
+      </div>
+
+      <hr className="my-4 border-slate-800" />
       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">fanart.tv</h3>
       <Field label={`fanart.tv API key${s.fanart_api_key_configured ? " (configured)" : ""}`}>
         <input

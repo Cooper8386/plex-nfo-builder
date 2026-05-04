@@ -43,6 +43,12 @@ class UserSettings(BaseModel):
     fanart_api_key: Optional[str] = None  # overrides env
     fanart_enabled: bool = True
     tmdb_artwork_enabled: bool = True
+    # v0.5.8: which provider's artwork wins by default (independent of metadata source)
+    #   "auto" — whichever provider the show is bound to (plus supplements)
+    #   "tvdb" — always prefer TVDB images when available
+    #   "tmdb" — always prefer TMDB images when available
+    # User per-folder selections always override this.
+    preferred_artwork_source: str = "auto"
 
     @classmethod
     def load(cls, path: Path) -> "UserSettings":

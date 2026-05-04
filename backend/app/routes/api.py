@@ -87,6 +87,7 @@ class SettingsIn(BaseModel):
     fanart_api_key: Optional[str] = None
     fanart_enabled: Optional[bool] = None
     tmdb_artwork_enabled: Optional[bool] = None
+    preferred_artwork_source: Optional[str] = None
 
 
 @router.post("/settings")
@@ -100,6 +101,8 @@ async def update_settings(payload: SettingsIn):
         data[k] = v
     if data.get("metadata_source") not in ("tvdb", "tmdb"):
         data["metadata_source"] = "tvdb"
+    if data.get("preferred_artwork_source") not in ("auto", "tvdb", "tmdb"):
+        data["preferred_artwork_source"] = "auto"
     new = UserSettings(**data)
     save_user_settings(new)
     return {"ok": True}
@@ -962,8 +965,18 @@ async def artwork_candidates(path: str, kind: str = "series"):
                 _extend(s, [c])
 
     # Sort each slot: prefer-language first, then score, with provider as a
-    # mild secondary preference (TMDB after TVDB-tied, fanart, custom on top).
-    provider_rank = {"custom": 0, "tvdb": 1, "tmdb": 2, "fanart": 3}
+    # mild secondary preference. The ranking honours the user's
+    # `preferred_artwork_source` setting so manual picker views match what
+    # the build pipeline will write to disk by default.
+    pref_source = (settings.preferred_artwork_source or "auto").lower()
+    if pref_source == "tmdb":
+        provider_rank = {"custom": 0, "tmdb": 1, "tvdb": 2, "fanart": 3}
+    elif pref_source == "tvdb":
+        provider_rank = {"custom": 0, "tvdb": 1, "tmdb": 2, "fanart": 3}
+    else:
+        # "auto": tie TVDB and TMDB; the binding-primary provider already
+        # comes first in the slot since it was extended first.
+        provider_rank = {"custom": 0, "tvdb": 1, "tmdb": 1, "fanart": 2}
     for slot, items in slots.items():
         items.sort(key=lambda c: (
             provider_rank.get(c.get("provider", ""), 9),
