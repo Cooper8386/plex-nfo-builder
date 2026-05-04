@@ -49,6 +49,17 @@ class UserSettings(BaseModel):
     #   "tmdb" — always prefer TMDB images when available
     # User per-folder selections always override this.
     preferred_artwork_source: str = "auto"
+    # v0.6.0: Plex Media Server integration. When configured, the app can
+    # ask Plex to rescan a show/movie folder right after a build completes
+    # so the changes show up without having to refresh manually.
+    plex_url: Optional[str] = None              # e.g. http://192.168.1.10:32400
+    plex_token: Optional[str] = None            # X-Plex-Token
+    plex_auto_refresh: bool = False             # auto-refresh after each successful build
+    plex_refresh_delay_seconds: int = 5         # seconds to wait before refreshing
+    # Mappings to translate the app's local paths to Plex's view of the same
+    # folder. Each item is {"from": "/media", "to": "/data"}. The longest
+    # matching prefix wins. Empty list = no translation needed.
+    plex_path_mappings: List[dict] = []
 
     @classmethod
     def load(cls, path: Path) -> "UserSettings":

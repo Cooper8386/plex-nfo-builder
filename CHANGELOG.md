@@ -2,6 +2,34 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.6.0 — 2026-05-04
+
+### Added
+
+- **Plex auto-refresh.** When a Plex base URL and token are configured
+  in Settings, the app can ask Plex to do a partial rescan of a show
+  or movie folder right after a build finishes — so updated NFOs and
+  artwork show up in Plex without manually clicking refresh.
+  - New Plex section in Settings: base URL, token (masked, treated like
+    other secrets), auto-refresh checkbox, configurable delay (default
+    5 seconds), and a Test connection button that lists the server's
+    library sections.
+  - **Path mappings** translate the app's view of disk (e.g. `/media`)
+    to whatever Plex sees (e.g. `/data` or `/mnt/media`). Longest
+    matching prefix wins, and folders that don't match any mapping pass
+    through unchanged.
+  - **Refresh in Plex** button on the show / movie detail page triggers
+    an on-demand rescan and reports back which Plex section was
+    targeted.
+  - Refresh runs as a fire-and-forget background task after the build
+    completes; any Plex error is logged but never fails the build, so
+    NFOs and artwork are always written first.
+- New endpoints: `GET /api/plex/test`, `GET /api/plex/sections`,
+  `POST /api/plex/refresh`. `/api/health` now reports
+  `plex_configured` and `plex_auto_refresh`.
+- Help: "Plex auto-refresh" section explaining the workflow, where to
+  get a Plex token, and how path mappings work.
+
 ## 0.5.9 — 2026-05-04
 
 ### Fixed

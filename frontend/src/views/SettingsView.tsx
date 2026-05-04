@@ -7,6 +7,17 @@ export default function SettingsView() {
   const [pin, setPin] = useState("");
   const [tmdbKey, setTmdbKey] = useState("");
   const [fanartKey, setFanartKey] = useState("");
+  const [plexToken, setPlexToken] = useState("");
+  const [plexTesting, setPlexTesting] = useState(false);
+  const [plexResult, setPlexResult] = useState<
+    | null
+    | {
+        ok: boolean;
+        error?: string;
+        identity?: { friendly_name?: string; version?: string };
+        sections?: { id: string; title: string; type: string; locations: string[] }[];
+      }
+  >(null);
   const [saved, setSaved] = useState<string | null>(null);
 
   useEffect(() => {
@@ -128,6 +139,176 @@ export default function SettingsView() {
       </div>
 
       <hr className="my-4 border-slate-800" />
+      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">Plex</h3>
+      <div className="text-xs text-slate-500 mb-3">
+        After a successful build, the app can ask your Plex server to rescan
+        the show or movie folder so changes appear without manually clicking
+        refresh in Plex. Path mappings translate the app's view of the disk
+        (e.g. <code className="text-slate-400">/media</code>) to whatever Plex
+        sees (e.g. <code className="text-slate-400">/data</code>).
+      </div>
+      <Field label="Plex base URL">
+        <input
+          className="bg-slate-800 px-2 py-1 rounded w-80"
+          value={s.plex_url || ""}
+          placeholder="http://192.168.1.10:32400"
+          onChange={(e) => update("plex_url", e.target.value)}
+        />
+      </Field>
+      <Field label={`Plex token${s.plex_token_configured ? " (configured)" : ""}`}>
+        <input
+          type="password"
+          className="bg-slate-800 px-2 py-1 rounded w-80"
+          value={plexToken}
+          placeholder={s.plex_token_configured ? "leave blank to keep current" : "X-Plex-Token"}
+          onChange={(e) => setPlexToken(e.target.value)}
+        />
+      </Field>
+      <Field label="Auto-refresh after each build">
+        <input
+          type="checkbox"
+          checked={!!s.plex_auto_refresh}
+          onChange={(e) => update("plex_auto_refresh", e.target.checked)}
+        />
+      </Field>
+      <Field label="Refresh delay (seconds)">
+        <input
+          type="number"
+          min={0}
+          max={600}
+          className="bg-slate-800 px-2 py-1 rounded w-24"
+          value={s.plex_refresh_delay_seconds ?? 5}
+          onChange={(e) =>
+            update("plex_refresh_delay_seconds", parseInt(e.target.value || "0"))
+          }
+        />
+      </Field>
+      <div className="flex items-start gap-3 mb-3">
+        <label className="text-sm text-slate-300 w-64 mt-1">Path mappings</label>
+        <div className="flex-1">
+          {(s.plex_path_mappings || []).length === 0 && (
+            <div className="text-xs text-slate-500 mb-2">
+              No mappings — the app's paths are sent to Plex as-is.
+            </div>
+          )}
+          {(s.plex_path_mappings || []).map((m: any, i: number) => (
+            <div key={i} className="flex items-center gap-2 mb-2">
+              <input
+                className="bg-slate-800 px-2 py-1 rounded w-48"
+                placeholder="/media"
+                value={m.from || ""}
+                onChange={(e) => {
+                  const next = [...(s.plex_path_mappings || [])];
+                  next[i] = { ...next[i], from: e.target.value };
+                  update("plex_path_mappings", next);
+                }}
+              />
+              <span className="text-slate-500 text-sm">→</span>
+              <input
+                className="bg-slate-800 px-2 py-1 rounded w-48"
+                placeholder="/data"
+                value={m.to || ""}
+                onChange={(e) => {
+                  const next = [...(s.plex_path_mappings || [])];
+                  next[i] = { ...next[i], to: e.target.value };
+                  update("plex_path_mappings", next);
+                }}
+              />
+              <button
+                className="text-xs text-rose-400"
+                onClick={() => {
+                  const next = [...(s.plex_path_mappings || [])];
+                  next.splice(i, 1);
+                  update("plex_path_mappings", next);
+                }}
+              >
+                remove
+              </button>
+            </div>
+          ))}
+          <button
+            className="text-xs text-indigo-400"
+            onClick={() =>
+              update("plex_path_mappings", [
+                ...(s.plex_path_mappings || []),
+                { from: "", to: "" },
+              ])
+            }
+          >
+            + add mapping
+          </button>
+        </div>
+      </div>
+      <div className="flex items-center gap-3 mb-3">
+        <label className="text-sm text-slate-300 w-64"></label>
+        <button
+          className="px-3 py-1 bg-slate-700 rounded text-sm disabled:opacity-50"
+          disabled={plexTesting}
+          onClick={async () => {
+            setPlexTesting(true);
+            setPlexResult(null);
+            try {
+              // Save first if user typed a token or changed url so test uses live values.
+              if (plexToken || s.plex_url !== undefined) {
+                const body: any = {
+                  plex_url: s.plex_url || null,
+                  plex_path_mappings: s.plex_path_mappings || [],
+                };
+                if (plexToken) body.plex_token = plexToken;
+                await api.settings.set(body);
+                if (plexToken) setPlexToken("");
+                const fresh = await api.settings.get();
+                setS(fresh);
+              }
+              const r = await api.plex.test();
+              setPlexResult(r);
+            } catch (e: any) {
+              setPlexResult({ ok: false, error: String(e?.message || e) });
+            } finally {
+              setPlexTesting(false);
+            }
+          }}
+        >
+          {plexTesting ? "Testing…" : "Test connection"}
+        </button>
+      </div>
+      {plexResult && (
+        <div className="ml-64 pl-3 mb-4 text-xs">
+          {plexResult.ok ? (
+            <div>
+              <div className="text-emerald-400">
+                Connected to {plexResult.identity?.friendly_name || "Plex"}
+                {plexResult.identity?.version ? ` (v${plexResult.identity.version})` : ""}
+              </div>
+              {plexResult.sections && plexResult.sections.length > 0 ? (
+                <div className="mt-2 text-slate-400">
+                  <div className="mb-1">Sections:</div>
+                  <ul className="list-disc ml-5 space-y-1">
+                    {plexResult.sections.map((sec) => (
+                      <li key={sec.id}>
+                        <span className="text-slate-200">{sec.title}</span>{" "}
+                        <span className="text-slate-500">({sec.type})</span>
+                        {sec.locations.length > 0 && (
+                          <span className="text-slate-500">
+                            {" — "}
+                            {sec.locations.join(", ")}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <div className="text-slate-500 mt-1">No sections found.</div>
+              )}
+            </div>
+          ) : (
+            <div className="text-rose-400">{plexResult.error || "Connection failed."}</div>
+          )}
+        </div>
+      )}
+
+      <hr className="my-4 border-slate-800" />
       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">fanart.tv</h3>
       <Field label={`fanart.tv API key${s.fanart_api_key_configured ? " (configured)" : ""}`}>
         <input
@@ -155,15 +336,17 @@ export default function SettingsView() {
           delete body.tvdb_pin_configured;
           delete body.tmdb_api_key_configured;
           delete body.fanart_api_key_configured;
+          delete body.plex_token_configured;
           if (apiKey) body.tvdb_api_key = apiKey;
           if (pin) body.tvdb_pin = pin;
           if (tmdbKey) body.tmdb_api_key = tmdbKey;
           if (fanartKey) body.fanart_api_key = fanartKey;
+          if (plexToken) body.plex_token = plexToken;
           await api.settings.set(body);
           // Re-fetch to refresh masked status
           const fresh = await api.settings.get();
           setS(fresh);
-          setApiKey(""); setPin(""); setTmdbKey(""); setFanartKey("");
+          setApiKey(""); setPin(""); setTmdbKey(""); setFanartKey(""); setPlexToken("");
           setSaved("Saved.");
           setTimeout(() => setSaved(null), 1500);
         }}

@@ -329,4 +329,32 @@ export const api = {
     movie: (id: string) => J<any>(fetch(`/api/tvdb/movie/${encodeURIComponent(id)}`)),
     clearCache: () => J(fetch("/api/tvdb/cache/clear", { method: "POST" })),
   },
+  plex: {
+    test: () =>
+      J<{
+        ok: boolean;
+        error?: string;
+        identity?: { friendly_name?: string; version?: string; machine_identifier?: string };
+        sections?: { id: string; key: string; title: string; type: string; locations: string[] }[];
+      }>(fetch("/api/plex/test")),
+    sections: () =>
+      J<{ sections: { id: string; key: string; title: string; type: string; locations: string[] }[] }>(
+        fetch("/api/plex/sections")
+      ),
+    refresh: (path: string, delay_seconds = 0) =>
+      J<{
+        requested_local_path: string;
+        translated_path: string | null;
+        section_id: string | null;
+        section_title: string | null;
+        refreshed: boolean;
+        error: string | null;
+      }>(
+        fetch("/api/plex/refresh", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path, delay_seconds }),
+        })
+      ),
+  },
 };

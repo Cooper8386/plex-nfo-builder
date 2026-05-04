@@ -32,6 +32,7 @@ from ..services import builder as build_svc
 from ..services import cleaner as cleaner_svc
 from ..services import fanart as fanart_svc
 from ..services import matcher
+from ..services import plex as plex_svc
 from ..services import scanner
 from ..services import sidecar as sidecar_svc
 from ..services.parser import (
@@ -51,13 +52,16 @@ router = APIRouter(prefix="/api")
 @router.get("/health")
 async def health():
     api_key, _ = effective_tvdb_credentials()
+    s = get_user_settings()
     return {
         "ok": True,
         "media_root": str(MEDIA_ROOT),
         "tvdb_configured": bool(api_key),
         "tmdb_configured": bool(effective_tmdb_credentials()),
         "fanart_configured": bool(effective_fanart_credentials()),
-        "metadata_source": (get_user_settings().metadata_source or "tvdb"),
+        "metadata_source": (s.metadata_source or "tvdb"),
+        "plex_configured": bool(s.plex_url and s.plex_token),
+        "plex_auto_refresh": bool(s.plex_auto_refresh),
     }
 
 
@@ -66,7 +70,7 @@ async def get_settings():
     s = get_user_settings()
     payload = s.model_dump()
     # Never echo secret values back to the UI; surface a hint instead.
-    for key in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "fanart_api_key"):
+    for key in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "fanart_api_key", "plex_token"):
         had = bool(payload.get(key))
         payload.pop(key, None)
         payload[f"{key}_configured"] = had
@@ -88,6 +92,12 @@ class SettingsIn(BaseModel):
     fanart_enabled: Optional[bool] = None
     tmdb_artwork_enabled: Optional[bool] = None
     preferred_artwork_source: Optional[str] = None
+    # v0.6.0 Plex integration
+    plex_url: Optional[str] = None
+    plex_token: Optional[str] = None
+    plex_auto_refresh: Optional[bool] = None
+    plex_refresh_delay_seconds: Optional[int] = None
+    plex_path_mappings: Optional[list[dict]] = None
 
 
 @router.post("/settings")
@@ -96,8 +106,26 @@ async def update_settings(payload: SettingsIn):
     data = s.model_dump()
     for k, v in payload.model_dump(exclude_unset=True).items():
         # Treat empty-string secret fields as 'leave unchanged' rather than wiping.
-        if k in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "fanart_api_key") and v == "":
+        if k in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "fanart_api_key", "plex_token") and v == "":
             continue
+        if k == "plex_path_mappings" and v is not None:
+            cleaned = []
+            for m in v:
+                if not isinstance(m, dict):
+                    continue
+                src = (m.get("from") or "").strip()
+                dst = (m.get("to") or "").strip()
+                if not src and not dst:
+                    continue
+                cleaned.append({"from": src, "to": dst})
+            v = cleaned
+        if k == "plex_url" and isinstance(v, str):
+            v = v.strip().rstrip("/") or None
+        if k == "plex_refresh_delay_seconds" and v is not None:
+            try:
+                v = max(0, min(600, int(v)))
+            except (TypeError, ValueError):
+                v = 5
         data[k] = v
     if data.get("metadata_source") not in ("tvdb", "tmdb"):
         data["metadata_source"] = "tvdb"
@@ -1292,3 +1320,50 @@ async def tvdb_movie(movie_id: str):
 async def tvdb_cache_clear():
     n = db.cache_clear()
     return {"cleared": n}
+
+
+# ---- Plex integration (v0.6.0) ---------------------------------------------
+
+class PlexRefreshIn(BaseModel):
+    path: str
+    delay_seconds: Optional[int] = 0
+
+
+@router.get("/plex/test")
+async def plex_test():
+    """Validate the configured Plex URL+token and return identity + sections."""
+    return await plex_svc.test_connection()
+
+
+@router.get("/plex/sections")
+async def plex_sections():
+    """List Plex library sections with their on-disk locations."""
+    s = get_user_settings()
+    if not (s.plex_url and s.plex_token):
+        raise HTTPException(status_code=400, detail="Plex is not configured")
+    try:
+        client = plex_svc.PlexClient(s.plex_url, s.plex_token)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    try:
+        sections = await client.list_sections()
+    except plex_svc.PlexError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        await client.aclose()
+    return {"sections": sections}
+
+
+@router.post("/plex/refresh")
+async def plex_refresh(body: PlexRefreshIn):
+    """Manually trigger a Plex partial-rescan for ``path``.
+
+    Mirrors what the auto-refresh post-build hook does, but exposed for the
+    DetailView "Refresh in Plex" button. Returns the same summary dict
+    ``refresh_for_folder`` produces — never raises, surfaces errors in JSON.
+    """
+    if not body.path or not body.path.strip():
+        raise HTTPException(status_code=400, detail="path is required")
+    delay = max(0, min(600, int(body.delay_seconds or 0)))
+    summary = await plex_svc.refresh_for_folder(body.path, delay_seconds=delay)
+    return summary

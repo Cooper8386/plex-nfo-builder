@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import ArtworkPicker from "./ArtworkPicker";
 import EpisodeMapper from "./EpisodeMapper";
@@ -17,6 +17,10 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
+  const [plexConfigured, setPlexConfigured] = useState(false);
+  useEffect(() => {
+    api.health().then((h: any) => setPlexConfigured(!!h.plex_configured)).catch(() => {});
+  }, []);
 
   if (!detail.data) return <div className="p-6 text-slate-500">Loading…</div>;
   const { state, binding, artwork_files, provider_episode_count, provider_used } = detail.data as any;
@@ -156,6 +160,33 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
         >
           Wipe NFOs & artwork
         </button>
+        {plexConfigured && (
+          <button
+            disabled={busy}
+            title="Ask your Plex server to rescan this folder right now."
+            className="px-3 py-1.5 bg-emerald-900/40 hover:bg-emerald-900/70 border border-emerald-800 rounded text-sm text-emerald-200 disabled:opacity-50"
+            onClick={async () => {
+              setBusy(true);
+              setMsg("Asking Plex to refresh…");
+              try {
+                const r = await api.plex.refresh(path, 0);
+                if (r.refreshed) {
+                  setMsg(
+                    `Plex refresh sent for \"${r.section_title || "section"}\" (${r.translated_path ?? path}).`,
+                  );
+                } else {
+                  setMsg(`Plex refresh failed: ${r.error || "unknown error"}`);
+                }
+              } catch (e: any) {
+                setMsg(`Plex refresh failed: ${e?.message ?? e}`);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Refresh in Plex
+          </button>
+        )}
         <div className="flex-1" />
         <button
           disabled={busy}

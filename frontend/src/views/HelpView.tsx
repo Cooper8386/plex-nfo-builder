@@ -168,6 +168,41 @@ export default function HelpView() {
         </Bullets>
       </Section>
 
+      <Section title="Plex auto-refresh">
+        <p>
+          When a Plex base URL and token are set in Settings, the app can ask
+          your Plex server to do a partial rescan of a show or movie folder
+          right after a build finishes — so changes show up without you having
+          to click refresh in Plex.
+        </p>
+        <Bullets>
+          <li>
+            <b>Auto-refresh</b> fires after every successful Build NFOs / Force
+            rebuild, with a small delay (default 5s) so writes settle to disk
+            before Plex reads them.
+          </li>
+          <li>
+            <b>Refresh in Plex</b> button on the detail page triggers an
+            on-demand refresh for the current show or movie.
+          </li>
+          <li>
+            <b>Path mappings</b> translate the app's view of disk to Plex's
+            view. If the app sees <Code>/media/tv</Code> but Plex sees the same
+            folder at <Code>/data/tv</Code>, add a mapping{" "}
+            <Code>/media → /data</Code>. Longest matching prefix wins.
+          </li>
+          <li>
+            Refresh failures are logged but never fail the build itself — your
+            NFOs and artwork are always written first.
+          </li>
+        </Bullets>
+        <p>
+          To get a Plex token, sign in to Plex Web, open any item, click the
+          three-dot menu → Get Info → View XML, and copy the{" "}
+          <Code>X-Plex-Token</Code> query parameter from the URL.
+        </p>
+      </Section>
+
       <Section title="Libraries: disable vs remove">
         <Bullets>
           <li>

@@ -17,6 +17,7 @@ from .artwork_resolver import (
     resolve_preferred_artwork_movie,
     resolve_preferred_artwork_series,
 )
+from .plex import refresh_for_folder as _plex_refresh_for_folder
 from .matcher import (
     auto_match_movie,
     auto_match_movie_tmdb,
@@ -273,6 +274,7 @@ async def build_series(folder: Path, *, force: bool = False,
             log.warning("sidecar write failed: {}", se)
         job["status"] = "completed"
         log.info("Series build done for {}", folder.name)
+        _maybe_schedule_plex_refresh(folder, settings, job, log)
     except Exception as e:
         job["status"] = "failed"
         job["messages"].append(str(e))
@@ -283,6 +285,39 @@ async def build_series(folder: Path, *, force: bool = False,
         if sink:
             job["log_file"] = str(sink)
     return jid
+
+
+def _maybe_schedule_plex_refresh(folder: Path, settings, job: dict, log) -> None:
+    """Fire-and-forget task that asks Plex to rescan ``folder`` after a
+    user-configured delay. Never raises into the build pipeline.
+    """
+    if not (settings.plex_auto_refresh and settings.plex_url and settings.plex_token):
+        return
+    delay = max(0, int(settings.plex_refresh_delay_seconds or 0))
+
+    async def _do_refresh() -> None:
+        try:
+            res = await _plex_refresh_for_folder(
+                str(folder), delay_seconds=delay, settings=settings,
+            )
+            if res.get("refreshed"):
+                msg = (
+                    f"Plex refresh queued for section {res.get('section_title')!r} "
+                    f"path={res.get('translated_path')}"
+                )
+                log.info(msg)
+                job["messages"].append(msg)
+            elif res.get("error"):
+                log.warning("Plex auto-refresh skipped: {}", res["error"])
+                job["messages"].append(f"Plex auto-refresh skipped: {res['error']}")
+        except Exception as e:
+            log.warning("Plex auto-refresh task crashed: {}", e)
+
+    try:
+        asyncio.create_task(_do_refresh())
+    except RuntimeError:
+        # No running loop (shouldn't happen — builder runs on the loop)
+        log.warning("Plex auto-refresh: no running event loop, skipping")
 
 
 # ---- Movie -----------------------------------------------------------------
@@ -365,6 +400,7 @@ async def build_movie(folder: Path, *, force: bool = False,
         except Exception as se:
             log.warning("sidecar write failed: {}", se)
         job["status"] = "completed"
+        _maybe_schedule_plex_refresh(folder, settings, job, log)
     except Exception as e:
         job["status"] = "failed"
         job["messages"].append(str(e))
@@ -577,6 +613,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
             log.warning("sidecar write failed: {}", se)
         job["status"] = "completed"
         log.info("TMDB series build done for {}", folder.name)
+        _maybe_schedule_plex_refresh(folder, settings, job, log)
     except Exception as e:
         job["status"] = "failed"
         job["messages"].append(str(e))
@@ -647,6 +684,7 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
         except Exception as se:
             log.warning("sidecar write failed: {}", se)
         job["status"] = "completed"
+        _maybe_schedule_plex_refresh(folder, settings, job, log)
     except Exception as e:
         job["status"] = "failed"
         job["messages"].append(str(e))
