@@ -1,5 +1,11 @@
 # syntax=docker/dockerfile:1.6
-FROM node:20-alpine AS frontend
+
+# The frontend build produces static JS/CSS/HTML that is identical for
+# every target architecture. Pin this stage to the host's native arch
+# ($BUILDPLATFORM) so npm runs natively on the GitHub runner instead of
+# under QEMU emulation — Node + QEMU + arm64 reliably segfaults
+# ("Illegal instruction") during npm install on large dependency trees.
+FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install --no-audit --no-fund

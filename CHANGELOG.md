@@ -2,6 +2,23 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.6.2 — 2026-05-04
+
+### Fixed
+
+- **Multi-arch Docker build.** The v0.6.1 image never published because
+  the arm64 build died with `qemu: uncaught target signal 4 (Illegal
+  instruction) - core dumped` during `npm install`. This is a known
+  Node-on-QEMU issue on larger dependency trees and is unrelated to
+  application code. Dockerfile now pins the frontend build stage to
+  `$BUILDPLATFORM`, so `npm install` + `vite build` run natively on
+  the GitHub runner (amd64) and the resulting static `dist/` is
+  copied into both the amd64 and arm64 backend images. Frontend
+  output is architecture-independent, so this is strictly a
+  build-time speed and reliability win.
+- Ships the v0.6.1 Plex refresh fix (two-step scan + per-item
+  metadata refresh) as a published image.
+
 ## 0.6.1 — 2026-05-04
 
 ### Fixed
