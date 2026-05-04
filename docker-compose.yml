@@ -1,0 +1,23 @@
+services:
+  plex-nfo-builder:
+    # Pull the prebuilt image from GHCR by default. Replace `latest` with a
+    # specific version (e.g. `0.5.5`) if you'd rather pin. To build from
+    # source instead, comment out `image:` and uncomment `build: .`.
+    image: ghcr.io/cooper8386/plex-nfo-builder:latest
+    # build: .
+    container_name: plex-nfo-builder
+    ports:
+      - "8765:8000"
+    environment:
+      TVDB_API_KEY: ${TVDB_API_KEY:-}
+      TVDB_PIN: ${TVDB_PIN:-}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      FANART_API_KEY: ${FANART_API_KEY:-}
+      MEDIA_ROOT: /media
+      CONFIG_DIR: /config
+      TZ: ${TZ:-America/Chicago}
+      LOG_LEVEL: INFO
+    volumes:
+      - /mnt/user/data/media:/media
+      - ./config:/config
+    restart: unless-stopped

@@ -1,0 +1,54 @@
+name: Create GitHub release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog body
+        id: changelog
+        shell: bash
+        run: |
+          set -e
+          tag="${GITHUB_REF_NAME}"
+          prev=$(git tag --sort=-creatordate | grep -v "^${tag}$" | head -n1 || true)
+          {
+            echo "## ${tag}"
+            echo
+            if [ -n "$prev" ]; then
+              echo "**Changes since ${prev}**"
+              echo
+              git log --pretty=format:'- %s (%h)' "${prev}..${tag}" --no-merges
+            else
+              echo "Initial release."
+            fi
+            echo
+            echo
+            echo "### Container image"
+            echo
+            echo '```bash'
+            echo "docker pull ghcr.io/${GITHUB_REPOSITORY,,}:${tag#v}"
+            echo "docker pull ghcr.io/${GITHUB_REPOSITORY,,}:latest"
+            echo '```'
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false

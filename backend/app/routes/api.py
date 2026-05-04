@@ -1,0 +1,1224 @@
+"""HTTP API for the frontend."""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import os
+import re
+from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse
+
+import httpx
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
+from loguru import logger
+from pydantic import BaseModel
+
+from .. import db
+from ..config import (
+    CUSTOM_ARTWORK_DIR,
+    LOG_DIR,
+    MEDIA_ROOT,
+    UserSettings,
+    effective_fanart_credentials,
+    effective_tmdb_credentials,
+    effective_tvdb_credentials,
+    get_user_settings,
+    save_user_settings,
+)
+from ..services import artwork as artwork_svc
+from ..services import builder as build_svc
+from ..services import fanart as fanart_svc
+from ..services import matcher
+from ..services import scanner
+from ..services import sidecar as sidecar_svc
+from ..services.parser import (
+    detect_season_dirs,
+    list_season_episodes,
+    parse_folder_name,
+    season_number_from_dir,
+)
+from ..services.tmdb import get_client as get_tmdb_client, image_url as tmdb_image_url
+from ..services.tvdb import get_client
+
+router = APIRouter(prefix="/api")
+
+
+# ---- Settings & health -----------------------------------------------------
+
+@router.get("/health")
+async def health():
+    api_key, _ = effective_tvdb_credentials()
+    return {
+        "ok": True,
+        "media_root": str(MEDIA_ROOT),
+        "tvdb_configured": bool(api_key),
+        "tmdb_configured": bool(effective_tmdb_credentials()),
+        "fanart_configured": bool(effective_fanart_credentials()),
+        "metadata_source": (get_user_settings().metadata_source or "tvdb"),
+    }
+
+
+@router.get("/settings")
+async def get_settings():
+    s = get_user_settings()
+    payload = s.model_dump()
+    # Never echo secret values back to the UI; surface a hint instead.
+    for key in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "fanart_api_key"):
+        had = bool(payload.get(key))
+        payload.pop(key, None)
+        payload[f"{key}_configured"] = had
+    return payload
+
+
+class SettingsIn(BaseModel):
+    preferred_language: Optional[str] = None
+    fallback_languages: Optional[list[str]] = None
+    include_original_title: Optional[bool] = None
+    cache_ttl_hours: Optional[int] = None
+    overwrite_foreign_nfo: Optional[bool] = None
+    tvdb_api_key: Optional[str] = None
+    tvdb_pin: Optional[str] = None
+    auto_match_threshold: Optional[int] = None
+    metadata_source: Optional[str] = None
+    tmdb_api_key: Optional[str] = None
+    fanart_api_key: Optional[str] = None
+    fanart_enabled: Optional[bool] = None
+    tmdb_artwork_enabled: Optional[bool] = None
+
+
+@router.post("/settings")
+async def update_settings(payload: SettingsIn):
+    s = get_user_settings()
+    data = s.model_dump()
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        # Treat empty-string secret fields as 'leave unchanged' rather than wiping.
+        if k in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "fanart_api_key") and v == "":
+            continue
+        data[k] = v
+    if data.get("metadata_source") not in ("tvdb", "tmdb"):
+        data["metadata_source"] = "tvdb"
+    new = UserSettings(**data)
+    save_user_settings(new)
+    return {"ok": True}
+
+
+# ---- Browse ----------------------------------------------------------------
+
+def _safe_under_root(path: str, must_exist: bool = True) -> Path:
+    p = Path(path).resolve()
+    root = MEDIA_ROOT.resolve()
+    if not (p == root or root in p.parents):
+        raise HTTPException(status_code=400, detail="Path outside MEDIA_ROOT")
+    if must_exist and not p.exists():
+        # Endpoints that read live files still raise; the new "forget" endpoints
+        # opt out via must_exist=False.
+        pass
+    return p
+
+
+@router.get("/browse")
+async def browse(path: Optional[str] = None):
+    p = _safe_under_root(path) if path else MEDIA_ROOT
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    items = []
+    if p.is_dir():
+        for f in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+            if f.name.startswith("."):
+                continue
+            items.append({
+                "name": f.name,
+                "path": str(f),
+                "is_dir": f.is_dir(),
+                "size": f.stat().st_size if f.is_file() else None,
+            })
+    return {"path": str(p), "parent": str(p.parent) if p != MEDIA_ROOT else None, "items": items}
+
+
+# ---- Libraries -------------------------------------------------------------
+
+@router.post("/libraries/detect")
+async def libraries_detect():
+    libs = scanner.detect_libraries()
+    return {"libraries": libs}
+
+
+@router.get("/libraries")
+async def libraries_list():
+    libs = [dict(r) for r in db.list_libraries()]
+    return {"libraries": libs}
+
+
+class LibraryUpdate(BaseModel):
+    kind: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+@router.post("/libraries/{name}")
+async def libraries_update(name: str, body: LibraryUpdate):
+    if body.kind:
+        db.set_library_kind(name, body.kind)
+    if body.enabled is not None:
+        db.set_library_enabled(name, body.enabled)
+    return {"ok": True}
+
+
+@router.post("/libraries/{name}/scan")
+async def library_scan(name: str, background: BackgroundTasks):
+    def _run():
+        try:
+            scanner.scan_library(name)
+        except Exception as e:
+            logger.exception("Library scan failed: {}", e)
+    background.add_task(_run)
+    return {"ok": True, "scheduled": True}
+
+
+# ---- Items -----------------------------------------------------------------
+
+@router.get("/items")
+async def items_list(library: Optional[str] = None,
+                     status: Optional[str] = None,
+                     q: Optional[str] = None,
+                     hide_organized: bool = False):
+    statuses = status.split(",") if status else None
+    rows = db.list_item_state(library=library, statuses=statuses, title_q=q)
+    out = []
+    for r in rows:
+        d = dict(r)
+        if hide_organized and d.get("nfo_status") == "complete":
+            continue
+        out.append(d)
+    return {"items": out}
+
+
+class ItemRemoveIn(BaseModel):
+    folder_path: str
+
+
+@router.post("/items/remove")
+async def items_remove(payload: ItemRemoveIn):
+    """Forget an item from the database.
+
+    Removes the row from item_state plus all related bindings, artwork
+    selections, episode overrides, and legacy active_artwork entries. Files on
+    disk are never touched. Use this for folders you have already deleted on
+    disk so they stop appearing in the library.
+    """
+    p = _safe_under_root(payload.folder_path, must_exist=False)
+    n = db.delete_item_state(str(p))
+    return {"ok": True, "removed": n}
+
+
+class ItemsPruneIn(BaseModel):
+    library: Optional[str] = None
+    dry_run: bool = False
+
+
+@router.post("/items/prune")
+async def items_prune(payload: ItemsPruneIn):
+    """Find every tracked folder whose path no longer exists on disk and forget it.
+
+    Pass `dry_run=true` to preview which folders would be removed.
+    """
+    rows = db.list_item_state(library=payload.library)
+    missing: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        fp = d.get("folder_path")
+        if not fp:
+            continue
+        if not Path(fp).exists():
+            missing.append({
+                "folder_path": fp,
+                "library": d.get("library"),
+                "title": d.get("title"),
+            })
+    removed = 0
+    if not payload.dry_run:
+        for m in missing:
+            removed += db.delete_item_state(m["folder_path"])
+    return {
+        "ok": True,
+        "checked": len(rows),
+        "missing": len(missing),
+        "removed": removed,
+        "items": missing,
+    }
+
+
+@router.get("/items/detail")
+async def item_detail(path: str):
+    p = _safe_under_root(path)
+    binding = db.get_binding(str(p))
+    state_rows = db.list_item_state()
+    state = next((dict(r) for r in state_rows if r["folder_path"] == str(p)), None)
+    overrides = db.get_nfo_overrides(str(p))
+    # List the canonical artwork files Plex expects in the folder root.
+    canonical_files = []
+    for name in ("poster.jpg", "background.jpg", "banner.jpg", "clearlogo.png"):
+        if (p / name).exists():
+            canonical_files.append(str(p / name))
+    for child in sorted(p.glob("Season*-poster.jpg")):
+        canonical_files.append(str(child))
+
+    # Provider-aware matched-episode count (best effort — never fails the request).
+    provider_episode_count: Optional[int] = None
+    provider_used: Optional[str] = None
+    if binding and binding["kind"] == "series":
+        try:
+            settings = get_user_settings()
+            lang = binding["language"] or settings.preferred_language
+            provider = (binding["provider"] or "tvdb").lower()
+            provider_used = provider
+            # Build the set of (season, episode) pairs that exist locally.
+            local_keys: set[tuple[int, int]] = set()
+            for sd in detect_season_dirs(p):
+                snum = season_number_from_dir(sd.name)
+                for parsed in list_season_episodes(sd):
+                    local_keys.add((int(snum), int(parsed.episode)))
+            if not local_keys:
+                provider_episode_count = 0
+            elif provider == "tmdb":
+                tmdb_c = get_tmdb_client()
+                seasons_needed = sorted({s for s, _ in local_keys})
+                matched = 0
+                for snum in seasons_needed:
+                    try:
+                        sdata = await tmdb_c.tv_season(binding["external_id"], snum, language=lang)
+                    except Exception as e:
+                        logger.debug("item_detail tmdb tv_season {}/{}: {}",
+                                     binding["external_id"], snum, e)
+                        continue
+                    nums = {
+                        int(ep["episode_number"])
+                        for ep in (sdata.get("episodes") or [])
+                        if ep.get("episode_number") is not None
+                    }
+                    for ls, le in local_keys:
+                        if ls == snum and le in nums:
+                            matched += 1
+                provider_episode_count = matched
+            else:
+                # TVDB
+                tvdb_c = get_client()
+                episodes = await tvdb_c.series_episodes(
+                    binding["external_id"], season_type="default", language=lang
+                )
+                overrides_ep = db.get_episode_overrides(str(p))
+                tvdb_keys: set[tuple[int, int]] = set()
+                for ep in episodes:
+                    sn = ep.get("seasonNumber")
+                    en = ep.get("number")
+                    if sn is None or en is None:
+                        continue
+                    tvdb_keys.add((int(sn), int(en)))
+                tvdb_ids = {
+                    str(ep["id"]) for ep in episodes if ep.get("id") is not None
+                }
+                matched = 0
+                for key in local_keys:
+                    override_id = overrides_ep.get(key)
+                    if override_id and str(override_id) in tvdb_ids:
+                        matched += 1
+                    elif key in tvdb_keys:
+                        matched += 1
+                provider_episode_count = matched
+        except Exception as e:
+            logger.debug("item_detail provider episode count failed for {}: {}", p, e)
+
+    return {
+        "path": str(p),
+        "binding": dict(binding) if binding else None,
+        "state": state,
+        "artwork_files": canonical_files,
+        "overrides": overrides,
+        "provider_episode_count": provider_episode_count,
+        "provider_used": provider_used,
+    }
+
+
+# ---- Matching --------------------------------------------------------------
+
+@router.get("/match/search")
+async def match_search(q: str, type: str = "series", year: Optional[int] = None,
+                        language: Optional[str] = None,
+                        provider: Optional[str] = None):
+    return {
+        "results": await matcher.manual_search(q, type_=type, year=year, language=language,
+                                                provider=provider),
+        "provider": provider or get_user_settings().metadata_source or "tvdb",
+    }
+
+
+class BindIn(BaseModel):
+    folder_path: str
+    kind: str  # series | movie
+    provider: str = "tvdb"
+    external_id: str
+    title: Optional[str] = None
+    year: Optional[int] = None
+    language: Optional[str] = None
+    # When true (default for manual bindings) the binding is locked so
+    # auto-match cannot silently replace it later.
+    lock_source: Optional[bool] = True
+
+
+@router.post("/match/bind")
+async def match_bind(payload: BindIn):
+    p = _safe_under_root(payload.folder_path)
+    if payload.provider not in ("tvdb", "tmdb"):
+        raise HTTPException(status_code=400, detail="provider must be 'tvdb' or 'tmdb'")
+    db.upsert_binding(str(p), payload.kind, payload.provider, payload.external_id,
+                      title=payload.title, year=payload.year, language=payload.language,
+                      source_locked=bool(payload.lock_source))
+    # Refresh item_state so the library view reflects the new binding immediately.
+    try:
+        if payload.kind == "movie":
+            scanner.scan_movie_folder(p, library=p.parent.name)
+        else:
+            scanner.scan_series_folder(p, library=p.parent.name)
+    except Exception as e:
+        logger.warning("post-bind rescan of {} failed: {}", p, e)
+    try:
+        sidecar_svc.write_sidecar(p)
+    except Exception as e:
+        logger.warning("sidecar after bind {}: {}", p, e)
+    return {"ok": True}
+
+
+class SourceIn(BaseModel):
+    folder_path: str
+    provider: str             # 'tvdb' | 'tmdb'
+    external_id: Optional[str] = None
+    locked: bool = True
+    kind: Optional[str] = None
+    title: Optional[str] = None
+    year: Optional[int] = None
+
+
+@router.post("/match/source")
+async def match_set_source(payload: SourceIn):
+    """Switch the metadata provider for a single folder, optionally locking it.
+
+    If `external_id` is omitted, the existing binding's id is reused (so the
+    user can simply toggle the lock without re-searching).
+    """
+    if payload.provider not in ("tvdb", "tmdb"):
+        raise HTTPException(status_code=400, detail="provider must be 'tvdb' or 'tmdb'")
+    p = _safe_under_root(payload.folder_path)
+    existing = db.get_binding(str(p))
+    eid = payload.external_id or (existing["external_id"] if existing else None)
+    if not eid:
+        raise HTTPException(
+            status_code=400,
+            detail="external_id required (no existing binding to reuse)",
+        )
+    db.set_binding_provider(
+        str(p), payload.provider, str(eid),
+        locked=bool(payload.locked),
+        kind=payload.kind,
+        title=payload.title,
+        year=payload.year,
+    )
+    try:
+        kind = (payload.kind or (existing["kind"] if existing else "series"))
+        if kind == "movie":
+            scanner.scan_movie_folder(p, library=p.parent.name)
+        else:
+            scanner.scan_series_folder(p, library=p.parent.name)
+    except Exception as e:
+        logger.warning("post-source rescan failed for {}: {}", p, e)
+    try:
+        sidecar_svc.write_sidecar(p)
+    except Exception as e:
+        logger.warning("sidecar after source change {}: {}", p, e)
+    return {"ok": True}
+
+
+@router.post("/match/unbind")
+async def match_unbind(folder_path: str):
+    p = _safe_under_root(folder_path)
+    db.delete_binding(str(p))
+    try:
+        sidecar_svc.write_sidecar(p)
+    except Exception as e:
+        logger.warning("sidecar after unbind {}: {}", p, e)
+    return {"ok": True}
+
+
+# ---- NFO field overrides (v0.5.3) ------------------------------------------
+
+_ALLOWED_OVR_FIELDS = {"title", "sorttitle", "plot", "tagline", "originaltitle"}
+_OVR_SCOPE_RE = re.compile(r"^(series|movie|season-\d{2}|episode-[A-Za-z0-9_\-]+)$")
+
+
+@router.get("/overrides")
+async def overrides_get(path: str):
+    p = _safe_under_root(path)
+    return {"path": str(p), "overrides": db.get_nfo_overrides(str(p))}
+
+
+class OverrideIn(BaseModel):
+    folder_path: str
+    scope: str               # 'series' | 'movie' | 'season-NN' | 'episode-<id>'
+    field: str               # 'title' | 'sorttitle' | 'plot' | 'tagline' | 'originaltitle'
+    value: Optional[str] = None  # null/"" clears
+
+
+@router.post("/overrides")
+async def overrides_set(payload: OverrideIn):
+    p = _safe_under_root(payload.folder_path)
+    if payload.field not in _ALLOWED_OVR_FIELDS:
+        raise HTTPException(status_code=400, detail=f"field must be one of {sorted(_ALLOWED_OVR_FIELDS)}")
+    if not _OVR_SCOPE_RE.match(payload.scope or ""):
+        raise HTTPException(status_code=400, detail="invalid scope")
+    db.set_nfo_override(str(p), payload.scope, payload.field, payload.value)
+    try:
+        sidecar_svc.write_sidecar(p)
+    except Exception as e:
+        logger.warning("sidecar after override {}: {}", p, e)
+    return {"ok": True}
+
+
+class OverrideClearIn(BaseModel):
+    folder_path: str
+    scope: Optional[str] = None
+    field: Optional[str] = None
+
+
+@router.post("/overrides/clear")
+async def overrides_clear(payload: OverrideClearIn):
+    p = _safe_under_root(payload.folder_path)
+    n = db.clear_nfo_override(str(p), scope=payload.scope, field=payload.field)
+    try:
+        sidecar_svc.write_sidecar(p)
+    except Exception as e:
+        logger.warning("sidecar after clear {}: {}", p, e)
+    return {"ok": True, "cleared": n}
+
+
+# ---- Build -----------------------------------------------------------------
+
+class BuildIn(BaseModel):
+    folder_path: str
+    kind: Optional[str] = None  # series | movie (autodetected if omitted)
+    force: bool = False
+    language: Optional[str] = None
+
+
+def _detect_kind(p: Path) -> str:
+    lib_name = p.parent.name
+    rows = db.list_libraries()
+    lib_kind = next((r["kind"] for r in rows if r["name"] == lib_name), "tv")
+    return "movie" if lib_kind == "movies" else "series"
+
+
+@router.post("/build")
+async def build_endpoint(payload: BuildIn):
+    p = _safe_under_root(payload.folder_path)
+    kind = payload.kind or _detect_kind(p)
+    job_id = build_svc.start_build(p, kind, force=payload.force, language=payload.language)
+    return {"ok": True, "job": job_id}
+
+
+# ---- Bulk ------------------------------------------------------------------
+
+class BulkIn(BaseModel):
+    folder_paths: Optional[list[str]] = None
+    library: Optional[str] = None
+    only_unmatched: bool = False
+    only_unbuilt: bool = False
+    force: bool = False
+    language: Optional[str] = None
+
+
+def _filter_locked(paths: list[Path]) -> list[Path]:
+    """Drop folders whose binding is source_locked=1 (auto-match must skip them)."""
+    out: list[Path] = []
+    for p in paths:
+        b = db.get_binding(str(p))
+        if b and int(b["source_locked"] or 0) == 1:
+            logger.info("auto-match skipping {} (source_locked)", p)
+            continue
+        out.append(p)
+    return out
+
+
+def _resolve_bulk_paths(payload: BulkIn) -> list[Path]:
+    paths: list[Path] = []
+    if payload.folder_paths:
+        for fp in payload.folder_paths:
+            paths.append(_safe_under_root(fp))
+    elif payload.library:
+        rows = db.list_item_state(library=payload.library)
+        for r in rows:
+            d = dict(r)
+            if payload.only_unmatched and d.get("external_id"):
+                continue
+            if payload.only_unbuilt and d.get("nfo_status") == "complete":
+                continue
+            try:
+                paths.append(_safe_under_root(d["folder_path"]))
+            except HTTPException:
+                continue
+    else:
+        raise HTTPException(status_code=400, detail="Provide folder_paths or library")
+    return paths
+
+
+@router.post("/match/auto-bulk")
+async def match_auto_bulk(payload: BulkIn):
+    paths = _filter_locked(_resolve_bulk_paths(payload))
+    settings = get_user_settings()
+    lang = payload.language or settings.preferred_language
+    source = (settings.metadata_source or "tvdb").lower()
+
+    async def _run_one(p: Path) -> dict:
+        kind = _detect_kind(p)
+        try:
+            if source == "tmdb":
+                if kind == "series":
+                    data = await matcher.auto_match_series_tmdb(
+                        p, language=lang, threshold=settings.auto_match_threshold)
+                else:
+                    data = await matcher.auto_match_movie_tmdb(
+                        p, language=lang, threshold=settings.auto_match_threshold)
+            else:
+                if kind == "series":
+                    data = await matcher.auto_match_series(
+                        p, language=lang, threshold=settings.auto_match_threshold)
+                else:
+                    data = await matcher.auto_match_movie(
+                        p, language=lang, threshold=settings.auto_match_threshold)
+            # After a successful match the binding is written by the matcher.
+            # Re-scan the folder so item_state.external_id / provider / nfo_status
+            # reflect the new binding and the UI stops showing "unmatched".
+            if data:
+                try:
+                    if kind == "series":
+                        scanner.scan_series_folder(p, library=p.parent.name)
+                    else:
+                        scanner.scan_movie_folder(p, library=p.parent.name)
+                except Exception as se:
+                    logger.warning("post-match rescan of {} failed: {}", p, se)
+                try:
+                    sidecar_svc.write_sidecar(p)
+                except Exception as se:
+                    logger.warning("sidecar after auto-match {}: {}", p, se)
+            name = data.get("name") or data.get("title") if data else None
+            return {
+                "folder_path": str(p), "kind": kind,
+                "matched": bool(data),
+                "provider": source if data else None,
+                "external_id": str(data.get("id")) if data else None,
+                "title": name,
+            }
+        except Exception as e:
+            logger.exception("auto-match {} failed: {}", p, e)
+            return {"folder_path": str(p), "kind": kind, "matched": False, "error": str(e)}
+
+    # Limit concurrency so we do not pummel TVDB.
+    sem = asyncio.Semaphore(4)
+
+    async def _bounded(p: Path) -> dict:
+        async with sem:
+            return await _run_one(p)
+
+    results = await asyncio.gather(*[_bounded(p) for p in paths])
+    matched = sum(1 for r in results if r.get("matched"))
+    return {"ok": True, "total": len(results), "matched": matched, "results": results}
+
+
+@router.post("/build/bulk")
+async def build_bulk(payload: BulkIn):
+    paths = _resolve_bulk_paths(payload)
+    jobs: list[dict] = []
+    for p in paths:
+        kind = _detect_kind(p)
+        jid = build_svc.start_build(p, kind, force=payload.force, language=payload.language)
+        jobs.append({"folder_path": str(p), "kind": kind, "job": jid})
+    return {"ok": True, "queued": len(jobs), "jobs": jobs}
+
+
+@router.get("/jobs")
+async def jobs_list():
+    return {"jobs": build_svc.list_jobs()}
+
+
+@router.get("/jobs/{job_id}")
+async def jobs_get(job_id: str):
+    j = build_svc.get_job(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return j
+
+
+@router.get("/jobs/{job_id}/log")
+async def jobs_log(job_id: str):
+    p = LOG_DIR / "jobs" / f"{job_id}.log"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="No log")
+    return FileResponse(p, media_type="text/plain")
+
+
+# ---- Artwork ---------------------------------------------------------------
+
+@router.get("/artwork/file")
+async def artwork_file(path: str):
+    p = _safe_under_root(path)
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(p)
+
+
+# ---- Artwork picker (v0.4.0) -----------------------------------------------
+
+def _tag_provider(items: list[dict], provider: str) -> list[dict]:
+    out = []
+    for it in items:
+        d = dict(it)
+        d.setdefault("provider", provider)
+        out.append(d)
+    return out
+
+
+def _custom_candidates(folder_path: str) -> list[dict]:
+    rows = db.list_custom_artwork(folder_path)
+    out: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        if d["source"] == "upload":
+            url = f"/api/artwork/custom/{d['id']}"
+        else:
+            url = d["file_path"]  # remote URL
+        out.append({
+            "id": d["id"],
+            "url": url,
+            "thumb": url,
+            "language": None,
+            "score": 0,
+            "type": None,
+            "seasonNumber": None,
+            "provider": "custom",
+            "origin": d.get("origin"),
+            "slot": d.get("slot"),
+            "source": d["source"],
+        })
+    return out
+
+
+@router.get("/artwork/candidates")
+async def artwork_candidates(path: str, kind: str = "series"):
+    """Aggregate artwork candidates across TVDB, TMDB, fanart.tv, and the user's
+    own custom uploads/URLs, grouped by slot.
+
+    Each candidate carries a `provider` field so the UI can filter.
+    """
+    p = _safe_under_root(path)
+    binding = db.get_binding(str(p))
+    if not binding:
+        raise HTTPException(status_code=400, detail="Folder is not bound to a metadata entity yet")
+    settings = get_user_settings()
+    prefer = [settings.preferred_language, *settings.fallback_languages]
+    selections = db.get_artwork_selections(str(p))
+    slots: dict[str, list[dict]] = {}
+
+    def _extend(slot: str, items: list[dict]) -> None:
+        if not items:
+            return
+        slots.setdefault(slot, []).extend(items)
+
+    tvdb_id_for_fanart: Optional[str] = None
+    tmdb_id_for_fanart: Optional[str] = None
+    imdb_id_for_fanart: Optional[str] = None
+
+    # ---- Primary provider --------------------------------------------------
+    if binding["provider"] == "tvdb":
+        client = get_client()
+        tvdb_id_for_fanart = str(binding["external_id"])
+        if kind == "movie":
+            data = await client.movie_extended(binding["external_id"])
+            artworks = data.get("artworks") or []
+            _extend("poster", _tag_provider(artwork_svc.list_candidates(artworks, artwork_svc.MOVIE_POSTER, prefer), "tvdb"))
+            _extend("background", _tag_provider(artwork_svc.list_candidates(artworks, artwork_svc.MOVIE_BACKGROUND, prefer), "tvdb"))
+            _extend("banner", _tag_provider(artwork_svc.list_candidates(artworks, artwork_svc.MOVIE_BANNER, prefer), "tvdb"))
+            for rm in (data.get("remoteIds") or []):
+                if isinstance(rm, dict):
+                    src = (rm.get("sourceName") or "").lower()
+                    if "tmdb" in src or "moviedb" in src:
+                        tmdb_id_for_fanart = str(rm.get("id") or "")
+                    elif "imdb" in src:
+                        imdb_id_for_fanart = str(rm.get("id") or "")
+        else:
+            data = await client.series_extended(binding["external_id"])
+            artworks = data.get("artworks") or []
+            _extend("poster", _tag_provider(artwork_svc.list_candidates(artworks, artwork_svc.SERIES_POSTER, prefer), "tvdb"))
+            _extend("background", _tag_provider(artwork_svc.list_candidates(artworks, artwork_svc.SERIES_BACKGROUND, prefer), "tvdb"))
+            _extend("banner", _tag_provider(artwork_svc.list_candidates(artworks, artwork_svc.SERIES_BANNER, prefer), "tvdb"))
+            _extend("clearlogo", _tag_provider(artwork_svc.list_candidates(artworks, artwork_svc.SERIES_CLEARLOGO, prefer), "tvdb"))
+            for rm in (data.get("remoteIds") or []):
+                if isinstance(rm, dict):
+                    src = (rm.get("sourceName") or "").lower()
+                    if "tmdb" in src or "moviedb" in src:
+                        tmdb_id_for_fanart = str(rm.get("id") or "")
+                    elif "imdb" in src:
+                        imdb_id_for_fanart = str(rm.get("id") or "")
+            seasons = data.get("seasons") or []
+            season_numbers: list[int] = []
+            for s in seasons:
+                if isinstance(s, dict) and s.get("number") is not None:
+                    try:
+                        season_numbers.append(int(s["number"]))
+                    except Exception:
+                        pass
+            for sn in sorted(set(n for n in season_numbers if n >= 0)):
+                cands = artwork_svc.list_candidates(
+                    artworks, artwork_svc.SEASON_POSTER, prefer,
+                    season_number=sn, series=data,
+                )
+                if cands:
+                    _extend(f"season-{sn:02d}-poster", _tag_provider(cands, "tvdb"))
+    else:  # tmdb-bound
+        if kind == "movie":
+            tmdb_id_for_fanart = str(binding["external_id"])
+            try:
+                tc = get_tmdb_client()
+                imgs = await tc.movie_images(binding["external_id"])
+                details = await tc.movie_details(binding["external_id"])
+                if isinstance(details, dict) and details.get("imdb_id"):
+                    imdb_id_for_fanart = details["imdb_id"]
+                _extend("poster", _tag_provider(_tmdb_to_candidates(imgs.get("posters") or []), "tmdb"))
+                _extend("background", _tag_provider(_tmdb_to_candidates(imgs.get("backdrops") or []), "tmdb"))
+                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(imgs.get("logos") or []), "tmdb"))
+            except Exception as e:
+                logger.warning("TMDB images failed: {}", e)
+        else:
+            try:
+                tc = get_tmdb_client()
+                details = await tc.tv_details(binding["external_id"])
+                imgs = await tc.tv_images(binding["external_id"])
+                ext = details.get("external_ids") or {}
+                tvdb_id_for_fanart = str(ext.get("tvdb_id") or "") or None
+                imdb_id_for_fanart = str(ext.get("imdb_id") or "") or None
+                _extend("poster", _tag_provider(_tmdb_to_candidates(imgs.get("posters") or []), "tmdb"))
+                _extend("background", _tag_provider(_tmdb_to_candidates(imgs.get("backdrops") or []), "tmdb"))
+                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(imgs.get("logos") or []), "tmdb"))
+                seasons = details.get("seasons") or []
+                for s in seasons:
+                    if not isinstance(s, dict):
+                        continue
+                    sn = s.get("season_number")
+                    if sn is None or int(sn) < 0:
+                        continue
+                    try:
+                        season_imgs = await tc.tv_season_images(binding["external_id"], int(sn))
+                        cands = _tmdb_to_candidates(season_imgs.get("posters") or [], season_number=int(sn))
+                        if cands:
+                            _extend(f"season-{int(sn):02d}-poster", _tag_provider(cands, "tmdb"))
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.warning("TMDB tv images failed: {}", e)
+
+    # ---- TMDB as supplement when TVDB is primary ---------------------------
+    if (binding["provider"] == "tvdb" and settings.tmdb_artwork_enabled
+            and effective_tmdb_credentials() and tmdb_id_for_fanart):
+        try:
+            tc = get_tmdb_client()
+            if kind == "movie":
+                imgs = await tc.movie_images(tmdb_id_for_fanart)
+                _extend("poster", _tag_provider(_tmdb_to_candidates(imgs.get("posters") or []), "tmdb"))
+                _extend("background", _tag_provider(_tmdb_to_candidates(imgs.get("backdrops") or []), "tmdb"))
+                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(imgs.get("logos") or []), "tmdb"))
+            else:
+                imgs = await tc.tv_images(tmdb_id_for_fanart)
+                _extend("poster", _tag_provider(_tmdb_to_candidates(imgs.get("posters") or []), "tmdb"))
+                _extend("background", _tag_provider(_tmdb_to_candidates(imgs.get("backdrops") or []), "tmdb"))
+                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(imgs.get("logos") or []), "tmdb"))
+                # Per-season posters from TMDB (supplement TVDB primary)
+                try:
+                    tmdb_details = await tc.tv_details(tmdb_id_for_fanart)
+                    tmdb_seasons = tmdb_details.get("seasons") or []
+                except Exception as e:
+                    logger.debug("TMDB tv_details for season posters failed: {}", e)
+                    tmdb_seasons = []
+                for s in tmdb_seasons:
+                    if not isinstance(s, dict):
+                        continue
+                    sn = s.get("season_number")
+                    if sn is None:
+                        continue
+                    try:
+                        sn_int = int(sn)
+                    except Exception:
+                        continue
+                    if sn_int < 0:
+                        continue
+                    try:
+                        season_imgs = await tc.tv_season_images(tmdb_id_for_fanart, sn_int)
+                        cands = _tmdb_to_candidates(season_imgs.get("posters") or [], season_number=sn_int)
+                        if cands:
+                            _extend(f"season-{sn_int:02d}-poster", _tag_provider(cands, "tmdb"))
+                    except Exception as e:
+                        logger.debug("TMDB season {} images failed: {}", sn_int, e)
+                        continue
+        except Exception as e:
+            logger.debug("TMDB supplement failed: {}", e)
+
+    # ---- fanart.tv ---------------------------------------------------------
+    if settings.fanart_enabled and effective_fanart_credentials():
+        try:
+            fc = fanart_svc.get_client()
+            if kind == "movie":
+                ident = tmdb_id_for_fanart or imdb_id_for_fanart
+                if ident:
+                    fa = await fc.movie(ident)
+                    norm = fanart_svc.normalise_movie_artwork(fa)
+                    for slot, items in norm.items():
+                        _extend(slot, items)
+            else:
+                if tvdb_id_for_fanart:
+                    fa = await fc.series(tvdb_id_for_fanart)
+                    norm = fanart_svc.normalise_series_artwork(fa)
+                    for slot, items in norm.items():
+                        _extend(slot, items)
+        except Exception as e:
+            logger.debug("fanart.tv lookup failed: {}", e)
+
+    # ---- Custom (user uploads + URLs) -------------------------------------
+    custom = _custom_candidates(str(p))
+    if custom:
+        # Custom candidates apply to every slot the user might want — duplicate
+        # them into the standard slots and into per-season-poster slots when
+        # the user tagged a slot.
+        all_slot_names = set(slots.keys()) | {"poster", "background", "banner", "clearlogo", "clearart"}
+        for c in custom:
+            target_slots: list[str]
+            if c.get("slot"):
+                target_slots = [c["slot"]]
+            else:
+                target_slots = list(all_slot_names)
+            for s in target_slots:
+                _extend(s, [c])
+
+    # Sort each slot: prefer-language first, then score, with provider as a
+    # mild secondary preference (TMDB after TVDB-tied, fanart, custom on top).
+    provider_rank = {"custom": 0, "tvdb": 1, "tmdb": 2, "fanart": 3}
+    for slot, items in slots.items():
+        items.sort(key=lambda c: (
+            provider_rank.get(c.get("provider", ""), 9),
+            -(c.get("score") or 0),
+            (0 if (c.get("language") in (settings.preferred_language, *settings.fallback_languages)) else 1),
+        ))
+
+    return {
+        "path": str(p),
+        "kind": kind,
+        "slots": slots,
+        "selections": selections,
+        "binding_provider": binding["provider"],
+    }
+
+
+def _tmdb_to_candidates(images: list[dict], season_number: Optional[int] = None) -> list[dict]:
+    out: list[dict] = []
+    for im in images or []:
+        if not isinstance(im, dict):
+            continue
+        fp = im.get("file_path")
+        if not fp:
+            continue
+        url = tmdb_image_url(fp, "original")
+        thumb = tmdb_image_url(fp, "w342")
+        out.append({
+            "id": None,
+            "url": url,
+            "thumb": thumb or url,
+            "language": im.get("iso_639_1") or None,
+            "score": int(round((im.get("vote_average") or 0) * 10)),
+            "type": None,
+            "seasonNumber": season_number,
+            "provider": "tmdb",
+        })
+    return out
+
+
+class ArtworkSelectIn(BaseModel):
+    folder_path: str
+    slot: str
+    url: str
+    language: Optional[str] = None
+    score: Optional[int] = None
+
+
+@router.post("/artwork/select")
+async def artwork_select(payload: ArtworkSelectIn):
+    p = _safe_under_root(payload.folder_path)
+    db.set_artwork_selection(str(p), payload.slot, payload.url,
+                             language=payload.language, score=payload.score)
+    return {"ok": True}
+
+
+class ArtworkClearIn(BaseModel):
+    folder_path: str
+    slot: Optional[str] = None
+
+
+@router.post("/artwork/clear")
+async def artwork_clear(payload: ArtworkClearIn):
+    p = _safe_under_root(payload.folder_path)
+    n = db.clear_artwork_selection(str(p), slot=payload.slot)
+    return {"ok": True, "cleared": n}
+
+
+# ---- Custom artwork (uploads + remote URLs) --------------------------------
+
+_ALLOWED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
+_ALLOWED_IMAGE_TYPES = {
+    "image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp", "image/tiff",
+}
+
+
+def _ext_from_content_type(ct: Optional[str]) -> str:
+    m = {
+        "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
+        "image/webp": ".webp", "image/gif": ".gif", "image/bmp": ".bmp",
+        "image/tiff": ".tiff",
+    }
+    return m.get((ct or "").lower(), ".jpg")
+
+
+@router.post("/artwork/upload")
+async def artwork_upload(
+    folder_path: str = Form(...),
+    slot: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+):
+    """Upload an image file as custom artwork for the given folder."""
+    p = _safe_under_root(folder_path)
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(raw) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+    ct = (file.content_type or "").lower()
+    name = (file.filename or "upload").strip()
+    ext = Path(name).suffix.lower()
+    if ct and ct not in _ALLOWED_IMAGE_TYPES and ext not in _ALLOWED_IMAGE_EXTS:
+        raise HTTPException(status_code=400, detail=f"Unsupported image type: {ct or ext}")
+    if not ext or ext not in _ALLOWED_IMAGE_EXTS:
+        ext = _ext_from_content_type(ct)
+    art_id = hashlib.sha1(raw + str(p).encode("utf-8")).hexdigest()
+    CUSTOM_ARTWORK_DIR.mkdir(parents=True, exist_ok=True)
+    dest = CUSTOM_ARTWORK_DIR / f"{art_id}{ext}"
+    try:
+        dest.write_bytes(raw)
+    except Exception as e:
+        logger.exception("Failed to write custom artwork: {}", e)
+        raise HTTPException(status_code=500, detail="Failed to save upload")
+    db.add_custom_artwork(
+        art_id,
+        folder_path=str(p),
+        slot=slot or None,
+        source="upload",
+        origin=name,
+        file_path=str(dest),
+        content_type=ct or None,
+        size=len(raw),
+    )
+    return {
+        "ok": True,
+        "id": art_id,
+        "url": f"/api/artwork/custom/{art_id}",
+        "slot": slot,
+        "origin": name,
+        "size": len(raw),
+    }
+
+
+class ArtworkUrlIn(BaseModel):
+    folder_path: str
+    url: str
+    slot: Optional[str] = None
+
+
+@router.post("/artwork/custom-url")
+async def artwork_custom_url(payload: ArtworkUrlIn):
+    """Register a remote image URL as a custom artwork candidate."""
+    p = _safe_under_root(payload.folder_path)
+    url = (payload.url or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="URL must be http(s)")
+    art_id = hashlib.sha1(f"{p}|{url}".encode("utf-8")).hexdigest()
+    db.add_custom_artwork(
+        art_id,
+        folder_path=str(p),
+        slot=payload.slot or None,
+        source="url",
+        origin=url,
+        file_path=url,
+        content_type=None,
+        size=None,
+    )
+    return {
+        "ok": True,
+        "id": art_id,
+        "url": url,
+        "slot": payload.slot,
+    }
+
+
+@router.get("/artwork/custom/{art_id}")
+async def artwork_custom_get(art_id: str):
+    row = db.get_custom_artwork(art_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    d = dict(row)
+    if d.get("source") != "upload":
+        raise HTTPException(status_code=400, detail="Not an uploaded asset; URL is already public")
+    fp = Path(d.get("file_path") or "")
+    if not fp.exists() or not fp.is_file():
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    return FileResponse(fp, media_type=d.get("content_type") or "image/jpeg")
+
+
+@router.delete("/artwork/custom/{art_id}")
+async def artwork_custom_delete(art_id: str):
+    row = db.get_custom_artwork(art_id)
+    if not row:
+        return {"ok": True, "deleted": 0}
+    d = dict(row)
+    if d.get("source") == "upload":
+        fp = Path(d.get("file_path") or "")
+        if fp.exists() and fp.is_file():
+            try:
+                fp.unlink()
+            except Exception as e:
+                logger.warning("Could not delete custom artwork file {}: {}", fp, e)
+    n = db.delete_custom_artwork(art_id)
+    return {"ok": True, "deleted": n}
+
+
+@router.get("/artwork/custom")
+async def artwork_custom_list(folder_path: str):
+    p = _safe_under_root(folder_path)
+    rows = db.list_custom_artwork(str(p))
+    return {"items": [dict(r) for r in rows]}
+
+
+# ---- Episode mapper (v0.4.0) -----------------------------------------------
+
+@router.get("/episodes")
+async def episodes_list(path: str):
+    """Return local episode files alongside their current TVDB match (with overrides applied)
+    plus the full TVDB episode list for the bound series so the UI can populate dropdowns.
+    """
+    p = _safe_under_root(path)
+    binding = db.get_binding(str(p))
+    if not binding or binding["kind"] != "series":
+        raise HTTPException(status_code=400, detail="Folder is not bound to a TVDB series")
+    settings = get_user_settings()
+    lang = settings.preferred_language
+    client = get_client()
+    episodes = await client.series_episodes(binding["external_id"], season_type="default", language=lang)
+    by_se: dict[tuple[int, int], dict] = {}
+    by_id: dict[str, dict] = {}
+    for ep in episodes:
+        if ep.get("id") is not None:
+            by_id[str(ep["id"])] = ep
+        sn = ep.get("seasonNumber")
+        en = ep.get("number")
+        if sn is None or en is None:
+            continue
+        by_se[(int(sn), int(en))] = ep
+    overrides = db.get_episode_overrides(str(p))
+
+    locals_out: list[dict] = []
+    for sd in detect_season_dirs(p):
+        snum = season_number_from_dir(sd.name)
+        for parsed in list_season_episodes(sd):
+            key = (int(snum), int(parsed.episode))
+            override_id = overrides.get(key)
+            matched = None
+            if override_id and str(override_id) in by_id:
+                matched = by_id[str(override_id)]
+            elif key in by_se:
+                matched = by_se[key]
+            locals_out.append({
+                "file_path": str(parsed.path),
+                "file_name": parsed.path.name,
+                "parsed_season": int(snum),
+                "parsed_episode": int(parsed.episode),
+                "override_episode_id": str(override_id) if override_id else None,
+                "matched_episode_id": str(matched["id"]) if matched else None,
+                "matched_season": matched.get("seasonNumber") if matched else None,
+                "matched_number": matched.get("number") if matched else None,
+                "matched_title": matched.get("name") if matched else None,
+            })
+
+    tvdb_eps = [
+        {
+            "id": str(ep.get("id")),
+            "season": ep.get("seasonNumber"),
+            "number": ep.get("number"),
+            "name": ep.get("name"),
+            "aired": ep.get("aired"),
+            "image": ep.get("image"),
+        }
+        for ep in episodes
+        if ep.get("id") is not None
+    ]
+    tvdb_eps.sort(key=lambda e: ((e["season"] if e["season"] is not None else 99), (e["number"] or 0)))
+    return {"path": str(p), "locals": locals_out, "tvdb_episodes": tvdb_eps}
+
+
+class EpisodeOverrideIn(BaseModel):
+    folder_path: str
+    season: int
+    episode: int
+    tvdb_episode_id: Optional[str] = None  # null clears
+
+
+@router.post("/episodes/override")
+async def episodes_override(payload: EpisodeOverrideIn):
+    p = _safe_under_root(payload.folder_path)
+    if payload.tvdb_episode_id:
+        db.set_episode_override(str(p), payload.season, payload.episode, payload.tvdb_episode_id)
+    else:
+        db.clear_episode_override(str(p), payload.season, payload.episode)
+    return {"ok": True}
+
+
+# ---- Logs ------------------------------------------------------------------
+
+@router.get("/logs/app")
+async def logs_app(tail: int = 500):
+    p = LOG_DIR / "app.log"
+    if not p.exists():
+        return {"lines": []}
+    lines = p.read_text(errors="ignore").splitlines()[-tail:]
+    return {"lines": lines}
+
+
+# ---- TVDB metadata helpers (used by Grid view to fetch posters) ------------
+
+@router.get("/tvdb/series/{series_id}")
+async def tvdb_series(series_id: str):
+    client = get_client()
+    return await client.series_extended(series_id)
+
+
+@router.get("/tvdb/movie/{movie_id}")
+async def tvdb_movie(movie_id: str):
+    client = get_client()
+    return await client.movie_extended(movie_id)
+
+
+@router.post("/tvdb/cache/clear")
+async def tvdb_cache_clear():
+    n = db.cache_clear()
+    return {"cleared": n}
