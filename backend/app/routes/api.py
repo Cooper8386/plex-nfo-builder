@@ -29,6 +29,7 @@ from ..config import (
 )
 from ..services import artwork as artwork_svc
 from ..services import builder as build_svc
+from ..services import cleaner as cleaner_svc
 from ..services import fanart as fanart_svc
 from ..services import matcher
 from ..services import scanner
@@ -209,6 +210,49 @@ async def items_list(library: Optional[str] = None,
 
 class ItemRemoveIn(BaseModel):
     folder_path: str
+
+
+class ItemCleanIn(BaseModel):
+    folder_path: str
+    dry_run: bool = False
+    keep_sidecar: bool = True
+    rescan: bool = True
+
+
+@router.post("/items/clean")
+async def items_clean(payload: ItemCleanIn):
+    """Wipe generated NFOs and artwork from a folder.
+
+    Leaves season folders and media files alone. The .plex-nfo-builder.json
+    sidecar is preserved by default so the binding + overrides survive; pass
+    `keep_sidecar=False` to delete it too.
+
+    With `dry_run=true`, returns the list of files that would be deleted
+    without modifying anything.
+    """
+    p = _safe_under_root(payload.folder_path)
+    if payload.dry_run:
+        return {"ok": True, "dry_run": True, "files": cleaner_svc.preview_clean(p)}
+    summary = cleaner_svc.clean_folder(p, keep_sidecar=payload.keep_sidecar)
+    if payload.rescan:
+        # Refresh item_state immediately so the UI reflects the wipe.
+        try:
+            row = db.list_item_state()
+            kind = next(
+                (r["kind"] for r in row if r["folder_path"] == str(p)),
+                None,
+            )
+            library = next(
+                (r["library"] for r in row if r["folder_path"] == str(p)),
+                "",
+            )
+            if kind == "movie":
+                scanner.scan_movie_folder(p, library=library or "")
+            else:
+                scanner.scan_series_folder(p, library=library or "")
+        except Exception as e:
+            logger.warning("post-clean rescan failed for {}: {}", p, e)
+    return {"ok": True, **summary}
 
 
 @router.post("/items/remove")

@@ -190,14 +190,19 @@ def _scan_nfo_state(folder: Path, expected_episodes: int, kind: str) -> tuple[st
     foreign_eps = 0
     for sd in detect_season_dirs(folder):
         for f in sd.iterdir():
-            if f.is_file() and f.suffix.lower() == ".nfo":
-                nfo_eps += 1
-                try:
-                    head = f.read_text(errors="ignore")[:2000]
-                    if PROVENANCE_TAG not in head:
-                        foreign_eps += 1
-                except Exception:
-                    pass
+            if not (f.is_file() and f.suffix.lower() == ".nfo"):
+                continue
+            # season.nfo lives next to episode .nfo files but is a season-level
+            # sidecar, not an episode. Don't count it toward episode coverage.
+            if f.name.lower() == "season.nfo":
+                continue
+            nfo_eps += 1
+            try:
+                head = f.read_text(errors="ignore")[:2000]
+                if PROVENANCE_TAG not in head:
+                    foreign_eps += 1
+            except Exception:
+                pass
 
     has_prov_anywhere = show_prov or (nfo_eps > foreign_eps and nfo_eps > 0)
 

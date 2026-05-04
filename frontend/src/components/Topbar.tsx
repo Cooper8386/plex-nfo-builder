@@ -29,7 +29,7 @@ export default function Topbar(props: {
         <span className="text-slate-200">NFO</span>
       </h1>
       <div className="flex bg-slate-900 border border-slate-800 rounded-md p-0.5">
-        {(["library", "jobs", "logs", "settings"] as const).map((r) => (
+        {(["library", "jobs", "logs", "settings", "help"] as const).map((r) => (
           <button
             key={r}
             onClick={() => props.onNav(r)}

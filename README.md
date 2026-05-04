@@ -7,14 +7,25 @@ Built around your Sonarr/Radarr-style filenames (e.g. `Severance (2022) - S02E08
 ## Highlights
 
 - **Auto library detection** — anything under `MEDIA_ROOT` is found at startup and re-scanned on demand. No hardcoded `tv` / `movies` / `anime`.
-- **Visual folder picker** in the UI (sidebar) — no need to type paths.
-- **Auto + manual matching** with persistent bindings stored in SQLite. Folder ID tags are honored as the primary signal.
-- **Plex NFO output** per the [Plex docs](https://support.plex.tv/articles/using-nfo-metadata-files-with-plex/): `tvshow.nfo`, per-episode `<file>.nfo`, per-movie `<file>.nfo`, `<file>-thumb.jpg` for episode thumbnails, canonical `poster.jpg` / `background.jpg` / `banner.jpg` for series and movies.
-- **Provenance**: every NFO this app writes carries a header comment with version, TVDB id, content hash, and timestamp. The scanner uses that to label items as `complete / partial / foreign / mixed / stale` and to avoid clobbering NFOs you wrote yourself unless you opt in.
-- **Library views**: poster grid (default), dense list, and per-item detail. Filter by status (none / partial / complete / foreign / etc.), free-text title search, and a one-click toggle to **hide already-organized** items.
-- **Plex-native artwork**: `poster.jpg`, `background.jpg`, `banner.jpg`, `Season01-poster.jpg`, etc. are downloaded directly to the show folder. NFO files also embed the TVDB CDN URL so Plex has a reliable network fallback.
+- **Three metadata sources**: TheTVDB v4 (primary), TMDB (alternate), fanart.tv (artwork supplement). Per-show source override with a lock so auto-match never silently swaps it.
+- **Visual folder picker** in the UI (sidebar) — no need to type paths. Disable / remove libraries from the kebab menu without touching disk.
+- **Auto + manual matching** with persistent bindings stored in SQLite. Folder ID tags (`{tvdb-…}` / `{tmdb-…}`) are honored as the primary signal.
+- **Plex NFO output** per the [Plex docs](https://support.plex.tv/articles/using-nfo-metadata-files-with-plex/): `tvshow.nfo`, `season.nfo`, per-episode `<file>.nfo`, per-movie `<file>.nfo`, `<file>-thumb.jpg` for episode thumbnails, canonical `poster.jpg` / `background.jpg` / `banner.jpg` for series and movies.
+- **Manual NFO field overrides** at the series, season, or per-episode level (title, sorttitle, originaltitle, tagline, plot). Empty falls back to source.
+- **Sidecar (`.plex-nfo-builder.json`)** in every bound folder carries the binding, overrides, artwork selections, and episode mapping. A full database wipe is recoverable straight from the media library.
+- **Wipe NFOs & artwork** button per show — deletes every generated file in one click while leaving season folders and media files alone.
+- **Provenance**: every NFO this app writes carries a header comment with version, source id, content hash, and timestamp. The scanner uses that to label items as `complete / partial / foreign / mixed / stale` and avoids clobbering foreign NFOs unless you opt in.
+- **Library views**: poster grid (default), dense list, and per-item detail. Filter by status, free-text title search, and a one-click toggle to **hide already-organized** items.
+- **In-app help** (Help in the top bar) — quick orientation, button reference, status badge legend.
 - **Language preference** with fallback chain (e.g. `eng` → `jpn` → first available).
 - **Logging** with rotating `app.log`, plus per-job logs under `/config/logs/jobs/<job_id>.log`.
+- **Multi-arch container** (`linux/amd64`, `linux/arm64`) published to GHCR on every release.
+
+## Documentation
+
+- **In-app**: open the running container and click `Help` in the top bar — it covers the day-to-day workflow, every button, and the status badges.
+- **`CHANGELOG.md`** for what changed in each release.
+- **The rest of this README** for installation, environment, folder layout, and matching internals.
 
 ## Requirements
 

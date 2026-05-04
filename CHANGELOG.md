@@ -2,6 +2,39 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.5.7 — 2026-05-04
+
+### Added
+
+- **Wipe NFOs & artwork** button on the detail view. Deletes every NFO
+  (`tvshow.nfo`, `season.nfo`, episode `.nfo`) and every generated
+  artwork file (`poster.jpg`, `background.jpg`, `banner.jpg`,
+  `clearlogo.png`, `Season<NN>-poster.jpg`, season-folder posters)
+  while leaving season folders and media files alone. Shows a dry-run
+  confirmation listing exactly what will be deleted, then rescans the
+  folder so the UI reflects the wipe immediately.
+- **In-app Help view** reachable from the top bar with a quick tour,
+  a Build NFOs vs Force rebuild reference, status-badge legend, and
+  expected folder layout.
+- New `POST /api/items/clean` endpoint with `dry_run`, `keep_sidecar`,
+  and `rescan` knobs, backed by `services/cleaner.py`.
+- Tooltips on the Build NFOs and Force rebuild buttons explaining the
+  difference between them.
+
+### Fixed
+
+- **"Mixed" false positive** after a clean build. The scanner was
+  counting the new `season.nfo` files (introduced in 0.5.3) as if they
+  were episode NFOs, so a fully built show with N episodes ended up
+  with N + (number of seasons) NFOs and was flagged `mixed`. The
+  scanner now ignores `season.nfo` when computing episode coverage.
+
+### Docs
+
+- README highlights expanded to cover sidecar, overrides, and the new
+  wipe action. New "Documentation" section pointing at the in-app Help,
+  CHANGELOG, and README itself.
+
 ## 0.5.6 — 2026-05-04
 
 ### Added

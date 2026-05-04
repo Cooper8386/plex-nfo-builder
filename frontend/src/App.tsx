@@ -6,6 +6,7 @@ import DetailView from "./views/DetailView";
 import SettingsView from "./views/SettingsView";
 import LogsView from "./views/LogsView";
 import JobsView from "./views/JobsView";
+import HelpView from "./views/HelpView";
 import { api } from "./lib/api";
 
 export type ViewMode = "grid" | "list";
@@ -15,7 +16,8 @@ export type Route =
   | { name: "detail"; library: string; path: string }
   | { name: "jobs" }
   | { name: "logs" }
-  | { name: "settings" };
+  | { name: "settings" }
+  | { name: "help" };
 
 function parseLocation(): Route {
   const path = window.location.pathname || "/";
@@ -32,6 +34,7 @@ function parseLocation(): Route {
   if (path === "/jobs") return { name: "jobs" };
   if (path === "/logs") return { name: "logs" };
   if (path === "/settings") return { name: "settings" };
+  if (path === "/help") return { name: "help" };
   return { name: "home" };
 }
 
@@ -49,6 +52,8 @@ function routeToUrl(r: Route): string {
       return "/logs";
     case "settings":
       return "/settings";
+    case "help":
+      return "/help";
   }
 }
 
@@ -122,6 +127,7 @@ export default function App() {
           } else if (r === "jobs") navigate({ name: "jobs" });
           else if (r === "logs") navigate({ name: "logs" });
           else if (r === "settings") navigate({ name: "settings" });
+          else if (r === "help") navigate({ name: "help" });
         }}
         route={topbarRoute}
         showLibraryControls={route.name === "library" || route.name === "home"}
@@ -165,6 +171,7 @@ export default function App() {
           {route.name === "settings" && <SettingsView />}
           {route.name === "logs" && <LogsView />}
           {route.name === "jobs" && <JobsView />}
+          {route.name === "help" && <HelpView />}
         </main>
       </div>
     </div>

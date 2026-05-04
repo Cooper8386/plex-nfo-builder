@@ -112,6 +112,26 @@ export const api = {
           body: JSON.stringify({ folder_path }),
         })
       ),
+    clean: (body: {
+      folder_path: string;
+      dry_run?: boolean;
+      keep_sidecar?: boolean;
+      rescan?: boolean;
+    }) =>
+      J<{
+        ok: true;
+        dry_run?: boolean;
+        files?: string[];
+        nfo_deleted?: number;
+        artwork_deleted?: number;
+        sidecar_deleted?: number;
+      }>(
+        fetch("/api/items/clean", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      ),
     prune: (body: { library?: string; dry_run?: boolean }) =>
       J<{
         ok: true;
