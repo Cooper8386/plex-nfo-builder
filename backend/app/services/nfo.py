@@ -16,7 +16,7 @@ from typing import Any, Optional
 from xml.dom import minidom
 from xml.etree import ElementTree as ET
 
-from .. import __version__
+from .. import __version__, db
 from .artwork import absolutize_tvdb_url, movie_image_urls, series_image_urls
 from .tmdb import image_url as _tmdb_image
 
@@ -65,6 +65,36 @@ def _ovr(overrides: Optional[dict], scope: str, field: str,
     return fallback
 
 
+def _emit_genres(root: ET.Element, source_genres: list, folder_path: Optional[str]) -> None:
+    """Emit <genre> elements: metadata-source genres first, then user custom tags.
+
+    De-duplicates case-insensitively so adding a custom tag that already came
+    from TVDB/TMDB doesn't appear twice in the NFO.
+    """
+    seen: set[str] = set()
+    for g in source_genres or []:
+        name = g.get("name") if isinstance(g, dict) else g
+        if not name:
+            continue
+        key = str(name).strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        _el(root, "genre", name)
+    if folder_path:
+        try:
+            for tag in db.list_custom_tags(str(folder_path)):
+                key = tag.strip().lower()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                _el(root, "genre", tag)
+                _el(root, "tag", tag)
+        except Exception:
+            # Custom tags are best-effort — never fail the build over them.
+            pass
+
+
 # ----- Series ---------------------------------------------------------------
 
 def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[str],
@@ -102,10 +132,7 @@ def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[st
     network = (s.get("originalNetwork") or {}).get("name") if isinstance(s.get("originalNetwork"), dict) else s.get("network")
     if network:
         _el(root, "studio", network)
-    for g in (s.get("genres") or []):
-        name = g.get("name") if isinstance(g, dict) else g
-        if name:
-            _el(root, "genre", name)
+    _emit_genres(root, s.get("genres") or [], folder_path)
     rating_obj = (s.get("ratings") or [{}])[0] if isinstance(s.get("ratings"), list) else None
     if rating_obj:
         _el(root, "mpaa", rating_obj.get("name") or "")
@@ -219,10 +246,7 @@ def build_movie_nfo(movie_extended: dict, *, language: str, fallbacks: list[str]
                 _el(root, "year", year)
     if m.get("runtime"):
         _el(root, "runtime", m["runtime"])
-    for g in (m.get("genres") or []):
-        name = g.get("name") if isinstance(g, dict) else g
-        if name:
-            _el(root, "genre", name)
+    _emit_genres(root, m.get("genres") or [], folder_path)
     _el(root, "uniqueid", str(m.get("id") or ""), attrib={"type": "tvdb", "default": "true"})
     rms = m.get("remoteIds") or []
     for rm in rms:
@@ -301,9 +325,7 @@ def build_series_nfo_tmdb(tv: dict, *, language: str, fallbacks: list[str],
     for net in (tv.get("networks") or []):
         if isinstance(net, dict) and net.get("name"):
             _el(root, "studio", net["name"])
-    for g in (tv.get("genres") or []):
-        if isinstance(g, dict) and g.get("name"):
-            _el(root, "genre", g["name"])
+    _emit_genres(root, tv.get("genres") or [], folder_path)
     if tv.get("status"):
         _el(root, "status", tv.get("status"))
     runtimes = tv.get("episode_run_time") or []
@@ -391,9 +413,7 @@ def build_movie_nfo_tmdb(mv: dict, *, language: str, fallbacks: list[str],
         _el(root, "year", year)
     if mv.get("runtime"):
         _el(root, "runtime", mv.get("runtime"))
-    for g in (mv.get("genres") or []):
-        if isinstance(g, dict) and g.get("name"):
-            _el(root, "genre", g["name"])
+    _emit_genres(root, mv.get("genres") or [], folder_path)
     for s in (mv.get("production_companies") or []):
         if isinstance(s, dict) and s.get("name"):
             _el(root, "studio", s["name"])

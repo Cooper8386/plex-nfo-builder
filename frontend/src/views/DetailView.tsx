@@ -23,7 +23,8 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
   }, []);
 
   if (!detail.data) return <div className="p-6 text-slate-500">Loading…</div>;
-  const { state, binding, artwork_files, provider_episode_count, provider_used } = detail.data as any;
+  const { state, binding, artwork_files, provider_episode_count, provider_used, tags } =
+    detail.data as any;
   const kind: "series" | "movie" = state?.kind === "movie" ? "movie" : "series";
   const providerLabel = (provider_used ?? binding?.provider ?? "tvdb").toUpperCase();
   const cacheBust = state?.last_built ?? 0;
@@ -84,6 +85,13 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
           value={binding ? `${binding.provider}-${binding.external_id}` : "unmatched"}
         />
       </div>
+
+      <TagsPanel
+        path={path}
+        tags={tags ?? { tvdb: [], tmdb: [], custom: [] }}
+        bindingProvider={(binding?.provider as string | undefined) ?? null}
+        onChanged={() => qc.invalidateQueries({ queryKey: ["detail", path] })}
+      />
 
       <div className="flex flex-wrap gap-2 mb-6">
         <button
@@ -468,6 +476,166 @@ function ArtSlot({
           <div className="text-[10px] text-slate-500 font-mono truncate">{filename}</div>
         )}
       </div>
+    </div>
+  );
+}
+
+type TagSource = "tvdb" | "tmdb" | "custom";
+
+function TagsPanel({
+  path,
+  tags,
+  bindingProvider,
+  onChanged,
+}: {
+  path: string;
+  tags: { tvdb: string[]; tmdb: string[]; custom: string[] };
+  bindingProvider: string | null;
+  onChanged: () => void;
+}) {
+  // Default the toggle to whichever metadata source the item is bound to so
+  // users immediately see the genres their NFO will use.
+  const initialSource: TagSource =
+    bindingProvider === "tmdb"
+      ? "tmdb"
+      : bindingProvider === "tvdb"
+        ? "tvdb"
+        : tags.tvdb.length
+          ? "tvdb"
+          : tags.tmdb.length
+            ? "tmdb"
+            : "custom";
+  const [source, setSource] = useState<TagSource>(initialSource);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const list =
+    source === "tvdb" ? tags.tvdb : source === "tmdb" ? tags.tmdb : tags.custom;
+
+  const addTag = async () => {
+    const value = draft.trim();
+    if (!value) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.items.tags.add(path, value);
+      setDraft("");
+      onChanged();
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeTag = async (tag: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.items.tags.remove(path, tag);
+      onChanged();
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="bg-slate-900/60 border border-slate-800 rounded-md p-3 mb-5">
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <div className="text-[10px] uppercase tracking-wider text-slate-500">
+          Tags
+        </div>
+        <div className="flex bg-slate-900 border border-slate-800 rounded-md p-0.5">
+          {(["tvdb", "tmdb", "custom"] as TagSource[]).map((s) => (
+            <button
+              key={s}
+              onClick={() => setSource(s)}
+              className={`px-2.5 py-1 text-xs uppercase rounded transition ${
+                source === s
+                  ? "bg-indigo-600 text-white"
+                  : "text-slate-400 hover:text-white hover:bg-slate-800"
+              }`}
+            >
+              {s}
+              <span className="ml-1 text-[10px] text-slate-400">
+                {s === "tvdb"
+                  ? tags.tvdb.length
+                  : s === "tmdb"
+                    ? tags.tmdb.length
+                    : tags.custom.length}
+              </span>
+            </button>
+          ))}
+        </div>
+        <span className="text-[11px] text-slate-500">
+          {source === "custom"
+            ? "Custom tags are appended to the metadata-source genres in your NFO."
+            : `Read-only — fetched from ${source.toUpperCase()}.`}
+        </span>
+      </div>
+
+      {list.length === 0 ? (
+        <div className="text-xs text-slate-500 py-1">
+          {source === "custom"
+            ? "No custom tags yet."
+            : `No tags from ${source.toUpperCase()} for this item.`}
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {list.map((tag) => (
+            <span
+              key={`${source}-${tag}`}
+              className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border ${
+                source === "custom"
+                  ? "bg-indigo-900/40 border-indigo-700 text-indigo-100"
+                  : "bg-slate-800 border-slate-700 text-slate-200"
+              }`}
+            >
+              {tag}
+              {source === "custom" && (
+                <button
+                  type="button"
+                  onClick={() => removeTag(tag)}
+                  disabled={busy}
+                  title={`Remove ${tag}`}
+                  className="text-indigo-300 hover:text-white disabled:opacity-50"
+                >
+                  ×
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {source === "custom" && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addTag();
+              }
+            }}
+            placeholder="Add custom tag…"
+            disabled={busy}
+            className="bg-slate-950 border border-slate-800 px-2 py-1 rounded text-sm text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+          />
+          <button
+            onClick={addTag}
+            disabled={busy || draft.trim() === ""}
+            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs disabled:opacity-50"
+          >
+            Add
+          </button>
+          {error && <span className="text-xs text-rose-400">{error}</span>}
+        </div>
+      )}
     </div>
   );
 }

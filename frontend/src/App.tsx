@@ -60,8 +60,6 @@ function routeToUrl(r: Route): string {
 export default function App() {
   const [route, setRouteState] = useState<Route>(() => parseLocation());
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
-  const [statusFilter, setStatusFilter] = useState<string[]>([]);
-  const [hideOrganized, setHideOrganized] = useState(false);
   const [search, setSearch] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
@@ -115,10 +113,6 @@ export default function App() {
       <Topbar
         viewMode={viewMode}
         setViewMode={setViewMode}
-        statusFilter={statusFilter}
-        setStatusFilter={setStatusFilter}
-        hideOrganized={hideOrganized}
-        setHideOrganized={setHideOrganized}
         search={search}
         setSearch={setSearch}
         onNav={(r) => {
@@ -144,8 +138,6 @@ export default function App() {
             <LibraryView
               library={route.name === "library" ? route.library : null}
               viewMode={viewMode}
-              statusFilter={statusFilter}
-              hideOrganized={hideOrganized}
               search={search}
               onOpenDetail={(p) =>
                 navigate({

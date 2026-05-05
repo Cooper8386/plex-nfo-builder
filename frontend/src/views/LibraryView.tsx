@@ -15,8 +15,6 @@ const STATUS_COLOR: Record<string, string> = {
 export default function LibraryView(props: {
   library: string | null;
   viewMode: ViewMode;
-  statusFilter: string[];
-  hideOrganized: boolean;
   search: string;
   onOpenDetail: (path: string) => void;
 }) {
@@ -26,13 +24,11 @@ export default function LibraryView(props: {
   const [toast, setToast] = useState<string | null>(null);
 
   const { data, isFetching } = useQuery({
-    queryKey: ["items", props.library, props.statusFilter, props.search, props.hideOrganized],
+    queryKey: ["items", props.library, props.search],
     queryFn: () =>
       api.items.list({
         library: props.library || undefined,
-        status: props.statusFilter.join(",") || undefined,
         q: props.search || undefined,
-        hide_organized: props.hideOrganized,
       }),
     enabled: !!props.library,
   });
@@ -66,10 +62,13 @@ export default function LibraryView(props: {
     if (!props.library) return;
     setBusy(scope === "selected" ? "Auto-matching selected…" : "Auto-matching library…");
     try {
+      // v0.8.0: "Auto-match all" now processes every folder in the library —
+      // we deliberately drop only_unmatched:true so already-matched folders
+      // can be re-resolved if their bindings are stale.
       const body =
         scope === "selected"
           ? { folder_paths: selectedPaths }
-          : { library: props.library, only_unmatched: true };
+          : { library: props.library };
       const res = await api.match.autoBulk(body);
       flash(`Auto-match: ${res.matched}/${res.total} matched`);
       qc.invalidateQueries({ queryKey: ["items"] });

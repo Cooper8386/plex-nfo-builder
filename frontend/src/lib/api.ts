@@ -49,6 +49,26 @@ export type TvdbEpisode = {
   image: string | null;
 };
 
+export type ScheduleAction =
+  | "scan_only"
+  | "match_only"
+  | "build_only"
+  | "match_and_build"
+  | "full";
+
+export type Schedule = {
+  id: number;
+  library: string | null;
+  cron: string;
+  action: ScheduleAction;
+  enabled: number;
+  last_run: number | null;
+  last_status: "ok" | "error" | "running" | null;
+  last_message: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
 export type Item = {
   folder_path: string;
   library: string;
@@ -106,16 +126,40 @@ export const api = {
       ),
   },
   items: {
-    list: (params: { library?: string; status?: string; q?: string; hide_organized?: boolean }) => {
+    list: (params: { library?: string; q?: string }) => {
       const qs = new URLSearchParams();
       if (params.library) qs.set("library", params.library);
-      if (params.status) qs.set("status", params.status);
       if (params.q) qs.set("q", params.q);
-      if (params.hide_organized) qs.set("hide_organized", "true");
       return J<{ items: Item[] }>(fetch(`/api/items?${qs}`));
     },
     detail: (path: string) =>
-      J<any>(fetch(`/api/items/detail?path=${encodeURIComponent(path)}`)),
+      J<{
+        path: string;
+        binding: any;
+        state: any;
+        artwork_files: string[];
+        overrides: Record<string, Record<string, string>>;
+        provider_episode_count: number | null;
+        provider_used: string | null;
+        tags: { tvdb: string[]; tmdb: string[]; custom: string[] };
+      }>(fetch(`/api/items/detail?path=${encodeURIComponent(path)}`)),
+    tags: {
+      add: (folder_path: string, tag: string) =>
+        J<{ ok: true; added: boolean; tags: string[] }>(
+          fetch("/api/items/tags", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ folder_path, tag }),
+          })
+        ),
+      remove: (folder_path: string, tag: string) =>
+        J<{ ok: true; removed: number; tags: string[] }>(
+          fetch(
+            `/api/items/tags?folder_path=${encodeURIComponent(folder_path)}&tag=${encodeURIComponent(tag)}`,
+            { method: "DELETE" }
+          )
+        ),
+    },
     remove: (folder_path: string) =>
       J<{ ok: true; removed: number }>(
         fetch("/api/items/remove", {
@@ -333,6 +377,34 @@ export const api = {
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         })
+      ),
+  },
+  schedules: {
+    list: () =>
+      J<{ schedules: Schedule[] }>(fetch("/api/schedules")),
+    create: (body: { library?: string | null; cron: string; action: ScheduleAction; enabled?: boolean }) =>
+      J<{ ok: true; schedule: Schedule }>(
+        fetch("/api/schedules", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      ),
+    update: (id: number, body: { library?: string | null; cron?: string; action?: ScheduleAction; enabled?: boolean }) =>
+      J<{ ok: true; schedule: Schedule }>(
+        fetch(`/api/schedules/${id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      ),
+    remove: (id: number) =>
+      J<{ ok: true; deleted: number }>(
+        fetch(`/api/schedules/${id}`, { method: "DELETE" })
+      ),
+    run: (id: number) =>
+      J<{ ok: true; started: boolean }>(
+        fetch(`/api/schedules/${id}/run`, { method: "POST" })
       ),
   },
   logs: () => J<{ lines: string[] }>(fetch("/api/logs/app?tail=400")),

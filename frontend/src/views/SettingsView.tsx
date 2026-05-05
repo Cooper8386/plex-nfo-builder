@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, Library, Schedule, ScheduleAction } from "../lib/api";
 
 export default function SettingsView() {
   const [s, setS] = useState<any>(null);
@@ -365,6 +365,9 @@ export default function SettingsView() {
       >
         Clear metadata cache
       </button>
+
+      <hr className="my-6 border-slate-800" />
+      <SchedulesSection />
     </div>
   );
 }
@@ -374,6 +377,357 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div className="flex items-center gap-3 mb-3">
       <label className="text-sm text-slate-300 w-64">{label}</label>
       {children}
+    </div>
+  );
+}
+
+const ACTION_LABELS: Record<ScheduleAction, string> = {
+  scan_only: "Scan only",
+  match_only: "Match only",
+  build_only: "Build only",
+  match_and_build: "Match + Build",
+  full: "Full (scan + match + build)",
+};
+
+const CRON_PRESETS: { label: string; cron: string }[] = [
+  { label: "Daily 3am UTC", cron: "0 3 * * *" },
+  { label: "Sunday 3am UTC", cron: "0 3 * * 0" },
+  { label: "Every 6 hours", cron: "0 */6 * * *" },
+  { label: "Hourly", cron: "0 * * * *" },
+];
+
+function fmtTimestamp(ts: number | null): string {
+  if (!ts) return "never";
+  try {
+    return new Date(ts * 1000).toLocaleString();
+  } catch {
+    return String(ts);
+  }
+}
+
+function SchedulesSection() {
+  const [items, setItems] = useState<Schedule[] | null>(null);
+  const [libs, setLibs] = useState<Library[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState<{
+    library: string;
+    cron: string;
+    action: ScheduleAction;
+    enabled: boolean;
+  }>({ library: "", cron: "0 3 * * *", action: "match_and_build", enabled: true });
+
+  const reload = async () => {
+    try {
+      const [s, l] = await Promise.all([api.schedules.list(), api.libraries.list()]);
+      setItems(s.schedules);
+      setLibs(l.libraries);
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    }
+  };
+
+  useEffect(() => {
+    reload();
+  }, []);
+
+  const create = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.schedules.create({
+        library: draft.library || null,
+        cron: draft.cron.trim(),
+        action: draft.action,
+        enabled: draft.enabled,
+      });
+      setDraft({ ...draft, library: "", cron: "0 3 * * *" });
+      await reload();
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const update = async (id: number, body: Parameters<typeof api.schedules.update>[1]) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.schedules.update(id, body);
+      await reload();
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: number) => {
+    if (!window.confirm("Delete this schedule?")) return;
+    setBusy(true);
+    try {
+      await api.schedules.remove(id);
+      await reload();
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runNow = async (id: number) => {
+    setBusy(true);
+    try {
+      await api.schedules.run(id);
+      // Give the server a moment to flip status to "running" / "ok".
+      setTimeout(reload, 1500);
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">
+        Schedules
+      </h3>
+      <p className="text-xs text-slate-500 mb-3">
+        Periodically scan, auto-match, and build NFOs for new or changed items.
+        Cron expressions are evaluated in UTC. A schedule with no library applies
+        to every enabled library.
+      </p>
+
+      <div className="bg-slate-900/60 border border-slate-800 rounded-md p-3 mb-4">
+        <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">
+          New schedule
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1 text-xs text-slate-400">
+            Library
+            <select
+              className="bg-slate-800 px-2 py-1 rounded text-sm text-slate-100"
+              value={draft.library}
+              onChange={(e) => setDraft({ ...draft, library: e.target.value })}
+            >
+              <option value="">All libraries</option>
+              {libs.map((l) => (
+                <option key={l.name} value={l.name}>
+                  {l.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-slate-400">
+            Action
+            <select
+              className="bg-slate-800 px-2 py-1 rounded text-sm text-slate-100"
+              value={draft.action}
+              onChange={(e) =>
+                setDraft({ ...draft, action: e.target.value as ScheduleAction })
+              }
+            >
+              {Object.entries(ACTION_LABELS).map(([v, label]) => (
+                <option key={v} value={v}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-slate-400 sm:col-span-2">
+            Cron (UTC, 5 fields)
+            <input
+              className="bg-slate-800 px-2 py-1 rounded text-sm font-mono text-slate-100"
+              value={draft.cron}
+              onChange={(e) => setDraft({ ...draft, cron: e.target.value })}
+              placeholder="0 3 * * *"
+            />
+            <div className="flex flex-wrap gap-1.5 mt-1">
+              {CRON_PRESETS.map((p) => (
+                <button
+                  key={p.cron}
+                  type="button"
+                  onClick={() => setDraft({ ...draft, cron: p.cron })}
+                  className="text-[11px] px-2 py-0.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </label>
+        </div>
+        <div className="flex items-center gap-3 mt-3">
+          <label className="text-xs text-slate-300 inline-flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={draft.enabled}
+              onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
+              className="accent-indigo-500"
+            />
+            Enabled
+          </label>
+          <button
+            onClick={create}
+            disabled={busy || !draft.cron.trim()}
+            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs disabled:opacity-50"
+          >
+            Add schedule
+          </button>
+          {error && <span className="text-xs text-rose-400">{error}</span>}
+        </div>
+      </div>
+
+      {items === null ? (
+        <div className="text-xs text-slate-500">Loading schedules…</div>
+      ) : items.length === 0 ? (
+        <div className="text-xs text-slate-500">No schedules configured.</div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((sch) => (
+            <ScheduleRow
+              key={sch.id}
+              libs={libs}
+              sch={sch}
+              busy={busy}
+              onUpdate={(body) => update(sch.id, body)}
+              onRemove={() => remove(sch.id)}
+              onRun={() => runNow(sch.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScheduleRow({
+  libs,
+  sch,
+  busy,
+  onUpdate,
+  onRemove,
+  onRun,
+}: {
+  libs: Library[];
+  sch: Schedule;
+  busy: boolean;
+  onUpdate: (body: { library?: string | null; cron?: string; action?: ScheduleAction; enabled?: boolean }) => void;
+  onRemove: () => void;
+  onRun: () => void;
+}) {
+  const [cron, setCron] = useState(sch.cron);
+  const dirty = cron !== sch.cron;
+
+  const statusBadge = (() => {
+    const status = sch.last_status;
+    if (status === "running") {
+      return (
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-700 text-amber-100 uppercase tracking-wide">
+          running
+        </span>
+      );
+    }
+    if (status === "ok") {
+      return (
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-700 text-emerald-100 uppercase tracking-wide">
+          ok
+        </span>
+      );
+    }
+    if (status === "error") {
+      return (
+        <span
+          className="text-[10px] px-1.5 py-0.5 rounded bg-rose-700 text-rose-100 uppercase tracking-wide"
+          title={sch.last_message ?? undefined}
+        >
+          error
+        </span>
+      );
+    }
+    return null;
+  })();
+
+  return (
+    <div className="bg-slate-900/40 border border-slate-800 rounded-md p-3">
+      <div className="flex flex-wrap items-center gap-3 mb-2">
+        <span className="text-xs uppercase text-slate-500">#{sch.id}</span>
+        <select
+          className="bg-slate-800 px-2 py-0.5 rounded text-xs text-slate-100"
+          value={sch.library ?? ""}
+          onChange={(e) => onUpdate({ library: e.target.value || null })}
+          disabled={busy}
+        >
+          <option value="">All libraries</option>
+          {libs.map((l) => (
+            <option key={l.name} value={l.name}>
+              {l.name}
+            </option>
+          ))}
+        </select>
+        <select
+          className="bg-slate-800 px-2 py-0.5 rounded text-xs text-slate-100"
+          value={sch.action}
+          onChange={(e) => onUpdate({ action: e.target.value as ScheduleAction })}
+          disabled={busy}
+        >
+          {Object.entries(ACTION_LABELS).map(([v, label]) => (
+            <option key={v} value={v}>
+              {label}
+            </option>
+          ))}
+        </select>
+        <label className="text-xs text-slate-300 inline-flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={!!sch.enabled}
+            onChange={(e) => onUpdate({ enabled: e.target.checked })}
+            disabled={busy}
+            className="accent-indigo-500"
+          />
+          Enabled
+        </label>
+        {statusBadge}
+        <span className="text-[11px] text-slate-500">
+          last run: {fmtTimestamp(sch.last_run)}
+        </span>
+        <div className="flex-1" />
+        <button
+          onClick={onRun}
+          disabled={busy}
+          className="text-xs px-2 py-0.5 bg-indigo-700 hover:bg-indigo-600 rounded disabled:opacity-50"
+        >
+          Run now
+        </button>
+        <button
+          onClick={onRemove}
+          disabled={busy}
+          className="text-xs px-2 py-0.5 bg-rose-900/40 hover:bg-rose-900/70 border border-rose-800 text-rose-200 rounded disabled:opacity-50"
+        >
+          Delete
+        </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className="bg-slate-800 px-2 py-1 rounded text-xs font-mono text-slate-100 w-44"
+          value={cron}
+          onChange={(e) => setCron(e.target.value)}
+          disabled={busy}
+        />
+        <button
+          onClick={() => onUpdate({ cron: cron.trim() })}
+          disabled={busy || !dirty}
+          className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded disabled:opacity-30"
+        >
+          Save cron
+        </button>
+        {sch.last_message && sch.last_status === "error" && (
+          <span className="text-[11px] text-rose-300 truncate" title={sch.last_message}>
+            {sch.last_message}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

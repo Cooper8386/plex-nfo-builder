@@ -76,12 +76,14 @@ def build_sidecar_payload(folder: Path | str) -> dict:
     artwork_selections = db.get_artwork_selections(folder_str)
     ep_ovr_raw = db.get_episode_overrides(folder_str)  # {(s,e): tvdb_id}
     episode_overrides = {f"{s:02d}-{e:02d}": tid for (s, e), tid in ep_ovr_raw.items()}
+    custom_tags = db.list_custom_tags(folder_str)
     return {
         "version": SIDECAR_VERSION,
         "binding": binding,
         "overrides": overrides,
         "artwork_selections": artwork_selections,
         "episode_overrides": episode_overrides,
+        "custom_tags": custom_tags,
     }
 
 
@@ -171,6 +173,14 @@ def restore_from_sidecar(folder: Path | str) -> bool:
                     restored = True
             except Exception:
                 continue
+    # v0.8.0: custom user-added tags
+    custom_tags = data.get("custom_tags")
+    if isinstance(custom_tags, list) and custom_tags:
+        try:
+            db.bulk_set_custom_tags(folder_str, [str(t) for t in custom_tags])
+            restored = True
+        except Exception as e:
+            logger.warning("Sidecar custom_tags restore failed for {}: {}", folder_str, e)
     return restored
 
 

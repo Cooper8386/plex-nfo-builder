@@ -36,6 +36,7 @@ from ..services import matcher
 from ..services import plex as plex_svc
 from ..services import scanner
 from ..services import sidecar as sidecar_svc
+from ..services.scheduler import cron_matches as _cron_matches, scheduler as _scheduler
 from ..services.parser import (
     detect_season_dirs,
     list_season_episodes,
@@ -246,6 +247,13 @@ async def items_list(library: Optional[str] = None,
                      status: Optional[str] = None,
                      q: Optional[str] = None,
                      hide_organized: bool = False):
+    """List items in a library.
+
+    v0.8.0: status / hide_organized are kept as optional query params for
+    backward compatibility, but the UI no longer sends them so by default
+    every item in the library is returned. Filtering by completion status
+    used to mask items the user expected to see.
+    """
     statuses = status.split(",") if status else None
     rows = db.list_item_state(library=library, statuses=statuses, title_q=q)
     out = []
@@ -255,6 +263,36 @@ async def items_list(library: Optional[str] = None,
             continue
         out.append(d)
     return {"items": out}
+
+
+# ---- Custom tags (v0.8.0) --------------------------------------------------
+
+class TagIn(BaseModel):
+    folder_path: str
+    tag: str
+
+
+@router.post("/items/tags")
+async def items_add_tag(payload: TagIn):
+    p = _safe_under_root(payload.folder_path)
+    inserted = db.add_custom_tag(str(p), payload.tag)
+    # Persist to sidecar so the tag survives a wipe/restore.
+    try:
+        sidecar_svc.write_sidecar(p)
+    except Exception:
+        pass
+    return {"ok": True, "added": inserted, "tags": db.list_custom_tags(str(p))}
+
+
+@router.delete("/items/tags")
+async def items_remove_tag(folder_path: str, tag: str):
+    p = _safe_under_root(folder_path)
+    removed = db.remove_custom_tag(str(p), tag)
+    try:
+        sidecar_svc.write_sidecar(p)
+    except Exception:
+        pass
+    return {"ok": True, "removed": removed, "tags": db.list_custom_tags(str(p))}
 
 
 class ItemRemoveIn(BaseModel):
@@ -435,6 +473,9 @@ async def item_detail(path: str):
         except Exception as e:
             logger.debug("item_detail provider episode count failed for {}: {}", p, e)
 
+    # v0.8.0: tags from each metadata source plus user-added custom tags.
+    tags_payload = await _gather_tags_for_detail(p, binding)
+
     return {
         "path": str(p),
         "binding": dict(binding) if binding else None,
@@ -443,7 +484,97 @@ async def item_detail(path: str):
         "overrides": overrides,
         "provider_episode_count": provider_episode_count,
         "provider_used": provider_used,
+        "tags": tags_payload,
     }
+
+
+async def _gather_tags_for_detail(folder: Path, binding) -> dict:
+    """Collect TVDB genres, TMDB keywords, and custom tags for a folder.
+
+    Best-effort: any provider that fails returns an empty list so the UI keeps
+    rendering. The detail endpoint must never fail because tags can't be fetched.
+    """
+    out = {"tvdb": [], "tmdb": [], "custom": db.list_custom_tags(str(folder))}
+    if not binding:
+        return out
+    kind = binding["kind"]
+    provider = (binding["provider"] or "").lower()
+    external_id = binding["external_id"]
+    settings = get_user_settings()
+    lang = binding["language"] or settings.preferred_language
+
+    # ---- TVDB genres ------------------------------------------------------
+    if provider == "tvdb":
+        try:
+            tvdb_c = get_client()
+            if kind == "series":
+                data = await tvdb_c.series_extended(external_id, force=False)
+            else:
+                data = await tvdb_c.movie_extended(external_id, force=False)
+            out["tvdb"] = [
+                g.get("name") for g in (data.get("genres") or [])
+                if isinstance(g, dict) and g.get("name")
+            ]
+        except Exception as e:
+            logger.debug("item_detail tvdb tags fetch failed for {}: {}", folder, e)
+
+    # ---- TMDB keywords ----------------------------------------------------
+    if provider == "tmdb":
+        tmdb_id = external_id
+    else:
+        # If bound to TVDB, see if we can resolve a TMDB id via remoteIds for tag display.
+        tmdb_id = None
+        try:
+            tvdb_c = get_client()
+            if kind == "series":
+                data = await tvdb_c.series_extended(external_id, force=False)
+            else:
+                data = await tvdb_c.movie_extended(external_id, force=False)
+            for rm in data.get("remoteIds") or []:
+                if not isinstance(rm, dict):
+                    continue
+                src = (rm.get("sourceName") or "").lower()
+                if "tmdb" in src or "moviedb" in src or "movie database" in src:
+                    tmdb_id = str(rm.get("id") or "") or None
+                    break
+        except Exception:
+            tmdb_id = None
+    if tmdb_id and effective_tmdb_credentials():
+        try:
+            tmdb_c = get_tmdb_client()
+            if kind == "series":
+                kw = await tmdb_c.tv_keywords(tmdb_id)
+                names = [
+                    k.get("name") for k in (kw.get("results") or [])
+                    if isinstance(k, dict) and k.get("name")
+                ]
+            else:
+                kw = await tmdb_c.movie_keywords(tmdb_id)
+                names = [
+                    k.get("name") for k in (kw.get("keywords") or [])
+                    if isinstance(k, dict) and k.get("name")
+                ]
+            out["tmdb"] = names
+            # If the item is bound to TMDB its `genres` array is also worth
+            # surfacing as the canonical "tags" — prepend them ahead of keywords.
+            if provider == "tmdb":
+                try:
+                    if kind == "series":
+                        det = await tmdb_c.tv_details(tmdb_id, language=lang)
+                    else:
+                        det = await tmdb_c.movie_details(tmdb_id, language=lang)
+                    genres = [
+                        g.get("name") for g in (det.get("genres") or [])
+                        if isinstance(g, dict) and g.get("name")
+                    ]
+                    seen = {(n or "").lower() for n in names}
+                    merged = [g for g in genres if g and g.lower() not in seen] + names
+                    out["tmdb"] = merged
+                except Exception as e:
+                    logger.debug("item_detail tmdb genres fetch failed for {}: {}", folder, e)
+        except Exception as e:
+            logger.debug("item_detail tmdb keywords fetch failed for {}: {}", folder, e)
+    return out
 
 
 # ---- Matching --------------------------------------------------------------
@@ -654,7 +785,14 @@ def _filter_locked(paths: list[Path]) -> list[Path]:
     return out
 
 
-def _resolve_bulk_paths(payload: BulkIn) -> list[Path]:
+def _resolve_bulk_paths(payload: BulkIn, *, default_only_unmatched: bool = False) -> list[Path]:
+    """Resolve the list of folders for a bulk action.
+
+    v0.8.0: when caller passes only ``library`` (no folder_paths) the auto-match
+    flow now defaults to processing every item in the library so "Auto-match
+    all" works whether or not items are already bound. To opt back into the
+    legacy unmatched-only behaviour pass ``only_unmatched=true``.
+    """
     paths: list[Path] = []
     if payload.folder_paths:
         for fp in payload.folder_paths:
@@ -1388,3 +1526,94 @@ async def plex_refresh(body: PlexRefreshIn):
     delay = max(0, min(600, int(body.delay_seconds or 0)))
     summary = await plex_svc.refresh_for_folder(body.path, delay_seconds=delay)
     return summary
+
+
+# ---- Schedules (v0.8.0) -----------------------------------------------------
+
+_VALID_SCHEDULE_ACTIONS = {
+    "scan_only",
+    "match_only",
+    "build_only",
+    "match_and_build",
+    "full",
+}
+
+
+class ScheduleIn(BaseModel):
+    library: Optional[str] = None  # None = all libraries
+    cron: str
+    action: str
+    enabled: bool = True
+
+
+class ScheduleUpdate(BaseModel):
+    library: Optional[str] = None
+    cron: Optional[str] = None
+    action: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+def _validate_schedule(cron: Optional[str], action: Optional[str]) -> None:
+    if action is not None and action not in _VALID_SCHEDULE_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"action must be one of {sorted(_VALID_SCHEDULE_ACTIONS)}",
+        )
+    if cron is not None:
+        try:
+            # Use a dummy datetime — we just want syntax validation.
+            from datetime import datetime, timezone
+            _cron_matches(cron, datetime.now(timezone.utc))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"invalid cron: {e}")
+
+
+@router.get("/schedules")
+async def schedules_list():
+    return {"schedules": [dict(r) for r in db.list_schedules()]}
+
+
+@router.post("/schedules")
+async def schedules_create(payload: ScheduleIn):
+    _validate_schedule(payload.cron, payload.action)
+    library = payload.library or None
+    sched_id = db.insert_schedule(
+        library=library,
+        cron=payload.cron.strip(),
+        action=payload.action,
+        enabled=payload.enabled,
+    )
+    row = db.get_schedule(sched_id)
+    return {"ok": True, "schedule": dict(row) if row else None}
+
+
+@router.patch("/schedules/{sched_id}")
+async def schedules_update(sched_id: int, payload: ScheduleUpdate):
+    row = db.get_schedule(sched_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    _validate_schedule(payload.cron, payload.action)
+    db.update_schedule(
+        sched_id,
+        library=payload.library if payload.library is not None else None,
+        cron=payload.cron,
+        action=payload.action,
+        enabled=payload.enabled,
+    )
+    row = db.get_schedule(sched_id)
+    return {"ok": True, "schedule": dict(row) if row else None}
+
+
+@router.delete("/schedules/{sched_id}")
+async def schedules_delete(sched_id: int):
+    n = db.delete_schedule(sched_id)
+    if not n:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return {"ok": True, "deleted": n}
+
+
+@router.post("/schedules/{sched_id}/run")
+async def schedules_run(sched_id: int):
+    if not _scheduler.run_now(sched_id):
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return {"ok": True, "started": True}

@@ -133,9 +133,15 @@ class TMDBClient:
                          force: bool = False) -> dict:
         params = {
             "language": self._lang_param(language),
-            "append_to_response": "external_ids,credits,content_ratings",
+            "append_to_response": "external_ids,credits,content_ratings,keywords",
         }
         return await self._get(f"/tv/{tv_id}", params=params, ttl=self._ttl(), force=force)
+
+    async def tv_keywords(self, tv_id: int | str, *, force: bool = False) -> dict:
+        """Fetch TV keywords. Returns {results: [{id, name}, ...]}."""
+        return await self._get(
+            f"/tv/{tv_id}/keywords", params=None, ttl=self._ttl(), force=force
+        )
 
     async def tv_season(self, tv_id: int | str, season: int, *,
                         language: Optional[str] = None, force: bool = False) -> dict:
@@ -163,9 +169,15 @@ class TMDBClient:
                             force: bool = False) -> dict:
         params = {
             "language": self._lang_param(language),
-            "append_to_response": "external_ids,credits,release_dates",
+            "append_to_response": "external_ids,credits,release_dates,keywords",
         }
         return await self._get(f"/movie/{movie_id}", params=params, ttl=self._ttl(), force=force)
+
+    async def movie_keywords(self, movie_id: int | str, *, force: bool = False) -> dict:
+        """Fetch movie keywords. Returns {keywords: [{id, name}, ...]}."""
+        return await self._get(
+            f"/movie/{movie_id}/keywords", params=None, ttl=self._ttl(), force=force
+        )
 
     async def movie_images(self, movie_id: int | str, *, force: bool = False) -> dict:
         params = {"include_image_language": "null,en"}

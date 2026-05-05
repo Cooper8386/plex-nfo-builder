@@ -130,6 +130,27 @@ def _init_schema(c: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_item_state_status ON item_state(nfo_status);
             CREATE INDEX IF NOT EXISTS idx_artwork_sel_folder ON artwork_selections(folder_path);
             CREATE INDEX IF NOT EXISTS idx_episode_ovr_folder ON episode_overrides(folder_path);
+
+            CREATE TABLE IF NOT EXISTS custom_tags (
+                folder_path TEXT NOT NULL,
+                tag TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (folder_path, tag)
+            );
+            CREATE INDEX IF NOT EXISTS idx_custom_tags_folder ON custom_tags(folder_path);
+
+            CREATE TABLE IF NOT EXISTS schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                library TEXT,                  -- NULL = all libraries
+                cron TEXT NOT NULL,            -- 5-field cron expression (UTC)
+                action TEXT NOT NULL,          -- match_only | build_only | match_and_build | scan_only | full
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_run INTEGER,
+                last_status TEXT,              -- ok | error | running
+                last_message TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
             """
         )
 
@@ -147,6 +168,13 @@ def _migrate(c: sqlite3.Connection) -> None:
         if lib_cols and "metadata_source" not in lib_cols:
             try:
                 c.execute("ALTER TABLE libraries ADD COLUMN metadata_source TEXT")
+            except Exception:
+                pass
+        # v0.8.0: schedules.last_message added late — ensure existing DBs gain it.
+        sched_cols = {r[1] for r in c.execute("PRAGMA table_info(schedules)").fetchall()}
+        if sched_cols and "last_message" not in sched_cols:
+            try:
+                c.execute("ALTER TABLE schedules ADD COLUMN last_message TEXT")
             except Exception:
                 pass
 
@@ -634,3 +662,161 @@ def delete_custom_artwork(art_id: str) -> int:
     with _lock:
         cur = c.execute("DELETE FROM custom_artwork WHERE id = ?", (art_id,))
         return cur.rowcount
+
+
+# ---- Custom tags (v0.8.0) --------------------------------------------------
+
+def list_custom_tags(folder_path: str) -> list[str]:
+    """Return the user's custom tags for a folder, ordered by creation time."""
+    c = conn()
+    with _lock:
+        rows = c.execute(
+            "SELECT tag FROM custom_tags WHERE folder_path = ? ORDER BY created_at ASC, tag ASC",
+            (folder_path,),
+        ).fetchall()
+    return [r["tag"] for r in rows]
+
+
+def add_custom_tag(folder_path: str, tag: str) -> bool:
+    """Append a custom tag. Case-insensitive duplicates are ignored.
+
+    Returns True if a new row was inserted, False if it already existed (any
+    case-insensitive match).
+    """
+    name = (tag or "").strip()
+    if not name:
+        return False
+    c = conn()
+    with _lock:
+        existing = c.execute(
+            "SELECT 1 FROM custom_tags WHERE folder_path = ? AND tag = ? COLLATE NOCASE",
+            (folder_path, name),
+        ).fetchone()
+        if existing:
+            return False
+        c.execute(
+            "INSERT INTO custom_tags(folder_path, tag, created_at) VALUES (?,?,?)",
+            (folder_path, name, int(time.time())),
+        )
+        return True
+
+
+def remove_custom_tag(folder_path: str, tag: str) -> int:
+    """Remove a custom tag (case-insensitive). Returns the number of rows deleted."""
+    name = (tag or "").strip()
+    if not name:
+        return 0
+    c = conn()
+    with _lock:
+        cur = c.execute(
+            "DELETE FROM custom_tags WHERE folder_path = ? AND tag = ? COLLATE NOCASE",
+            (folder_path, name),
+        )
+        return cur.rowcount
+
+
+def bulk_set_custom_tags(folder_path: str, tags: list[str]) -> None:
+    """Replace all custom tags for a folder with the supplied list. Used by sidecar restore."""
+    c = conn()
+    now = int(time.time())
+    seen: set[str] = set()
+    with _lock:
+        c.execute("DELETE FROM custom_tags WHERE folder_path = ?", (folder_path,))
+        for raw in tags or []:
+            name = str(raw or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            c.execute(
+                "INSERT INTO custom_tags(folder_path, tag, created_at) VALUES (?,?,?)",
+                (folder_path, name, now),
+            )
+
+
+# ---- Schedules (v0.8.0) ----------------------------------------------------
+
+def list_schedules() -> list[sqlite3.Row]:
+    c = conn()
+    with _lock:
+        return c.execute(
+            "SELECT * FROM schedules ORDER BY id ASC"
+        ).fetchall()
+
+
+def get_schedule(sched_id: int) -> Optional[sqlite3.Row]:
+    c = conn()
+    with _lock:
+        return c.execute(
+            "SELECT * FROM schedules WHERE id = ?", (int(sched_id),)
+        ).fetchone()
+
+
+def insert_schedule(*, library: Optional[str], cron: str, action: str,
+                    enabled: bool = True) -> int:
+    c = conn()
+    now = int(time.time())
+    with _lock:
+        cur = c.execute(
+            """
+            INSERT INTO schedules(library, cron, action, enabled, created_at, updated_at)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (library, cron, action, 1 if enabled else 0, now, now),
+        )
+        return int(cur.lastrowid)
+
+
+def update_schedule(sched_id: int, *, library: Optional[str] = None,
+                    cron: Optional[str] = None, action: Optional[str] = None,
+                    enabled: Optional[bool] = None) -> None:
+    c = conn()
+    fields: list[str] = []
+    args: list[Any] = []
+    if library is not None or library is None:
+        # library may be intentionally set to NULL (all-libraries). Distinguish
+        # "no change" by passing the sentinel `__unset__` instead of None.
+        pass
+    # Build dynamic SET clause; treat None as "no change".
+    if library is not None:
+        fields.append("library = ?")
+        args.append(library if library != "" else None)
+    if cron is not None:
+        fields.append("cron = ?")
+        args.append(cron)
+    if action is not None:
+        fields.append("action = ?")
+        args.append(action)
+    if enabled is not None:
+        fields.append("enabled = ?")
+        args.append(1 if enabled else 0)
+    if not fields:
+        return
+    fields.append("updated_at = ?")
+    args.append(int(time.time()))
+    args.append(int(sched_id))
+    with _lock:
+        c.execute(f"UPDATE schedules SET {', '.join(fields)} WHERE id = ?", args)
+
+
+def delete_schedule(sched_id: int) -> int:
+    c = conn()
+    with _lock:
+        cur = c.execute("DELETE FROM schedules WHERE id = ?", (int(sched_id),))
+        return cur.rowcount
+
+
+def update_schedule_run(sched_id: int, *, last_run: int,
+                        last_status: str, last_message: Optional[str] = None) -> None:
+    c = conn()
+    with _lock:
+        c.execute(
+            """
+            UPDATE schedules
+               SET last_run = ?, last_status = ?, last_message = ?, updated_at = ?
+             WHERE id = ?
+            """,
+            (int(last_run), last_status, last_message, int(time.time()), int(sched_id)),
+        )

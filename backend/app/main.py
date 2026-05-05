@@ -15,6 +15,7 @@ from .config import CONFIG_DIR, MEDIA_ROOT, env
 from .logging_setup import setup_logging
 from .routes.api import router as api_router
 from .services import scanner
+from .services.scheduler import scheduler
 
 setup_logging()
 db.conn()  # init sqlite
@@ -38,6 +39,18 @@ async def startup():
         logger.info("Detected libraries: {}", [l["name"] for l in libs])
     except Exception as e:
         logger.warning("Initial library detection failed: {}", e)
+    try:
+        scheduler.start()
+    except Exception as e:
+        logger.warning("Scheduler failed to start: {}", e)
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    try:
+        await scheduler.stop()
+    except Exception as e:
+        logger.warning("Scheduler failed to stop cleanly: {}", e)
 
 
 # Serve the built frontend if present

@@ -2,6 +2,63 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.8.0 — 2026-05-05
+
+### Added
+
+- **Custom tags per item.** You can now add your own tags to a series or
+  movie from the DetailView. Custom tags are appended to (never replace)
+  the genres pulled from TVDB/TMDB and are emitted into the NFO as both
+  `<genre>` and `<tag>` so Plex picks them up automatically. Removing a
+  custom tag is a click on the × next to the chip.
+- **Tag source toggle.** The DetailView now shows the genres/keywords
+  fetched from each metadata source side-by-side: switch between TVDB
+  genres, TMDB keywords, and your custom tags from a single tab strip.
+  When the item is bound to TVDB the panel also surfaces TMDB keywords
+  (resolved through TVDB `remoteIds`) so you can preview what the other
+  source would emit before swapping providers.
+- **Scheduling.** A new Schedules section in Settings lets you run
+  scans, auto-matches, and builds on a cron schedule. Actions:
+  `scan_only`, `match_only`, `build_only`, `match_and_build`, and `full`
+  (scan + match + build). Schedules can target a specific library or
+  every enabled library. Each row has an "Run now" button for manual
+  triggers and shows the last run timestamp + status badge. Cron
+  expressions are evaluated in UTC; presets cover the common cadences
+  (daily 3am, weekly Sunday, every 6 hours, hourly).
+- The scheduler skips items with nothing new — a fully-built series whose
+  local episode count hasn't changed since the last build is left alone
+  so a daily "full" schedule is cheap to leave running.
+- New REST endpoints: `GET/POST /api/schedules`, `PATCH/DELETE
+  /api/schedules/{id}`, `POST /api/schedules/{id}/run`, plus
+  `POST /api/items/tags` and `DELETE /api/items/tags`.
+- Custom tags survive a Wipe → Restore round-trip via the
+  `.plex-nfo-builder.json` sidecar (new `custom_tags` field, schema
+  version unchanged).
+
+### Changed
+
+- **"Auto-match all" actually does something now.** The button used to
+  send `only_unmatched: true` to the backend, which short-circuited to
+  zero work whenever every folder was already bound. The frontend now
+  asks the backend to re-resolve every folder in the library, matching
+  the documented behaviour.
+- **Removed the status filter.** The Topbar no longer has the Filters
+  dropdown and item lists no longer hide items based on NFO status. All
+  items in a library are shown by default; status colour-codes still
+  surface the state at a glance. The legacy `status` and `hide_organized`
+  query params on `/api/items` are accepted for back-compat but the UI
+  no longer sends them.
+
+### Notes
+
+- The scheduler runs entirely on stdlib `asyncio` — no APScheduler
+  dependency. The cron parser supports numbers, `*`, `*/N`, `a-b`, and
+  comma lists, which covers every preset surfaced in the UI.
+- New DB tables: `custom_tags(folder_path, tag, created_at)` and
+  `schedules(id, library, cron, action, enabled, last_run, last_status,
+  last_message, created_at, updated_at)`. Existing databases are
+  migrated automatically on first launch.
+
 ## 0.7.0 — 2026-05-04
 
 ### Added
