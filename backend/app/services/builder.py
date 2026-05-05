@@ -217,6 +217,13 @@ async def build_series(folder: Path, *, force: bool = False,
             except Exception as se:
                 log.warning("season.nfo write for s{:02d} failed: {}", snum, se)
             for parsed in list_season_episodes(sd):
+                # v0.9.0: list_season_episodes can return placeholder entries
+                # for video files we couldn't parse. Skip them in the builder
+                # so we don't try to look up bogus s00e00 metadata.
+                if not getattr(parsed, "parsed", True):
+                    unmatched.append(parsed.path.name)
+                    job["progress"] += 1
+                    continue
                 key = (snum, parsed.episode)
                 ep = None
                 if key in overrides:

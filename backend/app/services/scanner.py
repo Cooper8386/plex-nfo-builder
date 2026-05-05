@@ -15,6 +15,8 @@ from .parser import (
     ParsedFolder,
     SeriesFolderScan,
     detect_season_dirs,
+    folder_looks_like_movie,
+    folder_root_videos,
     is_video,
     list_season_episodes,
     parse_folder_name,
@@ -45,23 +47,28 @@ def detect_libraries(media_root: Optional[Path] = None) -> list[dict]:
 
 
 def _infer_library_kind(library_dir: Path) -> str:
+    """Infer ``tv`` / ``movies`` from a sample of the library.
+
+    Note we still report a single kind even for libraries that mix movie
+    and series folders (anime libraries commonly do). The per-folder scan
+    in :func:`scan_library` then routes movie-like folders to
+    :func:`scan_movie_folder` regardless of the library kind.
+    """
     sample = []
     for c in library_dir.iterdir():
         if c.is_dir() and not c.name.startswith("."):
             sample.append(c)
-        if len(sample) >= 12:
+        if len(sample) >= 16:
             break
     if not sample:
         return "mixed"
     has_seasons = 0
     movie_like = 0
     for d in sample:
-        seasons = detect_season_dirs(d)
-        if seasons:
+        if detect_season_dirs(d):
             has_seasons += 1
             continue
-        # also consider movie if any direct video file inside
-        if any(is_video(f) for f in d.iterdir() if f.is_file()):
+        if folder_looks_like_movie(d):
             movie_like += 1
     if has_seasons >= movie_like:
         return "tv"
@@ -82,7 +89,18 @@ def scan_library(name: str) -> int:
     for entry in sorted(lib_path.iterdir()):
         if not entry.is_dir() or entry.name.startswith("."):
             continue
-        if kind == "movies":
+        # v0.9.0: per-folder kind detection so a Radarr movie sitting in a
+        # mostly-TV library (common for anime libraries) still gets scanned
+        # as a movie. Folder-level routing rules:
+        #   - has season subdirs -> series
+        #   - else has direct video file(s) -> movie
+        #   - else (empty) -> follow the library's declared kind
+        effective = kind
+        if detect_season_dirs(entry):
+            effective = "tv"
+        elif folder_looks_like_movie(entry):
+            effective = "movies"
+        if effective == "movies":
             scan_movie_folder(entry, library=name)
         else:
             scan_series_folder(entry, library=name)
@@ -106,6 +124,14 @@ def scan_series_folder(folder: Path, library: str) -> SeriesFolderScan:
         if eps:
             seasons[snum] = eps
             total_eps += len(eps)
+    # v0.9.0: also include video files dropped in the series root (a few
+    # users keep a single "movie" video at the top of an anime folder, or
+    # specials live there). They count toward the local episode total even
+    # if we can't parse them so the UI doesn't claim "0 video files".
+    root_eps = list_season_episodes(folder)
+    if root_eps:
+        seasons.setdefault(0, []).extend(root_eps)
+        total_eps += len(root_eps)
 
     nfo_state, has_prov, nfo_count = _scan_nfo_state(folder, total_eps, kind="series")
     poster = _local_poster_for(folder)
@@ -137,14 +163,15 @@ def scan_movie_folder(folder: Path, library: str) -> dict:
         restore_from_sidecar(folder)
     except Exception as e:
         logger.warning("sidecar restore failed for {}: {}", folder, e)
-    # primary video file
-    videos = [f for f in folder.iterdir() if f.is_file() and is_video(f)]
-    if not videos:
-        return {}
-    main = videos[0]
-    pm = parse_movie_filename(main)
-    nfo_path = main.with_suffix(".nfo")
-    has_nfo = nfo_path.exists()
+    # primary video file. v0.9.0: even if no video file exists yet (folder
+    # was created but the download is incomplete) we still upsert basic
+    # state from the folder name so the user sees the item, can match it
+    # manually, and the builder doesn't silently skip it later.
+    videos = folder_root_videos(folder)
+    main = videos[0] if videos else None
+    pm = parse_movie_filename(main) if main else None
+    nfo_path = main.with_suffix(".nfo") if main else (folder / "movie.nfo")
+    has_nfo = nfo_path.exists() if main else False
     has_prov = False
     if has_nfo:
         try:
@@ -154,25 +181,29 @@ def scan_movie_folder(folder: Path, library: str) -> dict:
             pass
     folder_pf = parse_folder_name(folder.name)
     binding = db.get_binding(str(folder))
-    provider = pm.provider or folder_pf.provider or (binding["provider"] if binding else None)
-    eid = pm.external_id or folder_pf.external_id or (binding["external_id"] if binding else None)
+    pm_provider = pm.provider if pm else None
+    pm_eid = pm.external_id if pm else None
+    pm_title = pm.title if pm else None
+    pm_year = pm.year if pm else None
+    provider = pm_provider or folder_pf.provider or (binding["provider"] if binding else None)
+    eid = pm_eid or folder_pf.external_id or (binding["external_id"] if binding else None)
     state = "complete" if has_nfo and has_prov else ("foreign" if has_nfo else "none")
     poster = _local_poster_for(folder)
     db.upsert_item_state(
         str(folder),
         library=library,
         kind="movie",
-        title=pm.title or folder_pf.title,
-        year=pm.year or folder_pf.year,
+        title=pm_title or folder_pf.title,
+        year=pm_year or folder_pf.year,
         provider=provider,
         external_id=eid,
         nfo_status=state,
-        episode_count_local=1,
+        episode_count_local=len(videos),
         episode_count_tvdb=None,
         last_scanned=int(__import__("time").time()),
         poster_path=str(poster) if poster else None,
     )
-    return {"title": pm.title, "state": state}
+    return {"title": pm_title or folder_pf.title, "state": state}
 
 
 def _scan_nfo_state(folder: Path, expected_episodes: int, kind: str) -> tuple[str, bool, int]:

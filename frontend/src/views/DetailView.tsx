@@ -12,6 +12,7 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
   const detail = useQuery({ queryKey: ["detail", path], queryFn: () => api.items.detail(path) });
   const [searchQuery, setSearchQuery] = useState("");
   const [matchKind, setMatchKind] = useState<"series" | "movie">("series");
+  const [matchKindTouched, setMatchKindTouched] = useState(false);
   const [matchProvider, setMatchProvider] = useState<"tvdb" | "tmdb">("tvdb");
   const [matches, setMatches] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
@@ -21,6 +22,23 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
   useEffect(() => {
     api.health().then((h: any) => setPlexConfigured(!!h.plex_configured)).catch(() => {});
   }, []);
+
+  // v0.9.0: default the manual-match "Kind" picker to the folder's detected
+  // kind so users searching a Radarr movie folder don't have to switch from
+  // "series" every time. Once the user changes it themselves we stop
+  // overriding their choice.
+  const detectedKind: "series" | "movie" | undefined =
+    (detail.data as any)?.state?.kind === "movie"
+      ? "movie"
+      : (detail.data as any)?.state?.kind === "series"
+      ? "series"
+      : undefined;
+  useEffect(() => {
+    if (detectedKind && !matchKindTouched && matchKind !== detectedKind) {
+      setMatchKind(detectedKind);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detectedKind]);
 
   if (!detail.data) return <div className="p-6 text-slate-500">Loading…</div>;
   const { state, binding, artwork_files, provider_episode_count, provider_used, tags } =
@@ -261,7 +279,10 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
             </select>
             <select
               value={matchKind}
-              onChange={(e) => setMatchKind(e.target.value as any)}
+              onChange={(e) => {
+                setMatchKind(e.target.value as any);
+                setMatchKindTouched(true);
+              }}
               className="bg-slate-800 px-2 py-1 rounded text-sm border border-slate-700"
             >
               <option value="series">Series</option>

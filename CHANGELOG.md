@@ -2,6 +2,76 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.9.0 — 2026-05-05
+
+### Added
+
+- **Sonarr/Radarr-aware file detection.** The scanner now recognises the
+  full set of [Trash-Guides recommended naming schemes](https://trash-guides.info)
+  out of the box: Sonarr standard (`SxxExx`), Sonarr daily
+  (`Title - YYYY-MM-DD - Episode Title`), Sonarr anime (extra bracketed
+  `[10bit]` / `[JA]` tags), and Radarr movies including
+  `{edition-…}` tags. Edition tags are stripped before the provider id
+  match so `Mad Max (1979) {edition-Directors Cut} {tmdb-8810}` parses
+  cleanly.
+- **Always-show video files.** Video files that don't match any naming
+  scheme are no longer silently dropped. They show up in the file count
+  and in the unmatched list so you can bind them manually instead of
+  the folder appearing empty. Recognised extensions now also include
+  `.wmv` and `.flv`.
+- **Per-folder kind routing.** A Radarr movie sitting in a TV-classified
+  library (common in mixed anime libraries) is now scanned, matched, and
+  built as a movie regardless of the library's declared kind. The
+  detection is content-based: season subdirs ⇒ series, otherwise direct
+  video files ⇒ movie.
+- **Folder-id fast path on every matcher.** When a folder name carries
+  an explicit `{tvdb-…}` or `{tmdb-…}` tag, all four auto-matchers
+  (TVDB/TMDB × series/movie) trust the tag, bind, and return early — no
+  fuzzy fallback that could overwrite the binding with a noisier hit.
+- **`extras/` recognised as season 0.** The Sonarr `extras/` convention
+  is now treated like `Specials/` for season detection.
+- **Series root videos.** Loose video files dropped at the series root
+  (rather than under `Season XX/`) are picked up and counted as season 0
+  episodes so the UI doesn't claim the folder is empty.
+
+### Fixed
+
+- **TMDB auto-match for movies no longer falls through.** A folder
+  tagged `{tmdb-NNNN}` could previously have its TMDB binding
+  overwritten by a TVDB search hit because the matcher kept executing
+  past the tmdb branch. Both the folder-id and filename-id paths now
+  return as soon as the binding is written.
+- **TMDB series matcher no longer 404s on movie ids.** When a Radarr
+  movie folder ended up classified as a series the TMDB matcher would
+  call `tv_details(movie_id)` and return nothing. The matcher now routes
+  movie-shaped folders to the movie matcher even when invoked from the
+  series entry point.
+- **Year filter is no longer a hard filter.** TVDB and TMDB searches
+  retry without the year if the year-filtered pass is empty or all
+  candidates score below 70 — anime release years often disagree across
+  databases by ±1. The year bonus also went up from +5 to +15 (with a
+  smaller +5 for off-by-one) so a correctly-dated candidate beats a
+  same-titled remake that's a year off.
+- **Manual TMDB search returns results when year is wrong.** The
+  manual-search endpoint mirrors the year-fallback behaviour so users
+  searching with the folder's year still see candidates instead of an
+  empty list.
+- **DetailView "Kind" defaults to the detected kind.** Previously the
+  manual-match dialog always opened with `series` selected, so users
+  searching for a movie had to flip the dropdown every time and could
+  bind the wrong kind by mistake. The picker now opens on the folder's
+  detected kind and only stays sticky once the user changes it manually.
+
+### Changed
+
+- `_detect_kind` (used by `/build` and the bulk matchers) now consults
+  the folder content first and falls back to the library kind, so
+  building a single mixed-library item works without manually specifying
+  `kind` in the request.
+- `_pick_best_tmdb` adds a small popularity tiebreaker (capped at +3)
+  so a popular hit beats an obscure same-title match when both score
+  equally.
+
 ## 0.8.0 — 2026-05-05
 
 ### Added

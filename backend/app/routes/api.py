@@ -39,6 +39,7 @@ from ..services import sidecar as sidecar_svc
 from ..services.scheduler import cron_matches as _cron_matches, scheduler as _scheduler
 from ..services.parser import (
     detect_season_dirs,
+    folder_looks_like_movie,
     list_season_episodes,
     parse_folder_name,
     season_number_from_dir,
@@ -748,6 +749,20 @@ class BuildIn(BaseModel):
 
 
 def _detect_kind(p: Path) -> str:
+    """Decide whether a folder is a series or a movie.
+
+    v0.9.0: per-folder content trumps the library declaration. Anime
+    libraries commonly mix Radarr movies and Sonarr series; we shouldn't
+    mis-route a movie folder as a series just because the library was
+    classified as TV (or vice versa).
+    """
+    try:
+        if detect_season_dirs(p):
+            return "series"
+        if folder_looks_like_movie(p):
+            return "movie"
+    except Exception:
+        pass
     lib_name = p.parent.name
     rows = db.list_libraries()
     lib_kind = next((r["kind"] for r in rows if r["name"] == lib_name), "tv")
