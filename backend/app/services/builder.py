@@ -502,7 +502,32 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
     try:
         client = get_tmdb_client()
         if binding:
-            data = await client.tv_details(binding["external_id"], language=lang, force=force)
+            try:
+                data = await client.tv_details(binding["external_id"], language=lang, force=force)
+            except Exception as e:
+                # Mirror of the movie path's self-heal: if a stale binding
+                # claims kind="series" for a movie id, swap it. v0.9.2.
+                msg = str(e)
+                if "404" not in msg:
+                    raise
+                log.warning("TMDB tv_details {} failed (404) \u2014 retrying as movie id",
+                            binding["external_id"])
+                mv = await client.movie_details(binding["external_id"], language=lang, force=force)
+                if mv:
+                    db.upsert_binding(
+                        str(folder), "movie", "tmdb", str(mv.get("id")),
+                        title=mv.get("title") or mv.get("name"),
+                        year=binding["year"],
+                        language=binding["language"], respect_lock=True,
+                    )
+                    log.info("Rebound {} as movie (tmdb id {}) and continuing build",
+                             folder.name, mv.get("id"))
+                    new_binding = db.get_binding(str(folder))
+                    return await _build_movie_tmdb(
+                        folder, new_binding, settings, lang, fallbacks,
+                        force=force, jid=jid, log=log, job=job,
+                    )
+                raise
         else:
             data = await auto_match_series_tmdb(folder, language=lang,
                                                 threshold=settings.auto_match_threshold)
@@ -656,7 +681,33 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
     try:
         client = get_tmdb_client()
         if binding:
-            data = await client.movie_details(binding["external_id"], language=lang, force=force)
+            try:
+                data = await client.movie_details(binding["external_id"], language=lang, force=force)
+            except Exception as e:
+                # v0.9.2: a stale binding from before v0.9.1 may still claim
+                # kind="movie" for what is actually a TV id. If the bound id
+                # 404s as a movie, try it as a TV id and rewrite the binding
+                # so future builds take the correct path.
+                msg = str(e)
+                if "404" not in msg:
+                    raise
+                log.warning("TMDB movie_details {} failed (404) \u2014 retrying as TV id",
+                            binding["external_id"])
+                tv = await client.tv_details(binding["external_id"], language=lang, force=force)
+                if tv:
+                    db.upsert_binding(
+                        str(folder), "series", "tmdb", str(tv.get("id")),
+                        title=tv.get("name"), year=binding["year"],
+                        language=binding["language"], respect_lock=True,
+                    )
+                    log.info("Rebound {} as series (tmdb id {}) and continuing build",
+                             folder.name, tv.get("id"))
+                    new_binding = db.get_binding(str(folder))
+                    return await _build_series_tmdb(
+                        folder, new_binding, settings, lang, fallbacks,
+                        force=force, jid=jid, log=log, job=job,
+                    )
+                raise
         else:
             data = await auto_match_movie_tmdb(folder, language=lang,
                                                threshold=settings.auto_match_threshold)

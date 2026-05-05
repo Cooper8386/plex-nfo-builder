@@ -2,6 +2,42 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.9.3 — 2026-05-05
+
+### Fixed
+
+- **TMDB manual search returned no results for adult-flagged shows.**
+  Searching for `Shishunki no Obenkyou` (TMDB tv `153655`) showed
+  "No results yet." even though the series exists on themoviedb.org,
+  because TMDB's `/search/tv` defaults `include_adult=false` and hides
+  the entry. `TMDBClient.search()` now passes `include_adult=true` by
+  default — this is a desktop NFO scraper, not a user-content surface,
+  so adult-flagged anime should be findable.
+- **TMDB search now falls back to `en-US` when a non-default language
+  returns nothing.** Niche anime is often only indexed under the
+  romaji/English title on TMDB, so a search constrained to e.g. `ja-JP`
+  silently returned zero hits even when results existed. After a
+  language-scoped query comes back empty, the client retries in `en-US`
+  (with and without the year filter) before giving up.
+
+## 0.9.2 — 2026-05-05
+
+### Fixed
+
+- **Stale `kind=movie` bindings keep 404'ing the build.** v0.9.1 stopped
+  *creating* mis-kinded bindings, but folders that were auto-matched by
+  v0.9.0 still had `kind="movie"` for what is actually a TV id, so every
+  Build click hit `TMDB GET /movie/<tv_id>` and failed. v0.9.2 self-heals
+  these bindings in three places:
+  - **Builder**: when `_build_movie_tmdb` 404s on the bound id, retry as
+    `tv_details`, rewrite the binding to `kind="series"`, and continue
+    the build through the series path. Mirror logic when
+    `_build_series_tmdb` 404s.
+  - **Scanner**: a regular library scan now compares each binding's
+    stored `kind` against the folder's actual content (season subdirs
+    vs. parsed-episode files) and rewrites it when they disagree, so
+    the wrong-kind binding is corrected without forcing a rebuild.
+
 ## 0.9.1 — 2026-05-05
 
 ### Fixed

@@ -120,14 +120,46 @@ class TMDBClient:
         return m.get(language.lower(), "en-US")
 
     async def search(self, query: str, type_: str = "tv", year: Optional[int] = None,
-                     language: Optional[str] = None, limit: int = 20) -> list[dict]:
-        params: dict[str, Any] = {"query": query, "language": self._lang_param(language)}
-        if year:
-            params["year" if type_ == "movie" else "first_air_date_year"] = year
+                     language: Optional[str] = None, limit: int = 20,
+                     include_adult: bool = True) -> list[dict]:
+        """Search TMDB.
+
+        v0.9.3: ``include_adult`` defaults to True so adult-themed anime
+        and other shows TMDB flags as adult (e.g. Shishunki no Obenkyou,
+        id 153655) actually appear. Without this, the user sees
+        \u201cNo results yet\u201d for a show that very obviously exists on
+        themoviedb.org. The flag also covers movies.
+
+        We additionally retry the search with ``language=en-US`` if a
+        non-default language returns nothing \u2014 niche anime is often
+        only indexed under English/romaji titles in TMDB.
+        """
         path = "/search/tv" if type_ == "tv" or type_ == "series" else "/search/movie"
+        primary_lang = self._lang_param(language)
         ttl = self._ttl()
-        data = await self._get(path, params=params, ttl=ttl)
-        return (data.get("results") or [])[:limit]
+
+        async def _do(lang_code: str, with_year: bool) -> list[dict]:
+            params: dict[str, Any] = {
+                "query": query,
+                "language": lang_code,
+                "include_adult": "true" if include_adult else "false",
+            }
+            if with_year and year:
+                params["year" if type_ == "movie" else "first_air_date_year"] = year
+            data = await self._get(path, params=params, ttl=ttl)
+            return data.get("results") or []
+
+        results = await _do(primary_lang, with_year=True)
+        # Retry without year if year-filtered returns nothing (off-by-one).
+        if not results and year:
+            results = await _do(primary_lang, with_year=False)
+        # Retry in English if a non-en language returned nothing \u2014 TMDB's
+        # title index is best in English/romaji for niche anime.
+        if not results and primary_lang != "en-US":
+            results = await _do("en-US", with_year=bool(year))
+            if not results and year:
+                results = await _do("en-US", with_year=False)
+        return results[:limit]
 
     async def tv_details(self, tv_id: int | str, *, language: Optional[str] = None,
                          force: bool = False) -> dict:

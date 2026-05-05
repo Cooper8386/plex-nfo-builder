@@ -100,6 +100,23 @@ def scan_library(name: str) -> int:
             effective = "tv"
         elif folder_looks_like_movie(entry):
             effective = "movies"
+        # v0.9.2: self-heal a stale binding whose kind no longer matches
+        # the folder's actual content. Without this a binding written by
+        # v0.9.0 (movie) keeps the build pipeline stuck on movie_details
+        # for an id that is actually a TV show.
+        binding = db.get_binding(str(entry))
+        if binding:
+            want = "series" if effective == "tv" else "movie"
+            if binding["kind"] != want:
+                logger.info(
+                    "Rewriting binding kind for {}: {} \u2192 {} (folder content disagrees)",
+                    entry.name, binding["kind"], want,
+                )
+                db.upsert_binding(
+                    str(entry), want, binding["provider"], binding["external_id"],
+                    title=binding["title"], year=binding["year"],
+                    language=binding["language"], respect_lock=False,
+                )
         if effective == "movies":
             scan_movie_folder(entry, library=name)
         else:
