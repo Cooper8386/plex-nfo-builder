@@ -2,7 +2,7 @@
 
 A self-hosted web app that pulls metadata from [TheTVDB v4 API](https://thetvdb.github.io/v4-api/) for your shows / movies and writes Plex-compatible NFO files plus full local artwork sets.
 
-Built around your Sonarr/Radarr-style filenames (e.g. `Severance (2022) - S02E08 - Sweet Vitriol [WEBDL-1080p][EAC3 Atmos 5.1][h264]-FLUX.mkv`) and folder layout (e.g. `Severance (2022) {tvdb-371980}/Season 02/...`). Reads the `{tvdb-…}` / `{tmdb-…}` tag in folder/file names so it doesn't have to guess.
+Built around your Sonarr/Radarr-style filenames (e.g. `Severance (2022) - S02E08 - Sweet Vitriol [WEBDL-1080p][EAC3 Atmos 5.1][h264]-FLUX.mkv`) and folder layout (e.g. `Severance (2022) {tvdb-371980}/Season 02/...`). Reads the `{tvdb-…}` / `{tmdb-…}` tag in folder/file names so it doesn't have to guess. Anime/fansub-style filenames (`[Group] Title - 01 [1080p][WEB-DL].mkv`) are also parsed and can be renamed in-place to match the Sonarr scheme.
 
 ## Highlights
 
@@ -14,6 +14,7 @@ Built around your Sonarr/Radarr-style filenames (e.g. `Severance (2022) - S02E08
 - **Manual NFO field overrides** at the series, season, or per-episode level (title, sorttitle, originaltitle, tagline, plot). Empty falls back to source.
 - **Sidecar (`.plex-nfo-builder.json`)** in every bound folder carries the binding, overrides, artwork selections, and episode mapping. A full database wipe is recoverable straight from the media library.
 - **Wipe NFOs & artwork** button per show — deletes every generated file in one click while leaving season folders and media files alone.
+- **Rename to scheme** — preview-then-apply renamer that rewrites loose anime/fansub filenames into a Sonarr-style template (`{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}`). Dry-run preview shows every rename, flags conflicts, and lets you uncheck individual files. Customizable templates live in Settings.
 - **Provenance**: every NFO this app writes carries a header comment with version, source id, content hash, and timestamp. The scanner uses that to label items as `complete / partial / foreign / mixed / stale` and avoids clobbering foreign NFOs unless you opt in.
 - **Library views**: poster grid (default), dense list, and per-item detail. Filter by status, free-text title search, and a one-click toggle to **hide already-organized** items.
 - **In-app help** (Help in the top bar) — quick orientation, button reference, status badge legend.
@@ -100,7 +101,30 @@ Environment variables:
 2. **Filename ID** — for movies, the `{tmdb-…}` in your filenames is recorded as a `<uniqueid type="tmdb">` even if we use TVDB for the rest.
 3. **Auto search** — if no ID tag exists, we fuzzy-search TVDB by title+year. Threshold is configurable in Settings (default 85).
 4. **Manual match** — open a series → "Manual match" panel → search → "Bind". The binding is stored permanently in SQLite, so re-runs skip the search.
-5. **Per-episode mapping** — local episodes are matched to TVDB episodes by `(season, episode)` extracted from `SxxExx` in your filename (your bracket/quality tags are stripped). Unmatched episodes are listed in the build report. Use the **Episodes** tab on a series to override any local file's TVDB target on a per-episode basis; overrides are honored on every subsequent build.
+5. **Per-episode mapping** — local episodes are matched to TVDB/TMDB episodes by `(season, episode)`. Filename styles supported:
+   - Sonarr/Radarr: `Series (Year) - S01E03 - Title.mkv`
+   - Daily/talk shows: `Show - 2024-01-15.mkv`
+   - Anime/fansub: `[Group] Title - 03 [1080p].mkv` (treated as S01E03; pick a different season per file via the inline picker if your fansub bundles multiple seasons)
+
+   The **Episodes** tab on a series lists every local file as its own row, lets you set a per-file season/episode/external-id override, and lets you rename the files to your template once they're mapped correctly. Overrides survive renames and rebuilds.
+
+## Episode mapping & renaming
+
+Open a series → **Episodes** tab. Each local file gets its own row showing the parsed `S/E`, the matched provider title, and (for unparsed files) inline season/episode pickers. Override any file's mapping with the per-row dropdown — overrides are stored per-file in SQLite and in the sidecar.
+
+Click **Rename to scheme** on the Episodes tab to open the rename modal:
+
+- Live preview of every `from → to` change.
+- Conflict badges (`exists`, `duplicate`) so you don't clobber existing files.
+- Per-row checkboxes — auto-checked except for unchanged or conflicting rows.
+- Atomic per-file rename via `os.replace`. Per-file overrides are migrated alongside the file so your bindings stay intact.
+
+Default templates (editable in Settings → Renaming):
+
+- Series: `{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}`
+- Movie: `{title} ({year}){ext}`
+
+Available tokens: `{title}`, `{year}`, `{season}`, `{season:02}`, `{episode}`, `{episode:02}`, `{episode_title}`, `{quality}` (best-effort `1080p` / `WEB-DL` / etc. from the original stem), `{ext}`.
 
 ## NFO provenance
 

@@ -76,6 +76,16 @@ def build_sidecar_payload(folder: Path | str) -> dict:
     artwork_selections = db.get_artwork_selections(folder_str)
     ep_ovr_raw = db.get_episode_overrides(folder_str)  # {(s,e): tvdb_id}
     episode_overrides = {f"{s:02d}-{e:02d}": tid for (s, e), tid in ep_ovr_raw.items()}
+    # v0.10.0: per-file overrides keyed by the file path *relative* to the
+    # folder so a folder rename doesn't invalidate them.
+    ep_file_raw = db.get_episode_file_overrides(folder_str)
+    episode_file_overrides: dict[str, dict] = {}
+    for fp, payload in ep_file_raw.items():
+        try:
+            rel = os.path.relpath(fp, folder_str)
+        except Exception:
+            rel = fp
+        episode_file_overrides[rel] = payload
     custom_tags = db.list_custom_tags(folder_str)
     return {
         "version": SIDECAR_VERSION,
@@ -83,6 +93,7 @@ def build_sidecar_payload(folder: Path | str) -> dict:
         "overrides": overrides,
         "artwork_selections": artwork_selections,
         "episode_overrides": episode_overrides,
+        "episode_file_overrides": episode_file_overrides,
         "custom_tags": custom_tags,
     }
 
@@ -171,6 +182,24 @@ def restore_from_sidecar(folder: Path | str) -> bool:
                 if tid:
                     db.set_episode_override(folder_str, s_num, e_num, str(tid))
                     restored = True
+            except Exception:
+                continue
+    # v0.10.0: per-file overrides keyed by relative path.
+    ep_file_ovr = data.get("episode_file_overrides") or {}
+    if isinstance(ep_file_ovr, dict):
+        for rel, payload in ep_file_ovr.items():
+            if not isinstance(payload, dict):
+                continue
+            try:
+                full = str(Path(folder_str) / rel)
+                db.set_episode_file_override(
+                    folder_str,
+                    full,
+                    payload.get("season"),
+                    payload.get("episode"),
+                    payload.get("external_id"),
+                )
+                restored = True
             except Exception:
                 continue
     # v0.8.0: custom user-added tags

@@ -2,6 +2,64 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.10.0 — 2026-05-05
+
+Large-scale episode mapping & file rename overhaul. The Episodes tab is now
+anchored to local file paths (so anime fansub releases that all parse as
+`S00E00` no longer collapse onto a single row), and there's finally a built-in
+renamer that rewrites loose filenames into your Sonarr-style scheme.
+
+### Added
+
+- **Anime / fansub filename parser.** New `ANIME_RE` regex in
+  `services/parser.py` matches `[Group] Title - NN [tags].mkv` and
+  `[Group] Title - NNvN [tags].mkv` and treats the bare episode number as
+  S01E`NN`. Sonarr-style `SxxExx` names still take precedence.
+- **Per-file episode overrides.** New `episode_file_overrides` table in SQLite
+  keyed on `(folder_path, file_path)` — every local file gets its own
+  season/episode/external-id slot. Sidecar carries the new map under
+  `episode_file_overrides` so a DB wipe restores them from disk.
+- **Rename-to-scheme feature.** New `services/renamer.py` plus three API
+  endpoints (`/api/episodes/rename/preview`, `/api/episodes/rename/apply`,
+  `/api/episodes/override-file`). Sonarr-style template rendering with token
+  fallback, sanitised filenames, `{quality}` token best-effort extracted from
+  the original stem, conflict detection (`exists` / `duplicate`), atomic
+  per-file rename via `os.replace`, and per-file override migration so your
+  bindings survive the rename.
+- **Settings → Renaming.** Three new fields: `rename_episode_template` (default
+  `{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}`),
+  `rename_movie_template` (default `{title} ({year}){ext}`), and
+  `rename_enabled`.
+- **README + Help.** Both now have an Episode mapping & renaming section,
+  including the supported filename styles, the rename modal flow, and the full
+  token list. Going forward every release that ships a user-visible change
+  updates these alongside the code.
+
+### Fixed
+
+- **Episodes tab said "TVDB Episode" even on TMDB-bound shows.** The header
+  now follows the active binding's provider — TMDB-bound series read "TMDB
+  Episode", TVDB-bound series read "TVDB Episode".
+- **"Override saved for S00E00" with no actual change.** Anime filenames had
+  no `SxxExx` and no daily date, so every file collapsed to `(0,0)` in the
+  old `(season, episode)`-keyed override table. With per-file override rows
+  plus the new anime parser this no longer happens — each file has its own
+  row and its own override slot.
+
+### Changed
+
+- **Episodes tab rewritten.** Rows are now keyed by file path. Unparsed files
+  show inline season/episode pickers. Provider-aware column header. A new
+  Rename modal shows a dry-run diff with per-row checkboxes (auto-checked
+  except for unchanged or conflicting rows) and conflict badges.
+- **DetailView decluttered.** The action row collapses secondary actions
+  (Wipe, Refresh in Plex, Remove from library) into a `•••` overflow menu;
+  Build / Force rebuild stay primary, and a new "Change match" toggle reveals
+  the search panel only when you ask for it. Unbound folders get a prominent
+  empty-state card guiding you to bind.
+- **Cascade cleanup.** `forget_folder` and `delete_library` now also clear
+  `episode_file_overrides` rows, matching the existing override tables.
+
 ## 0.9.3 — 2026-05-05
 
 ### Fixed

@@ -33,11 +33,30 @@ export type LocalEpisode = {
   file_name: string;
   parsed_season: number;
   parsed_episode: number;
+  /** v0.10.0: season/episode after applying any per-file user override. */
+  effective_season: number | null;
+  effective_episode: number | null;
   override_episode_id: string | null;
   matched_episode_id: string | null;
   matched_season: number | null;
   matched_number: number | null;
   matched_title: string | null;
+  /** True when the parser couldn't extract season/episode from the filename. */
+  unparsed?: boolean;
+  /** True when the user has set a per-file override for this row. */
+  has_file_override?: boolean;
+};
+
+export type RenamePlanItem = {
+  src: string;
+  dst: string;
+  src_name: string;
+  dst_name: string;
+  season: number | null;
+  episode: number | null;
+  matched_title: string | null;
+  conflict: "exists" | "duplicate" | null;
+  unchanged: boolean;
 };
 
 export type TvdbEpisode = {
@@ -340,6 +359,7 @@ export const api = {
     list: (path: string) =>
       J<{
         path: string;
+        provider: "tvdb" | "tmdb";
         locals: LocalEpisode[];
         tvdb_episodes: TvdbEpisode[];
       }>(fetch(`/api/episodes?path=${encodeURIComponent(path)}`)),
@@ -356,6 +376,49 @@ export const api = {
           body: JSON.stringify(body),
         })
       ),
+    /** v0.10.0 — per-file override anchored to the actual file path. */
+    overrideFile: (body: {
+      folder_path: string;
+      file_path: string;
+      season?: number | null;
+      episode?: number | null;
+      external_id?: string | null;
+      clear?: boolean;
+    }) =>
+      J<{ ok: true }>(
+        fetch("/api/episodes/override-file", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      ),
+    rename: {
+      preview: (body: { folder_path: string; template?: string }) =>
+        J<{ folder_path: string; template: string; items: RenamePlanItem[] }>(
+          fetch("/api/episodes/rename/preview", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          })
+        ),
+      apply: (body: {
+        folder_path: string;
+        template?: string;
+        only_src?: string[];
+      }) =>
+        J<{
+          ok: true;
+          renamed: { src: string; dst: string }[];
+          skipped: { src: string; dst?: string; reason: string }[];
+          failed: { src: string; dst?: string; reason: string }[];
+        }>(
+          fetch("/api/episodes/rename/apply", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          })
+        ),
+    },
   },
   overrides: {
     get: (path: string) =>

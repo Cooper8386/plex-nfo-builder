@@ -102,6 +102,22 @@ def _init_schema(c: sqlite3.Connection) -> None:
                 PRIMARY KEY (folder_path, season, episode)
             );
 
+            -- v0.10.0: per-file override anchored to the actual file path so
+            -- multiple unparsed files in the same folder don't all collapse
+            -- onto the same (season, episode) key. The legacy table above is
+            -- kept for backward compatibility (and migrated on read).
+            CREATE TABLE IF NOT EXISTS episode_file_overrides (
+                folder_path TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                season INTEGER,
+                episode INTEGER,
+                external_id TEXT,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (folder_path, file_path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_episode_file_ovr_folder
+                ON episode_file_overrides(folder_path);
+
             CREATE TABLE IF NOT EXISTS nfo_overrides (
                 folder_path TEXT NOT NULL,
                 scope TEXT NOT NULL,           -- 'series' | 'season-NN' | 'episode-<id>' | 'movie'
@@ -345,6 +361,7 @@ def delete_item_state(folder_path: str) -> int:
         c.execute("DELETE FROM bindings WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM artwork_selections WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM episode_overrides WHERE folder_path = ?", (folder_path,))
+        c.execute("DELETE FROM episode_file_overrides WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM active_artwork WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM custom_artwork WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM nfo_overrides WHERE folder_path = ?", (folder_path,))
@@ -449,6 +466,7 @@ def delete_library(name: str) -> dict:
                 "nfo_overrides",
                 "artwork_selections",
                 "episode_overrides",
+                "episode_file_overrides",
             ):
                 cur = c.execute(
                     f"DELETE FROM {table} WHERE folder_path IN ({placeholders})",
@@ -549,6 +567,100 @@ def get_episode_overrides(folder_path: str) -> dict[tuple[int, int], str]:
             (folder_path,),
         ).fetchall()
     return {(int(r["season"]), int(r["episode"])): r["tvdb_episode_id"] for r in rows}
+
+
+# ---- Per-file episode overrides (v0.10.0) ----------------------------------
+#
+# Anchors override information to the actual file path on disk. Solves the
+# v0.4.0–0.9.x problem where multiple unparsed files in the same folder all
+# collapsed to (season=0, episode=0) and only the last selection "won".
+
+def set_episode_file_override(folder_path: str, file_path: str,
+                              season: Optional[int],
+                              episode: Optional[int],
+                              external_id: Optional[str]) -> None:
+    c = conn()
+    with _lock:
+        c.execute(
+            """
+            INSERT OR REPLACE INTO episode_file_overrides
+                (folder_path, file_path, season, episode, external_id, updated_at)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (
+                folder_path,
+                file_path,
+                int(season) if season is not None else None,
+                int(episode) if episode is not None else None,
+                str(external_id) if external_id else None,
+                int(time.time()),
+            ),
+        )
+
+
+def clear_episode_file_override(folder_path: str,
+                                 file_path: Optional[str] = None) -> int:
+    c = conn()
+    with _lock:
+        if file_path is None:
+            cur = c.execute(
+                "DELETE FROM episode_file_overrides WHERE folder_path = ?",
+                (folder_path,),
+            )
+        else:
+            cur = c.execute(
+                "DELETE FROM episode_file_overrides WHERE folder_path = ? AND file_path = ?",
+                (folder_path, file_path),
+            )
+        return cur.rowcount
+
+
+def get_episode_file_overrides(folder_path: str) -> dict[str, dict]:
+    """Return ``{file_path: {season, episode, external_id}}`` for the folder."""
+    c = conn()
+    with _lock:
+        rows = c.execute(
+            """
+            SELECT file_path, season, episode, external_id
+            FROM episode_file_overrides
+            WHERE folder_path = ?
+            """,
+            (folder_path,),
+        ).fetchall()
+    return {
+        r["file_path"]: {
+            "season": r["season"],
+            "episode": r["episode"],
+            "external_id": r["external_id"],
+        }
+        for r in rows
+    }
+
+
+def rename_episode_file_override(folder_path: str,
+                                  old_file_path: str,
+                                  new_file_path: str) -> None:
+    """Move an override row when a file is renamed on disk.
+
+    Drops any pre-existing row at ``new_file_path`` first so the rename can't
+    collide on the (folder_path, file_path) primary key.
+    """
+    if old_file_path == new_file_path:
+        return
+    c = conn()
+    with _lock:
+        c.execute(
+            "DELETE FROM episode_file_overrides WHERE folder_path = ? AND file_path = ?",
+            (folder_path, new_file_path),
+        )
+        c.execute(
+            """
+            UPDATE episode_file_overrides
+               SET file_path = ?, updated_at = ?
+             WHERE folder_path = ? AND file_path = ?
+            """,
+            (new_file_path, int(time.time()), folder_path, old_file_path),
+        )
 
 
 # ---- NFO field overrides (v0.5.3) ------------------------------------------

@@ -35,6 +35,7 @@ from ..services import fanart as fanart_svc
 from ..services import matcher
 from ..services import plex as plex_svc
 from ..services import scanner
+from ..services import renamer as renamer_svc
 from ..services import sidecar as sidecar_svc
 from ..services.scheduler import cron_matches as _cron_matches, scheduler as _scheduler
 from ..services.parser import (
@@ -101,6 +102,10 @@ class SettingsIn(BaseModel):
     plex_auto_refresh: Optional[bool] = None
     plex_refresh_delay_seconds: Optional[int] = None
     plex_path_mappings: Optional[list[dict]] = None
+    # v0.10.0 file rename templates
+    rename_episode_template: Optional[str] = None
+    rename_movie_template: Optional[str] = None
+    rename_enabled: Optional[bool] = None
 
 
 @router.post("/settings")
@@ -1451,7 +1456,61 @@ async def episodes_list(path: str):
         if sn is None or en is None:
             continue
         by_se[(int(sn), int(en))] = ep
-    overrides = db.get_episode_overrides(str(p))
+    legacy_overrides = db.get_episode_overrides(str(p))           # {(s,e): id}
+    file_overrides = db.get_episode_file_overrides(str(p))         # {file_path: {...}}
+
+    def _row_for(parsed_path: Path, parsed_season: int, parsed_episode: int,
+                 unparsed: bool) -> dict:
+        """Build one row for the Episodes endpoint, applying overrides.
+
+        Order of precedence for the effective season/episode:
+          1. v0.10.0 per-file override (most specific).
+          2. The parsed value from the filename.
+        For the matched provider episode:
+          1. file override's external_id, if present.
+          2. legacy (s, e)-keyed override (back-compat).
+          3. by-(season,episode) lookup against the provider list.
+        """
+        ovr = file_overrides.get(str(parsed_path)) or {}
+        effective_season = (
+            ovr.get("season") if ovr.get("season") is not None else parsed_season
+        )
+        effective_episode = (
+            ovr.get("episode") if ovr.get("episode") is not None else parsed_episode
+        )
+        external_id = ovr.get("external_id")
+        legacy_id = legacy_overrides.get(
+            (int(effective_season or 0), int(effective_episode or 0))
+        )
+        matched_id = external_id or legacy_id
+        matched = None
+        if matched_id and str(matched_id) in by_id:
+            matched = by_id[str(matched_id)]
+        elif (
+            effective_season is not None
+            and effective_episode is not None
+            and (int(effective_season), int(effective_episode)) in by_se
+        ):
+            matched = by_se[(int(effective_season), int(effective_episode))]
+        return {
+            "file_path": str(parsed_path),
+            "file_name": parsed_path.name,
+            "parsed_season": int(parsed_season) if parsed_season is not None else 0,
+            "parsed_episode": int(parsed_episode) if parsed_episode is not None else 0,
+            "effective_season": (
+                int(effective_season) if effective_season is not None else None
+            ),
+            "effective_episode": (
+                int(effective_episode) if effective_episode is not None else None
+            ),
+            "override_episode_id": str(matched_id) if matched_id else None,
+            "matched_episode_id": str(matched["id"]) if matched else None,
+            "matched_season": matched.get("seasonNumber") if matched else None,
+            "matched_number": matched.get("number") if matched else None,
+            "matched_title": matched.get("name") if matched else None,
+            "unparsed": bool(unparsed),
+            "has_file_override": bool(ovr),
+        }
 
     locals_out: list[dict] = []
     # v0.9.0: include both season-subdir episodes and any video files
@@ -1461,72 +1520,24 @@ async def episodes_list(path: str):
         snum = season_number_from_dir(sd.name)
         for parsed in list_season_episodes(sd):
             if not getattr(parsed, "parsed", True):
-                # Unparseable file: surface it but no provider match.
-                locals_out.append({
-                    "file_path": str(parsed.path),
-                    "file_name": parsed.path.name,
-                    "parsed_season": int(snum),
-                    "parsed_episode": 0,
-                    "override_episode_id": None,
-                    "matched_episode_id": None,
-                    "matched_season": None,
-                    "matched_number": None,
-                    "matched_title": None,
-                    "unparsed": True,
-                })
+                locals_out.append(_row_for(parsed.path, snum, None, unparsed=True))
                 continue
-            key = (int(snum), int(parsed.episode))
-            override_id = overrides.get(key)
-            matched = None
-            if override_id and str(override_id) in by_id:
-                matched = by_id[str(override_id)]
-            elif key in by_se:
-                matched = by_se[key]
-            locals_out.append({
-                "file_path": str(parsed.path),
-                "file_name": parsed.path.name,
-                "parsed_season": int(snum),
-                "parsed_episode": int(parsed.episode),
-                "override_episode_id": str(override_id) if override_id else None,
-                "matched_episode_id": str(matched["id"]) if matched else None,
-                "matched_season": matched.get("seasonNumber") if matched else None,
-                "matched_number": matched.get("number") if matched else None,
-                "matched_title": matched.get("name") if matched else None,
-            })
-    # Loose video files at the series root — treat as season 0.
+            locals_out.append(
+                _row_for(parsed.path, snum, int(parsed.episode), unparsed=False)
+            )
+    # Loose video files at the series root — use the parser's own season.
     for parsed in list_season_episodes(p):
         if not getattr(parsed, "parsed", True):
-            locals_out.append({
-                "file_path": str(parsed.path),
-                "file_name": parsed.path.name,
-                "parsed_season": 0,
-                "parsed_episode": 0,
-                "override_episode_id": None,
-                "matched_episode_id": None,
-                "matched_season": None,
-                "matched_number": None,
-                "matched_title": None,
-                "unparsed": True,
-            })
+            locals_out.append(_row_for(parsed.path, None, None, unparsed=True))
             continue
-        key = (0, int(parsed.episode))
-        override_id = overrides.get(key)
-        matched = None
-        if override_id and str(override_id) in by_id:
-            matched = by_id[str(override_id)]
-        elif key in by_se:
-            matched = by_se[key]
-        locals_out.append({
-            "file_path": str(parsed.path),
-            "file_name": parsed.path.name,
-            "parsed_season": 0,
-            "parsed_episode": int(parsed.episode),
-            "override_episode_id": str(override_id) if override_id else None,
-            "matched_episode_id": str(matched["id"]) if matched else None,
-            "matched_season": matched.get("seasonNumber") if matched else None,
-            "matched_number": matched.get("number") if matched else None,
-            "matched_title": matched.get("name") if matched else None,
-        })
+        locals_out.append(
+            _row_for(
+                parsed.path,
+                int(parsed.season) if parsed.season is not None else 1,
+                int(parsed.episode),
+                unparsed=False,
+            )
+        )
 
     tvdb_eps = [
         {
@@ -1563,7 +1574,197 @@ async def episodes_override(payload: EpisodeOverrideIn):
         db.set_episode_override(str(p), payload.season, payload.episode, payload.tvdb_episode_id)
     else:
         db.clear_episode_override(str(p), payload.season, payload.episode)
+    sidecar_svc.sync_sidecar_from_db(p)
     return {"ok": True}
+
+
+# ---- Per-file episode override (v0.10.0) -----------------------------------
+#
+# Anchors a (season, episode, external_id) selection to the actual file path.
+# This replaces the v0.4 (folder, season, episode)-keyed table for new
+# selections so multiple unparsed files in the same folder can each have
+# their own mapping. The legacy table is still honoured by the read path.
+
+
+class EpisodeFileOverrideIn(BaseModel):
+    folder_path: str
+    file_path: str
+    season: Optional[int] = None
+    episode: Optional[int] = None
+    external_id: Optional[str] = None  # provider episode id (TVDB or TMDB)
+    clear: bool = False
+
+
+@router.post("/episodes/override-file")
+async def episodes_override_file(payload: EpisodeFileOverrideIn):
+    p = _safe_under_root(payload.folder_path)
+    fp = _safe_under_root(payload.file_path)
+    if not str(fp).startswith(str(p)):
+        raise HTTPException(
+            status_code=400, detail="file_path must live under folder_path"
+        )
+    if payload.clear:
+        db.clear_episode_file_override(str(p), str(fp))
+    else:
+        db.set_episode_file_override(
+            str(p),
+            str(fp),
+            payload.season,
+            payload.episode,
+            payload.external_id,
+        )
+    sidecar_svc.sync_sidecar_from_db(p)
+    return {"ok": True}
+
+
+# ---- File rename (v0.10.0) -------------------------------------------------
+
+class RenamePreviewIn(BaseModel):
+    folder_path: str
+    template: Optional[str] = None  # falls back to UserSettings template
+
+
+async def _build_episodes_index(binding: dict, lang: Optional[str]) -> dict[tuple[int, int], dict]:
+    """Pull the provider episode list for ``binding`` and key it by (s, e)."""
+    provider = (binding.get("provider") or "tvdb").lower()
+    episodes: list[dict] = []
+    if provider == "tmdb":
+        tmdb_c = get_tmdb_client()
+        details = await tmdb_c.tv_details(binding["external_id"], language=lang)
+        for s in details.get("seasons") or []:
+            sn = s.get("season_number")
+            if sn is None:
+                continue
+            try:
+                sdata = await tmdb_c.tv_season(binding["external_id"], int(sn), language=lang)
+            except Exception:
+                continue
+            for ep in (sdata.get("episodes") or []):
+                episodes.append({
+                    "id": ep.get("id"),
+                    "seasonNumber": ep.get("season_number"),
+                    "number": ep.get("episode_number"),
+                    "name": ep.get("name"),
+                })
+    else:
+        client = get_client()
+        episodes = await client.series_episodes(
+            binding["external_id"], season_type="default", language=lang
+        )
+    by_se: dict[tuple[int, int], dict] = {}
+    for ep in episodes:
+        sn = ep.get("seasonNumber")
+        en = ep.get("number")
+        if sn is None or en is None:
+            continue
+        by_se[(int(sn), int(en))] = ep
+    return by_se
+
+
+@router.post("/episodes/rename/preview")
+async def episodes_rename_preview(payload: RenamePreviewIn):
+    """Return a dry-run rename plan. The filesystem is not touched."""
+    p = _safe_under_root(payload.folder_path)
+    binding = db.get_binding(str(p))
+    if not binding:
+        raise HTTPException(
+            status_code=400,
+            detail="Folder must be matched to a series or movie before renaming",
+        )
+    settings = get_user_settings()
+    if not settings.rename_enabled:
+        raise HTTPException(status_code=400, detail="Renaming is disabled in Settings")
+    template = (payload.template or "").strip()
+    if binding["kind"] == "series":
+        template = template or settings.rename_episode_template
+        try:
+            episodes_idx = await _build_episodes_index(
+                dict(binding), settings.preferred_language
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"provider lookup failed: {e}")
+        plan = renamer_svc.plan_series_rename(
+            p,
+            template=template,
+            title=(binding["title"] or Path(str(p)).name),
+            year=binding["year"],
+            episodes_by_se=episodes_idx,
+            overrides_by_file=db.get_episode_file_overrides(str(p)),
+        )
+    else:
+        template = template or settings.rename_movie_template
+        plan = renamer_svc.plan_movie_rename(
+            p,
+            template=template,
+            title=(binding["title"] or Path(str(p)).name),
+            year=binding["year"],
+        )
+    return {
+        "folder_path": str(p),
+        "template": template,
+        "items": [
+            {
+                "src": item.src,
+                "dst": item.dst,
+                "src_name": Path(item.src).name,
+                "dst_name": Path(item.dst).name,
+                "season": item.season,
+                "episode": item.episode,
+                "matched_title": item.matched_title,
+                "conflict": item.conflict,
+                "unchanged": item.src == item.dst,
+            }
+            for item in plan
+        ],
+    }
+
+
+class RenameApplyIn(BaseModel):
+    folder_path: str
+    template: Optional[str] = None
+    # Restrict the apply to a subset of source paths (per-row checkbox UI).
+    # If empty/null, every plan item that's safe to rename is applied.
+    only_src: Optional[list[str]] = None
+
+
+@router.post("/episodes/rename/apply")
+async def episodes_rename_apply(payload: RenameApplyIn):
+    p = _safe_under_root(payload.folder_path)
+    binding = db.get_binding(str(p))
+    if not binding:
+        raise HTTPException(status_code=400, detail="Folder is not matched")
+    settings = get_user_settings()
+    if not settings.rename_enabled:
+        raise HTTPException(status_code=400, detail="Renaming is disabled in Settings")
+    template = (payload.template or "").strip()
+    if binding["kind"] == "series":
+        template = template or settings.rename_episode_template
+        episodes_idx = await _build_episodes_index(
+            dict(binding), settings.preferred_language
+        )
+        plan = renamer_svc.plan_series_rename(
+            p,
+            template=template,
+            title=(binding["title"] or Path(str(p)).name),
+            year=binding["year"],
+            episodes_by_se=episodes_idx,
+            overrides_by_file=db.get_episode_file_overrides(str(p)),
+        )
+    else:
+        template = template or settings.rename_movie_template
+        plan = renamer_svc.plan_movie_rename(
+            p,
+            template=template,
+            title=(binding["title"] or Path(str(p)).name),
+            year=binding["year"],
+        )
+    if payload.only_src:
+        wanted = set(payload.only_src)
+        plan = [it for it in plan if it.src in wanted]
+    summary = renamer_svc.apply_rename_plan(plan)
+    if summary["renamed"]:
+        sidecar_svc.sync_sidecar_from_db(p)
+    return {"ok": True, **summary}
 
 
 # ---- Logs ------------------------------------------------------------------

@@ -60,6 +60,27 @@ class UserSettings(BaseModel):
     # folder. Each item is {"from": "/media", "to": "/data"}. The longest
     # matching prefix wins. Empty list = no translation needed.
     plex_path_mappings: List[dict] = []
+    # v0.10.0: file-rename templates (Sonarr/Radarr style). Tokens supported:
+    #   {title}        e.g. "Severance"
+    #   {year}         e.g. 2022 (empty if unknown)
+    #   {season}       integer, no padding
+    #   {season:02}    zero-padded season
+    #   {episode}      integer, no padding
+    #   {episode:02}   zero-padded episode
+    #   {episode_title}  the matched episode title (empty when unmatched)
+    #   {ext}          the file extension *with* the leading dot (e.g. ".mkv")
+    #   {quality}      best-effort tag pulled from the original filename
+    #                  (1080p / 2160p / WEB-DL / BluRay etc.); blank when none.
+    rename_episode_template: str = (
+        "{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}"
+    )
+    rename_movie_template: str = (
+        "{title} ({year}){ext}"
+    )
+    # When True, builds offer a "Rename to scheme" affordance and the API will
+    # accept rename requests. Set to False to keep the codepath dormant for
+    # users who only ever want NFO/artwork generation.
+    rename_enabled: bool = True
 
     @classmethod
     def load(cls, path: Path) -> "UserSettings":

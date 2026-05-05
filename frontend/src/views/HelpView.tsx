@@ -118,6 +118,63 @@ export default function HelpView() {
         </Bullets>
       </Section>
 
+      <Section title="Episode mapping & renaming">
+        <p>
+          Open a series and switch to the <Code>episodes</Code> tab. Each local
+          file gets its own row, with the parsed season/episode on the left and
+          the matched provider title on the right. Three filename styles are
+          recognised automatically:
+        </p>
+        <Bullets>
+          <li>
+            Sonarr/Radarr: <Code>Series (Year) - S01E03 - Title.mkv</Code>
+          </li>
+          <li>
+            Daily / talk shows: <Code>Show - 2024-01-15.mkv</Code>
+          </li>
+          <li>
+            Anime / fansub: <Code>[Group] Title - 03 [1080p].mkv</Code> —
+            treated as <Code>S01E03</Code> by default. If the fansub bundles
+            multiple seasons, use the inline season picker on the row to pin
+            each file to the right season.
+          </li>
+        </Bullets>
+        <p>
+          Override any file's mapping with the per-row dropdown — each
+          override is keyed to the file path, so files that all parsed as
+          <Code>S00E00</Code> no longer collide on a single row. Overrides
+          are stored in SQLite and mirrored into the sidecar.
+        </p>
+        <p>
+          Click <Code>Rename to scheme</Code> at the top of the Episodes tab to
+          open the rename modal. It shows a dry-run preview of every{" "}
+          <Code>from → to</Code> change, flags conflicts (<Code>exists</Code>,{" "}
+          <Code>duplicate</Code>), and lets you uncheck individual files. Apply
+          performs an atomic per-file rename and migrates the per-file override
+          row alongside the file so your bindings survive.
+        </p>
+        <p>
+          Default templates (editable under <Code>Settings → Renaming</Code>):
+        </p>
+        <Bullets>
+          <li>
+            Series:{" "}
+            <Code>{"{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}"}</Code>
+          </li>
+          <li>
+            Movie: <Code>{"{title} ({year}){ext}"}</Code>
+          </li>
+        </Bullets>
+        <p>
+          Available tokens: <Code>{"{title}"}</Code>,{" "}
+          <Code>{"{year}"}</Code>, <Code>{"{season}"}</Code>,{" "}
+          <Code>{"{season:02}"}</Code>, <Code>{"{episode}"}</Code>,{" "}
+          <Code>{"{episode:02}"}</Code>, <Code>{"{episode_title}"}</Code>,{" "}
+          <Code>{"{quality}"}</Code> (best-effort 1080p / WEB-DL / etc. pulled
+          from the original stem), <Code>{"{ext}"}</Code>.
+        </p>
+      </Section>
+
       <Section title="Per-show overrides">
         <p>
           Open any show or movie, switch to the <Code>overrides</Code> tab,

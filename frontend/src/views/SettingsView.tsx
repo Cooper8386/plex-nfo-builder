@@ -309,6 +309,44 @@ export default function SettingsView() {
       )}
 
       <hr className="my-4 border-slate-800" />
+      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">Renaming</h3>
+      <p className="text-xs text-slate-500 mb-3 max-w-xl">
+        Templates used by the Episodes → Rename to scheme button. Tokens:{" "}
+        <code className="text-slate-300">{"{title}"}</code>,{" "}
+        <code className="text-slate-300">{"{year}"}</code>,{" "}
+        <code className="text-slate-300">{"{season}"}</code>,{" "}
+        <code className="text-slate-300">{"{season:02}"}</code>,{" "}
+        <code className="text-slate-300">{"{episode}"}</code>,{" "}
+        <code className="text-slate-300">{"{episode:02}"}</code>,{" "}
+        <code className="text-slate-300">{"{episode_title}"}</code>,{" "}
+        <code className="text-slate-300">{"{quality}"}</code>,{" "}
+        <code className="text-slate-300">{"{ext}"}</code>.
+      </p>
+      <Field label="Renaming enabled">
+        <input
+          type="checkbox"
+          checked={s.rename_enabled !== false}
+          onChange={(e) => update("rename_enabled", e.target.checked)}
+        />
+      </Field>
+      <Field label="Series episode template">
+        <input
+          className="bg-slate-800 px-2 py-1 rounded w-[28rem] font-mono text-xs"
+          value={s.rename_episode_template || ""}
+          onChange={(e) => update("rename_episode_template", e.target.value)}
+          placeholder="{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}"
+        />
+      </Field>
+      <Field label="Movie template">
+        <input
+          className="bg-slate-800 px-2 py-1 rounded w-[28rem] font-mono text-xs"
+          value={s.rename_movie_template || ""}
+          onChange={(e) => update("rename_movie_template", e.target.value)}
+          placeholder="{title} ({year}){ext}"
+        />
+      </Field>
+
+      <hr className="my-4 border-slate-800" />
       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">fanart.tv</h3>
       <Field label={`fanart.tv API key${s.fanart_api_key_configured ? " (configured)" : ""}`}>
         <input

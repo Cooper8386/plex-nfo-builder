@@ -47,6 +47,19 @@ DAILY_RE = re.compile(
     r"(?<![0-9])(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})(?![0-9])"
 )
 
+# Anime/fansub-style: "[Group] Title - 01 [tags].ext" or "[Group] Title - 01v2.ext".
+# We require:
+#   * a leading bracketed release-group token (so we don't mistake "Movie - 1"
+#     for an episode), then
+#   * " - NN" with NN in 1-4 digits and an optional "vN" version suffix,
+#   * followed by either end-of-stem, whitespace, or another bracket.
+# Captures the episode number; season is assumed to be 1 (the de-facto default
+# for fansubbed anime, matching Sonarr's anime-naming convention).
+ANIME_RE = re.compile(
+    r"^\[[^\]]+\][^\[]*?\s-\s(?P<n>\d{1,4})(?:v\d+)?(?=\s|\[|$)",
+    re.IGNORECASE,
+)
+
 # Strip release/quality tags like [WEBDL-1080p][8bit][x264][AAC 2.0][JA] -GROUP
 BRACKETS_RE = re.compile(r"\[[^\]]*\]")
 
@@ -162,6 +175,26 @@ def parse_episode_filename(path: Path) -> Optional[ParsedEpisode]:
             extension=path.suffix.lower(),
             parsed=True,
         )
+
+    # Anime/fansub: "[Group] Title - NN [tags]". Tested *before* the daily
+    # regex because filenames like ``[Group] Show - 01 [WEB-DL]`` don't
+    # contain a YYYY-MM-DD but would otherwise fall through to "unparsed".
+    # Season defaults to 1 — fansubbed anime almost never carries a season
+    # number in the filename and Sonarr's anime layout drops everything in
+    # ``Season 01/`` regardless. Users can re-assign per file from the UI.
+    am = ANIME_RE.match(stem)
+    if am:
+        n = int(am.group("n"))
+        # Reject obviously-wrong huge numbers that are clearly years or codecs.
+        if 0 < n < 2000:
+            return ParsedEpisode(
+                path=path,
+                season=1,
+                episode=n,
+                raw_title=None,
+                extension=path.suffix.lower(),
+                parsed=True,
+            )
 
     # Sonarr daily format: Title (Year) - YYYY-MM-DD - Episode Title
     dm = DAILY_RE.search(stem)
