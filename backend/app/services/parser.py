@@ -291,12 +291,29 @@ def folder_root_videos(folder: Path) -> list[Path]:
 
 
 def folder_looks_like_movie(folder: Path) -> bool:
-    """Heuristic: a folder is movie-like if there are no season subdirs but
-    there is at least one video file directly inside the folder.
+    """Heuristic: a folder is movie-like if:
 
-    This lets users keep Radarr movies in libraries that the app classifies
-    as TV (anime libraries are commonly mixed) without manual configuration.
+    * it has **no** season subdirs,
+    * it has at least one video file directly inside,
+    * **and** none of those video files parse as an episode (no
+      ``SxxExx`` and no Sonarr daily ``YYYY-MM-DD``).
+
+    The last condition prevents short anime series, OVAs, and any other
+    Sonarr-managed show whose episodes are dropped at the folder root
+    (no ``Season XX/`` subdirectory) from being misidentified as a movie.
+    A folder where every file is a parsed episode is unambiguously a
+    series \u2014 even when the library is otherwise full of Radarr movies.
     """
     if detect_season_dirs(folder):
         return False
-    return bool(folder_root_videos(folder))
+    videos = folder_root_videos(folder)
+    if not videos:
+        return False
+    # If any of the root video files parses cleanly as an episode, the
+    # folder is a series (with episodes living at the root). This is
+    # common for short Sonarr-managed shows and OVAs.
+    for v in videos:
+        pe = parse_episode_filename(v)
+        if pe and pe.parsed:
+            return False
+    return True

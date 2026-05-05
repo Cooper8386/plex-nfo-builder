@@ -2,6 +2,35 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.9.1 — 2026-05-05
+
+### Fixed
+
+- **Series with no `Season XX/` subdir misidentified as a movie.** Short
+  Sonarr-managed shows and OVAs that drop episodes at the folder root
+  were classified as movies by v0.9.0's per-folder routing, causing the
+  TMDB matcher to call `movie_details(<tv_id>)` and 404 (e.g.
+  `TMDB GET /movie/153655 failed 404`). The movie-shape heuristic now
+  also requires that **none** of the root video files parse as an
+  episode — a folder where any file has `SxxExx` or a Sonarr daily
+  `YYYY-MM-DD` is treated as a series.
+- **TMDB folder-id 404s now retry as the other kind.** Belt and braces:
+  if `auto_match_movie_tmdb` 404s on the folder-tagged id, we retry it
+  as `tv_details` (and vice versa for `auto_match_series_tmdb`) before
+  giving up. Catches the residual cases where the heuristic still picks
+  the wrong kind but the `{tmdb-...}` id is correct for the other.
+- **Episodes tab returned "internal server error" for TMDB-bound
+  series.** The `/api/episodes` endpoint always queried TVDB, even for
+  folders bound to TMDB. It now reads the binding's provider and pulls
+  episodes from `tv_details` + `tv_season` on TMDB. Loose video files at
+  the series root and unparseable videos now also surface in the mapper
+  (instead of silently disappearing).
+- **Hard-refresh on a library or detail page no longer kicks you back
+  to "Select a library".** The Sidebar's deselect-when-missing effect
+  was firing before the libraries query had returned, briefly seeing an
+  empty list and clearing the active library. It now waits for the
+  query to load before deciding the library is actually gone.
+
 ## 0.9.0 — 2026-05-05
 
 ### Added

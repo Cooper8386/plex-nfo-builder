@@ -311,6 +311,8 @@ async def auto_match_series_tmdb(folder: Path, language: Optional[str] = None,
         return await auto_match_movie_tmdb(folder, language=language, threshold=threshold)
 
     # Folder-id shortcut \u2014 trust the tag and return early on success.
+    # Mirror of the movie matcher's 404 fallback: retry as a movie id if
+    # tv_details 404s. v0.9.1.
     if pf.provider == "tmdb" and pf.external_id and pf.external_id.isdigit():
         try:
             data = await client.tv_details(pf.external_id, language=language)
@@ -319,9 +321,16 @@ async def auto_match_series_tmdb(folder: Path, language: Optional[str] = None,
                                   title=data.get("name"), year=pf.year, language=language, respect_lock=True)
                 return data
         except Exception as e:
-            logger.warning("TMDB tv_details {} failed: {}", pf.external_id, e)
-            # Don't fallthrough \u2014 the explicit id is authoritative; bind it
-            # so we still emit the tmdb uniqueid in NFOs.
+            logger.warning("TMDB tv_details {} failed: {} \u2014 retrying as movie id", pf.external_id, e)
+            try:
+                mv = await client.movie_details(pf.external_id, language=language)
+                if mv:
+                    db.upsert_binding(str(folder), "movie", "tmdb", str(mv.get("id")),
+                                      title=mv.get("title") or mv.get("name"),
+                                      year=pf.year, language=language, respect_lock=True)
+                    return mv
+            except Exception as e2:
+                logger.warning("TMDB movie_details fallback for {} failed: {}", pf.external_id, e2)
             db.upsert_binding(str(folder), "series", "tmdb", pf.external_id,
                               title=pf.title, year=pf.year, language=language, respect_lock=True)
             return {"id": pf.external_id, "name": pf.title, "year": pf.year}

@@ -9,7 +9,7 @@ export default function Sidebar(props: {
   onToggle: () => void;
 }) {
   const qc = useQueryClient();
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ["libraries"],
     queryFn: () => api.libraries.list(),
     refetchInterval: 30_000,
@@ -20,11 +20,17 @@ export default function Sidebar(props: {
   const disabledCount = all.filter((l) => Number(l.enabled) !== 1).length;
 
   // If the active library is no longer visible, deselect it.
+  // v0.9.1 fix: don't fire while the libraries query is still loading or
+  // hasn't returned yet — otherwise a hard refresh on /library/<name> or
+  // /detail/<name>?path=... briefly sees an empty list, deselects the
+  // active library, and dumps the user back on the "Select a library"
+  // screen.
   useEffect(() => {
     if (!props.activeLibrary) return;
-    const stillThere = visible.some((l) => l.name === props.activeLibrary);
+    if (isLoading || !data) return;
+    const stillThere = all.some((l) => l.name === props.activeLibrary);
     if (!stillThere) props.onSelectLibrary(null);
-  }, [visible, props.activeLibrary]);
+  }, [data, isLoading, props.activeLibrary]);
 
   async function setEnabled(name: string, enabled: boolean) {
     await api.libraries.update(name, { enabled });

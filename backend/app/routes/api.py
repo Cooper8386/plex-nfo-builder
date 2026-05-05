@@ -1386,17 +1386,61 @@ async def artwork_custom_list(folder_path: str):
 
 @router.get("/episodes")
 async def episodes_list(path: str):
-    """Return local episode files alongside their current TVDB match (with overrides applied)
-    plus the full TVDB episode list for the bound series so the UI can populate dropdowns.
+    """Return local episode files alongside their current provider match
+    (with overrides applied) plus the full provider episode list so the UI
+    can populate dropdowns.
+
+    v0.9.1: works for TMDB-bound series too. Previously this endpoint
+    blindly used the TVDB client even when the binding pointed at TMDB,
+    which 500'd on series like ``Love Me - Kaede to Suzu the Animation``
+    that we deliberately bind via ``{tmdb-...}``.
     """
     p = _safe_under_root(path)
     binding = db.get_binding(str(p))
     if not binding or binding["kind"] != "series":
-        raise HTTPException(status_code=400, detail="Folder is not bound to a TVDB series")
+        raise HTTPException(status_code=400, detail="Folder is not bound to a series")
     settings = get_user_settings()
     lang = settings.preferred_language
-    client = get_client()
-    episodes = await client.series_episodes(binding["external_id"], season_type="default", language=lang)
+    provider = (binding["provider"] or "tvdb").lower()
+
+    # Pull a normalised episode list ({id, seasonNumber, number, name,
+    #   aired, image}) from whichever provider the binding points at.
+    episodes: list[dict] = []
+    if provider == "tmdb":
+        tmdb_c = get_tmdb_client()
+        try:
+            details = await tmdb_c.tv_details(binding["external_id"], language=lang)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"TMDB tv_details failed: {e}")
+        seasons = details.get("seasons") or []
+        for s in seasons:
+            sn = s.get("season_number")
+            if sn is None:
+                continue
+            try:
+                sdata = await tmdb_c.tv_season(binding["external_id"], int(sn), language=lang)
+            except Exception as se:
+                logger.warning("tmdb tv_season {} s{} failed: {}", binding["external_id"], sn, se)
+                continue
+            for ep in (sdata.get("episodes") or []):
+                still = ep.get("still_path")
+                episodes.append({
+                    "id": ep.get("id"),
+                    "seasonNumber": ep.get("season_number"),
+                    "number": ep.get("episode_number"),
+                    "name": ep.get("name"),
+                    "aired": ep.get("air_date"),
+                    "image": tmdb_image_url(still, "w300") if still else None,
+                })
+    else:
+        client = get_client()
+        try:
+            episodes = await client.series_episodes(
+                binding["external_id"], season_type="default", language=lang
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"TVDB series_episodes failed: {e}")
+
     by_se: dict[tuple[int, int], dict] = {}
     by_id: dict[str, dict] = {}
     for ep in episodes:
@@ -1410,9 +1454,27 @@ async def episodes_list(path: str):
     overrides = db.get_episode_overrides(str(p))
 
     locals_out: list[dict] = []
-    for sd in detect_season_dirs(p):
+    # v0.9.0: include both season-subdir episodes and any video files
+    # dropped at the series root (counted as season 0).
+    season_dirs = detect_season_dirs(p)
+    for sd in season_dirs:
         snum = season_number_from_dir(sd.name)
         for parsed in list_season_episodes(sd):
+            if not getattr(parsed, "parsed", True):
+                # Unparseable file: surface it but no provider match.
+                locals_out.append({
+                    "file_path": str(parsed.path),
+                    "file_name": parsed.path.name,
+                    "parsed_season": int(snum),
+                    "parsed_episode": 0,
+                    "override_episode_id": None,
+                    "matched_episode_id": None,
+                    "matched_season": None,
+                    "matched_number": None,
+                    "matched_title": None,
+                    "unparsed": True,
+                })
+                continue
             key = (int(snum), int(parsed.episode))
             override_id = overrides.get(key)
             matched = None
@@ -1431,6 +1493,40 @@ async def episodes_list(path: str):
                 "matched_number": matched.get("number") if matched else None,
                 "matched_title": matched.get("name") if matched else None,
             })
+    # Loose video files at the series root — treat as season 0.
+    for parsed in list_season_episodes(p):
+        if not getattr(parsed, "parsed", True):
+            locals_out.append({
+                "file_path": str(parsed.path),
+                "file_name": parsed.path.name,
+                "parsed_season": 0,
+                "parsed_episode": 0,
+                "override_episode_id": None,
+                "matched_episode_id": None,
+                "matched_season": None,
+                "matched_number": None,
+                "matched_title": None,
+                "unparsed": True,
+            })
+            continue
+        key = (0, int(parsed.episode))
+        override_id = overrides.get(key)
+        matched = None
+        if override_id and str(override_id) in by_id:
+            matched = by_id[str(override_id)]
+        elif key in by_se:
+            matched = by_se[key]
+        locals_out.append({
+            "file_path": str(parsed.path),
+            "file_name": parsed.path.name,
+            "parsed_season": 0,
+            "parsed_episode": int(parsed.episode),
+            "override_episode_id": str(override_id) if override_id else None,
+            "matched_episode_id": str(matched["id"]) if matched else None,
+            "matched_season": matched.get("seasonNumber") if matched else None,
+            "matched_number": matched.get("number") if matched else None,
+            "matched_title": matched.get("name") if matched else None,
+        })
 
     tvdb_eps = [
         {
@@ -1445,7 +1541,12 @@ async def episodes_list(path: str):
         if ep.get("id") is not None
     ]
     tvdb_eps.sort(key=lambda e: ((e["season"] if e["season"] is not None else 99), (e["number"] or 0)))
-    return {"path": str(p), "locals": locals_out, "tvdb_episodes": tvdb_eps}
+    return {
+        "path": str(p),
+        "provider": provider,
+        "locals": locals_out,
+        "tvdb_episodes": tvdb_eps,
+    }
 
 
 class EpisodeOverrideIn(BaseModel):
