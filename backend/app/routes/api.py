@@ -1799,6 +1799,53 @@ class RenamePreviewIn(BaseModel):
     series_type: str = "auto"
 
 
+async def _resolve_localized_title(
+    binding: dict, lang: Optional[str], fallbacks: list[str]
+) -> tuple[Optional[str], Optional[int]]:
+    """Return ``(title, year)`` for ``binding`` in the user's preferred language.
+
+    The bound ``title`` row is whatever the provider returned at match time -
+    that's usually English, but for non-English originals (anime, foreign
+    films) it can be the original-language name. The renamer needs the
+    *user's* preferred language, so we re-fetch the title here:
+
+    * TVDB:  ``/series|movies/{id}/translations/{lang}`` with fallbacks.
+    * TMDB:  ``tv_details(language=lang)`` -> ``name`` (TMDB resolves the
+      language server-side and falls back to the show's default).
+
+    On any error we fall back to the bound title so the rename still works.
+    """
+    provider = (binding.get("provider") or "").lower()
+    bound_title = binding.get("title")
+    bound_year = binding.get("year")
+    ext_id = binding.get("external_id")
+    if not provider or not ext_id:
+        return bound_title, bound_year
+    try:
+        if provider == "tvdb":
+            kind = "series" if binding.get("kind") == "series" else "movies"
+            client = get_client()
+            tr = await client.best_translation(kind, ext_id, lang or "", fallbacks)
+            if tr and tr.get("name"):
+                return tr["name"], bound_year
+        elif provider == "tmdb":
+            tmdb_c = get_tmdb_client()
+            if binding.get("kind") == "series":
+                d = await tmdb_c.tv_details(ext_id, language=lang)
+                title = d.get("name") or d.get("original_name")
+            else:
+                d = await tmdb_c.movie_details(ext_id, language=lang)
+                title = d.get("title") or d.get("original_title")
+            if title:
+                return title, bound_year
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "localized title lookup failed for {} {}: {}",
+            provider, ext_id, e,
+        )
+    return bound_title, bound_year
+
+
 async def _build_episodes_index(binding: dict, lang: Optional[str]) -> dict[tuple[int, int], dict]:
     """Pull the provider episode list for ``binding`` and key it by (s, e)."""
     provider = (binding.get("provider") or "tvdb").lower()
@@ -1850,11 +1897,13 @@ async def episodes_rename_preview(payload: RenamePreviewIn):
     if not settings.rename_enabled:
         raise HTTPException(status_code=400, detail="Renaming is disabled in Settings")
     template = (payload.template or "").strip()
+    lang = settings.preferred_language
+    fallbacks = list(settings.fallback_languages or [])
     if binding["kind"] == "series":
         template = template or settings.rename_episode_template
         try:
             episodes_idx = await _build_episodes_index(
-                dict(binding), settings.preferred_language
+                dict(binding), lang
             )
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"provider lookup failed: {e}")
@@ -1864,13 +1913,14 @@ async def episodes_rename_preview(payload: RenamePreviewIn):
         tmdb_id = ext_id if provider == "tmdb" else None
         daily_t = (payload.daily_template or "").strip() or settings.rename_daily_template
         anime_t = (payload.anime_template or "").strip() or settings.rename_anime_template
+        localized_title, _ = await _resolve_localized_title(dict(binding), lang, fallbacks)
         plan = renamer_svc.plan_series_rename(
             p,
             standard_template=template,
             daily_template=daily_t,
             anime_template=anime_t,
             series_type=payload.series_type or "auto",
-            title=(binding["title"] or Path(str(p)).name),
+            title=(localized_title or binding["title"] or Path(str(p)).name),
             year=binding["year"],
             tvdb_id=tvdb_id,
             tmdb_id=tmdb_id,
@@ -1883,10 +1933,11 @@ async def episodes_rename_preview(payload: RenamePreviewIn):
         ext_id = str(binding["external_id"]) if binding["external_id"] is not None else None
         tmdb_id = ext_id if provider == "tmdb" else None
         tvdb_id = ext_id if provider == "tvdb" else None
+        localized_title, _ = await _resolve_localized_title(dict(binding), lang, fallbacks)
         plan = renamer_svc.plan_movie_rename(
             p,
             template=template,
-            title=(binding["title"] or Path(str(p)).name),
+            title=(localized_title or binding["title"] or Path(str(p)).name),
             year=binding["year"],
             tmdb_id=tmdb_id,
             tvdb_id=tvdb_id,
@@ -1932,10 +1983,12 @@ async def episodes_rename_apply(payload: RenameApplyIn):
     if not settings.rename_enabled:
         raise HTTPException(status_code=400, detail="Renaming is disabled in Settings")
     template = (payload.template or "").strip()
+    lang = settings.preferred_language
+    fallbacks = list(settings.fallback_languages or [])
     if binding["kind"] == "series":
         template = template or settings.rename_episode_template
         episodes_idx = await _build_episodes_index(
-            dict(binding), settings.preferred_language
+            dict(binding), lang
         )
         provider = (binding["provider"] or "").lower()
         ext_id = str(binding["external_id"]) if binding["external_id"] is not None else None
@@ -1943,13 +1996,14 @@ async def episodes_rename_apply(payload: RenameApplyIn):
         tmdb_id = ext_id if provider == "tmdb" else None
         daily_t = (payload.daily_template or "").strip() or settings.rename_daily_template
         anime_t = (payload.anime_template or "").strip() or settings.rename_anime_template
+        localized_title, _ = await _resolve_localized_title(dict(binding), lang, fallbacks)
         plan = renamer_svc.plan_series_rename(
             p,
             standard_template=template,
             daily_template=daily_t,
             anime_template=anime_t,
             series_type=payload.series_type or "auto",
-            title=(binding["title"] or Path(str(p)).name),
+            title=(localized_title or binding["title"] or Path(str(p)).name),
             year=binding["year"],
             tvdb_id=tvdb_id,
             tmdb_id=tmdb_id,
@@ -1962,10 +2016,11 @@ async def episodes_rename_apply(payload: RenameApplyIn):
         ext_id = str(binding["external_id"]) if binding["external_id"] is not None else None
         tmdb_id = ext_id if provider == "tmdb" else None
         tvdb_id = ext_id if provider == "tvdb" else None
+        localized_title, _ = await _resolve_localized_title(dict(binding), lang, fallbacks)
         plan = renamer_svc.plan_movie_rename(
             p,
             template=template,
-            title=(binding["title"] or Path(str(p)).name),
+            title=(localized_title or binding["title"] or Path(str(p)).name),
             year=binding["year"],
             tmdb_id=tmdb_id,
             tvdb_id=tvdb_id,

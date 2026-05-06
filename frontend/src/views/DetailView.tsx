@@ -7,6 +7,32 @@ import OverridesTab from "./OverridesTab";
 
 type Tab = "overview" | "artwork" | "episodes" | "overrides";
 
+/** Build a public-facing URL for a TVDB/TMDB record so users can jump from
+ * the detail header straight to the source page. Returns null when we don't
+ * have enough info to build one. */
+function providerPageUrl(
+  provider: string | null | undefined,
+  externalId: string | number | null | undefined,
+  kind: "series" | "movie"
+): string | null {
+  if (!provider || externalId === null || externalId === undefined || externalId === "") {
+    return null;
+  }
+  const id = String(externalId);
+  const p = provider.toLowerCase();
+  if (p === "tvdb") {
+    return kind === "movie"
+      ? `https://www.thetvdb.com/?tab=movie&id=${id}`
+      : `https://www.thetvdb.com/?tab=series&id=${id}`;
+  }
+  if (p === "tmdb") {
+    return kind === "movie"
+      ? `https://www.themoviedb.org/movie/${id}`
+      : `https://www.themoviedb.org/tv/${id}`;
+  }
+  return null;
+}
+
 export default function DetailView({ path, onBack }: { path: string; onBack: () => void }) {
   const qc = useQueryClient();
   const detail = useQuery({ queryKey: ["detail", path], queryFn: () => api.items.detail(path) });
@@ -139,6 +165,26 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
       <div className="flex flex-wrap items-baseline gap-3 mb-1">
         <h2 className="text-2xl font-semibold tracking-tight">{state?.title ?? path}</h2>
         {state?.year && <span className="text-slate-500">({state.year})</span>}
+        {(() => {
+          const url = providerPageUrl(
+            (binding?.provider as string | undefined) ?? null,
+            binding?.external_id ?? null,
+            kind
+          );
+          if (!url) return null;
+          const label = (binding?.provider ?? "").toLowerCase() === "tmdb" ? "TMDB" : "TVDB";
+          return (
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs px-2 py-0.5 rounded border border-indigo-700 text-indigo-300 hover:bg-indigo-700/30"
+              title={`Open on ${label}`}
+            >
+              {label} ↗
+            </a>
+          );
+        })()}
         {state?.nfo_status && (
           <span
             className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide ${

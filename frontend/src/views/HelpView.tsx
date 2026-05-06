@@ -95,7 +95,8 @@ export default function HelpView() {
       <Section title="Library Danger Zone">
         <p>
           Each library page has a collapsible <b>Danger zone</b> panel
-          (hazard-yellow border) at the top with two big buttons that operate
+          (hazard-yellow border) pinned to the bottom of the page with two
+          big buttons that operate
           across <i>every</i> folder tracked under the current library. Both
           run a dry-run preview first, show the exact file count, and require
           an explicit confirmation before touching disk.
@@ -191,6 +192,16 @@ export default function HelpView() {
           row alongside the file so your bindings survive.
         </p>
         <p>
+          <b>Titles always come from your preferred language.</b> The series
+          / movie title plugged into the rename template is re-fetched from
+          the bound provider in the language set under{" "}
+          <Code>Settings → Preferred language</Code> (with your fallback
+          chain). Non-English originals like anime no longer leak the
+          original-language title into renamed files — if you matched a show
+          in English, it stays English on disk, even when the source's
+          default name is Japanese / Korean / etc.
+        </p>
+        <p>
           <b>Companion files travel with the video.</b> When{" "}
           <Code>video.mkv</Code> becomes <Code>new-name.mkv</Code>, the
           matching <Code>video.nfo</Code>, <Code>video-thumb.jpg</Code>/
@@ -272,6 +283,17 @@ export default function HelpView() {
           <Code>{"{episode_title}"}</Code>, <Code>{"{quality}"}</Code>,{" "}
           <Code>{"{ext}"}</Code>) still work as fallbacks if you don't want
           the full Sonarr grammar.
+        </p>
+      </Section>
+
+      <Section title="TVDB / TMDB external link">
+        <p>
+          Open any matched show or movie and look next to the title in the
+          Detail view: a small <Code>TVDB ↗</Code> or <Code>TMDB ↗</Code>
+          chip links straight to the public source page for whichever
+          provider this folder is bound to. Opens in a new tab — handy when
+          you want to double-check a match, copy a TVDB id, or just read the
+          plot on the source site.
         </p>
       </Section>
 

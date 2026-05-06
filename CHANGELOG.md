@@ -2,6 +2,42 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.2 — 2026-05-06
+
+Three quality-of-life fixes that came out of using v0.11.1 against a real
+library with a chunk of anime in it.
+
+### Fixed
+
+- **Renamer was using non-preferred-language titles for non-English
+  shows.** Episode titles correctly came back in your preferred language,
+  but the *series* title was whatever the provider returned at match time
+  — for non-English originals (most anime, foreign films), that's the
+  original-language name. Result: a folder called *Adam's Sweet Agony*
+  that was matched in English would still rename files to `問えてよ、
+  アダムくん (2024) - S01E01 - …`. The renamer now re-fetches the title
+  from TVDB (`best_translation` with your fallbacks) or TMDB
+  (`tv_details` / `movie_details` with `language=`) at rename time, so
+  the preferred language in Settings is the language for *all* fetched
+  information — including the title plugged into the rename template.
+  Falls back to the bound title on any provider hiccup so renames never
+  break.
+
+### Added
+
+- **TVDB / TMDB external link in the Detail view.** Every matched folder
+  now shows a small `TVDB ↗` or `TMDB ↗` chip next to the title, linking
+  straight to the public source page for that record. Only the link for
+  the bound provider is rendered — opens in a new tab.
+
+### Changed
+
+- **Library Danger Zone moved to the bottom of the Library page.**
+  Having a hazard-yellow panel scream at you the moment you open a
+  library was the wrong default. It now sits below the grid/list, where
+  you only see it after you've scrolled past your media. Same
+  collapsible component, same buttons, same dry-run-then-confirm flow.
+
 ## 0.11.1 — 2026-05-05
 
 Bug-fix follow-up to v0.11.0 plus a small but long-overdue feature: a

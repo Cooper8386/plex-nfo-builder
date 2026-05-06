@@ -269,15 +269,6 @@ export default function LibraryView(props: {
           {toast}
         </div>
       )}
-      <DangerZone
-        library={props.library}
-        busy={busy}
-        setBusy={setBusy}
-        flash={flash}
-        invalidateItems={() => qc.invalidateQueries({ queryKey: ["items"] })}
-        btnHazard={btnHazard}
-        btnHazardOutline={btnHazardOutline}
-      />
       {props.viewMode === "grid" ? (
         <Grid
           items={items}
@@ -295,6 +286,15 @@ export default function LibraryView(props: {
           onOpen={props.onOpenDetail}
         />
       )}
+      <DangerZone
+        library={props.library}
+        busy={busy}
+        setBusy={setBusy}
+        flash={flash}
+        invalidateItems={() => qc.invalidateQueries({ queryKey: ["items"] })}
+        btnHazard={btnHazard}
+        btnHazardOutline={btnHazardOutline}
+      />
     </div>
   );
 }
@@ -408,7 +408,7 @@ function DangerZone(props: {
   };
 
   return (
-    <div className="mb-6 rounded-lg border-2 border-amber-500/60 bg-amber-500/[0.04]">
+    <div className="mt-6 rounded-lg border-2 border-amber-500/60 bg-amber-500/[0.04]">
       <button
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-left"
