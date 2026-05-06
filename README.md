@@ -7,7 +7,7 @@ Built around your Sonarr/Radarr-style filenames (e.g. `Severance (2022) - S02E08
 ## Highlights
 
 - **Auto library detection** — anything under `MEDIA_ROOT` is found at startup and re-scanned on demand. No hardcoded `tv` / `movies` / `anime`.
-- **Three metadata sources**: TheTVDB v4 (primary), TMDB (alternate), fanart.tv (artwork supplement). Per-show source override with a lock so auto-match never silently swaps it.
+- **Three metadata sources**: TVDB v4 (primary), TMDB (alternate), fanart.tv (artwork supplement). Per-show source override with a lock so auto-match never silently swaps it. TMDB image requests honor each title's *original language* so anime, K-dramas, and other foreign-language shows actually pull artwork.
 - **Visual folder picker** in the UI (sidebar) — no need to type paths. Disable / remove libraries from the kebab menu without touching disk.
 - **Auto + manual matching** with persistent bindings stored in SQLite. Folder ID tags (`{tvdb-…}` / `{tmdb-…}`) are honored as the primary signal.
 - **Plex NFO output** per the [Plex docs](https://support.plex.tv/articles/using-nfo-metadata-files-with-plex/): `tvshow.nfo`, `season.nfo`, per-episode `<file>.nfo`, per-movie `<file>.nfo`, `<file>-thumb.jpg` for episode thumbnails, canonical `poster.jpg` / `background.jpg` / `banner.jpg` for series and movies.
@@ -228,6 +228,8 @@ Artwork is written directly to the item folder using Plex-standard filenames —
 ```
 
 Every NFO also embeds the TVDB CDN URL in `<thumb>` / `<fanart><thumb>` tags. Plex prefers the local file (when the *Local Media Assets* agent is enabled), but can always fall back to the URL if a local file is missing or unreadable across your mount.
+
+For TMDB-supplied artwork, the auto-resolver reads each title's TMDB *original language* and includes that flag in its image request alongside `null,en`, so anime, K-dramas, and other foreign-language titles actually surface their fan-uploaded posters instead of coming up empty. The manual artwork picker requests **all** languages from TMDB so you see every uploaded image when you're hand-picking.
 
 Earlier versions wrote everything through a hidden `.artwork/` folder with symlinks to the canonical names. This broke under some Docker bind-mount configurations and caused blank posters when the active artwork was changed — the NFO and the symlink drifted out of sync. If you're upgrading from v0.2, delete any leftover `.artwork/` folders and run **Force rebuild** on affected items.
 

@@ -88,6 +88,40 @@ export default function HelpView() {
         </Bullets>
       </Section>
 
+      <Section title="TMDB language filter (anime / foreign-language artwork)">
+        <p>
+          TMDB's image API treats the <Code>include_image_language</Code>
+          parameter as a server-side filter — every uploaded poster is
+          tagged with a language code, and posters whose code isn't in
+          the request are dropped before the response leaves TMDB. So an
+          anime whose every poster is flagged <Code>ja</Code>, or a
+          K-drama whose posters are flagged <Code>ko</Code>, used to
+          come back empty even though the artwork was published and
+          public.
+        </p>
+        <Bullets>
+          <li>
+            <b>Auto-resolver</b> reads each title's TMDB <i>original
+            language</i> and includes that flag alongside <Code>null</Code>
+            and <Code>en</Code>. So a Japanese-original show now sees
+            Japanese-tagged posters as candidates; a Korean-original
+            show sees Korean-tagged posters; an English-original show
+            still sees only language-less and English uploads, so a
+            foreign poster won't get auto-picked for an English title.
+            TMDB orders images by <Code>vote_average DESC</Code>, so
+            the highest-rated upload still wins.
+          </li>
+          <li>
+            <b>Manual artwork picker</b> requests <i>all</i> languages
+            from TMDB — both for TMDB-bound titles and for TVDB-bound
+            titles where TMDB supplementation is on. When you're
+            hand-picking, the app shows you every uploaded poster,
+            backdrop, and season poster TMDB has, no language filter
+            applied.
+          </li>
+        </Bullets>
+      </Section>
+
       <Section title="Pruning">
         <p>
           The library toolbar has two prune buttons for keeping the database

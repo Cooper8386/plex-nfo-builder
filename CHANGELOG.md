@@ -2,6 +2,55 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.6 — 2026-05-06
+
+Fixes artwork resolution for non-English shows and movies. Anime,
+K-dramas, C-dramas, telenovelas, and other foreign-language titles
+will now actually pull posters and backdrops from TMDB instead of
+coming up empty.
+
+### Why
+
+TMDB's `/3/{tv,movie}/{id}/images` endpoint applies the
+`include_image_language` query as a **server-side filter**. Previously
+the app hard-coded `include_image_language=null,en`, which means any
+poster that an uploader tagged with a non-English language flag (e.g.
+`ja` for a Japanese anime, `ko` for a Korean drama) was filtered out
+before the response ever left TMDB's servers — even though the
+artwork is published, public, and not under moderation. Example case
+that surfaced this: [Joshi Ochi! 2-kai kara Onna no Ko ga Futte
+Kita](https://www.themoviedb.org/tv/81044) has many fan-uploaded
+posters, all flagged `ja`, all invisible to the previous filter.
+
+### Changed
+
+- **Auto-resolver** (`artwork_resolver.resolve_preferred_artwork_*`)
+  now reads each title's TMDB `original_language` and includes that
+  language flag in the image request alongside `null,en`. So a title
+  whose original language is Japanese will now see Japanese-tagged
+  posters as candidates; a Korean title will see Korean-tagged
+  posters; etc. English-original titles still see only `null,en` so
+  they don't get a foreign poster picked for them automatically.
+  TMDB orders images by `vote_average DESC` so the highest-rated
+  upload still wins regardless of language tag.
+- **Manual artwork picker** (the modal you open from a show's
+  detail page) now requests **all languages** from TMDB — both for
+  TMDB-bound titles and for TVDB-bound titles where TMDB
+  supplementation is enabled. When you're hand-picking artwork the
+  app no longer filters out images on your behalf; you see every
+  uploaded poster, backdrop, and season poster TMDB has.
+- `tmdb.tv_images`, `tmdb.tv_season_images`, and `tmdb.movie_images`
+  now accept `languages: list[str] | None` and
+  `include_all_languages: bool`. When `include_all_languages=True`
+  the `include_image_language` param is omitted entirely so TMDB
+  returns the full unfiltered set.
+
+### Added
+
+- `_ISO_639_3_TO_1` mapping in `tmdb.py` for normalising ISO 639-3
+  language codes (which TVDB tends to emit) into the 2-letter ISO
+  639-1 codes TMDB expects.
+
 ## 0.11.5 — 2026-05-06
 
 Adds a **Prune empty** action so you can clean up show / movie folders

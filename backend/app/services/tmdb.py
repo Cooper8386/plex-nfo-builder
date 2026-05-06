@@ -19,6 +19,51 @@ from ..db import cache_get, cache_set
 API_BASE = "https://api.themoviedb.org/3"
 IMG_BASE = "https://image.tmdb.org/t/p"
 
+# Tiny ISO 639-3 → ISO 639-1 map for the languages we plausibly need to
+# pass to TMDB's image endpoints. Anything we don't recognise we leave
+# alone — if it's already 2-letter the call still works.
+_ISO_639_3_TO_1: dict[str, str] = {
+    "eng": "en",
+    "jpn": "ja",
+    "kor": "ko",
+    "zho": "zh",
+    "chi": "zh",
+    "spa": "es",
+    "fra": "fr",
+    "fre": "fr",
+    "deu": "de",
+    "ger": "de",
+    "ita": "it",
+    "por": "pt",
+    "rus": "ru",
+    "ara": "ar",
+    "hin": "hi",
+    "tha": "th",
+    "vie": "vi",
+    "tur": "tr",
+    "pol": "pl",
+    "nld": "nl",
+    "dut": "nl",
+    "swe": "sv",
+    "nor": "no",
+    "dan": "da",
+    "fin": "fi",
+    "ces": "cs",
+    "cze": "cs",
+    "ell": "el",
+    "gre": "el",
+    "heb": "he",
+    "hun": "hu",
+    "ind": "id",
+    "may": "ms",
+    "msa": "ms",
+    "ron": "ro",
+    "rum": "ro",
+    "ukr": "uk",
+    "tgl": "tl",
+    "fil": "tl",
+}
+
 
 class TMDBError(RuntimeError):
     pass
@@ -182,16 +227,91 @@ class TMDBClient:
             f"/tv/{tv_id}/season/{season}", params=params, ttl=self._ttl(), force=force
         )
 
-    async def tv_images(self, tv_id: int | str, *, force: bool = False) -> dict:
-        # include_image_language=null,en,xx returns posters with no language flag too
-        params = {"include_image_language": "null,en"}
+    # ---- Images -------------------------------------------------------------
+    #
+    # v0.11.6: TMDB pre-filters /images results by ``include_image_language``.
+    # If you don't pass the show's *original* language, anything tagged with
+    # that language (which is most of the uploaded posters for non-English
+    # shows — anime, K-dramas, foreign films) gets dropped on the server
+    # side and the API never returns them, even though they're public on
+    # themoviedb.org.
+    #
+    # The fix is to always ask for: ``null`` (no-flag), ``en``, and the
+    # show's original language. Callers that have the language at hand pass
+    # it via ``languages=``; callers that don't can still call without it
+    # (the default ``null,en`` is preserved for back-compat). The flag
+    # ``include_all_languages=True`` switches to ``null`` only, which TMDB
+    # treats as "give me everything regardless of language tag" — useful
+    # for the manual artwork picker where the user is browsing and
+    # explicitly choosing.
+
+    @staticmethod
+    def _images_lang_param(
+        languages: Optional[list[str]] = None,
+        *,
+        include_all: bool = False,
+    ) -> Optional[str]:
+        """Build the ``include_image_language`` query value.
+
+        Returns ``None`` when the caller wants TMDB to return *all*
+        public images regardless of language flag — in that case the
+        helper above omits ``include_image_language`` from the query
+        string entirely, which is TMDB's documented "no language filter"
+        behaviour. This is what the manual artwork picker uses so a
+        non-English show's natively-tagged posters (e.g. ``ja`` on
+        Japanese anime) appear alongside ``null`` and ``en`` ones.
+
+        Otherwise the value always includes ``null`` (untagged uploads)
+        plus ``en`` plus any languages requested by the caller — the show's
+        ``original_language`` in particular, so anime / foreign-language
+        shows are auto-resolved correctly without any user action.
+        """
+        if include_all:
+            return None
+        wanted: list[str] = ["null", "en"]
+        if languages:
+            for lang in languages:
+                if not lang:
+                    continue
+                code = lang.strip().lower()
+                # TMDB image flags are 2-letter ISO 639-1; map our 3-letter
+                # config values down. ``null`` and unknown tags are dropped.
+                code = _ISO_639_3_TO_1.get(code, code)
+                if not code or code == "null":
+                    continue
+                if code not in wanted:
+                    wanted.append(code)
+        return ",".join(wanted)
+
+    async def tv_images(
+        self,
+        tv_id: int | str,
+        *,
+        languages: Optional[list[str]] = None,
+        include_all_languages: bool = False,
+        force: bool = False,
+    ) -> dict:
+        params: dict[str, Any] = {}
+        lang = self._images_lang_param(languages, include_all=include_all_languages)
+        if lang is not None:
+            params["include_image_language"] = lang
         return await self._get(
             f"/tv/{tv_id}/images", params=params, ttl=self._ttl(), force=force
         )
 
-    async def tv_season_images(self, tv_id: int | str, season: int,
-                               *, force: bool = False) -> dict:
-        params = {"include_image_language": "null,en"}
+    async def tv_season_images(
+        self,
+        tv_id: int | str,
+        season: int,
+        *,
+        languages: Optional[list[str]] = None,
+        include_all_languages: bool = False,
+        force: bool = False,
+    ) -> dict:
+        params: dict[str, Any] = {}
+        lang = self._images_lang_param(languages, include_all=include_all_languages)
+        if lang is not None:
+            params["include_image_language"] = lang
         return await self._get(
             f"/tv/{tv_id}/season/{season}/images",
             params=params, ttl=self._ttl(), force=force,
@@ -211,8 +331,18 @@ class TMDBClient:
             f"/movie/{movie_id}/keywords", params=None, ttl=self._ttl(), force=force
         )
 
-    async def movie_images(self, movie_id: int | str, *, force: bool = False) -> dict:
-        params = {"include_image_language": "null,en"}
+    async def movie_images(
+        self,
+        movie_id: int | str,
+        *,
+        languages: Optional[list[str]] = None,
+        include_all_languages: bool = False,
+        force: bool = False,
+    ) -> dict:
+        params: dict[str, Any] = {}
+        lang = self._images_lang_param(languages, include_all=include_all_languages)
+        if lang is not None:
+            params["include_image_language"] = lang
         return await self._get(
             f"/movie/{movie_id}/images", params=params, ttl=self._ttl(), force=force
         )

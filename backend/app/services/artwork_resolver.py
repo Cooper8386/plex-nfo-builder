@@ -85,9 +85,28 @@ async def resolve_preferred_artwork_series(
         if not tmdb_id:
             logger.debug("resolve_preferred_artwork_series: no TMDB id available for series")
             return {}
+        # v0.11.6: include the show's *original* language alongside
+        # null/en so non-English shows (anime, K-dramas, foreign films)
+        # actually get artwork pulled from TMDB. Without this TMDB filters
+        # out language-tagged uploads server-side and the response is empty
+        # for shows whose only public posters carry the show's native
+        # language flag.
+        tmdb_languages: list[str] = []
         try:
             tc = get_tmdb_client()
-            imgs = await tc.tv_images(tmdb_id, force=force)
+            tmdb_details = (
+                tmdb_tv if isinstance(tmdb_tv, dict) and bound_provider == "tmdb"
+                else await tc.tv_details(tmdb_id, force=force)
+            )
+            ol = (tmdb_details or {}).get("original_language")
+            if isinstance(ol, str) and ol:
+                tmdb_languages.append(ol)
+        except Exception as e:
+            logger.debug("resolve_preferred_artwork_series: tv_details for original_language failed: {}", e)
+        try:
+            imgs = await tc.tv_images(
+                tmdb_id, languages=tmdb_languages, force=force
+            )
         except Exception as e:
             logger.debug("resolve_preferred_artwork_series: tv_images failed: {}", e)
             return {}
@@ -104,7 +123,10 @@ async def resolve_preferred_artwork_series(
         if local_season_numbers:
             for sn in sorted(set(int(n) for n in local_season_numbers if int(n) >= 0)):
                 try:
-                    simg = await tc.tv_season_images(tmdb_id, sn, force=force)
+                    simg = await tc.tv_season_images(
+                        tmdb_id, sn,
+                        languages=tmdb_languages, force=force,
+                    )
                 except Exception:
                     continue
                 fp = _first_tmdb_path(simg.get("posters"))
@@ -190,9 +212,24 @@ async def resolve_preferred_artwork_movie(
                     break
         if not tmdb_id:
             return {}
+        # v0.11.6: include the movie's original language so non-English
+        # films (anime films, foreign cinema) actually return posters.
+        tmdb_languages: list[str] = []
         try:
             tc = get_tmdb_client()
-            imgs = await tc.movie_images(tmdb_id, force=force)
+            tmdb_details = (
+                tmdb_mv if isinstance(tmdb_mv, dict) and bound_provider == "tmdb"
+                else await tc.movie_details(tmdb_id, force=force)
+            )
+            ol = (tmdb_details or {}).get("original_language")
+            if isinstance(ol, str) and ol:
+                tmdb_languages.append(ol)
+        except Exception as e:
+            logger.debug("resolve_preferred_artwork_movie: movie_details for original_language failed: {}", e)
+        try:
+            imgs = await tc.movie_images(
+                tmdb_id, languages=tmdb_languages, force=force
+            )
         except Exception as e:
             logger.debug("resolve_preferred_artwork_movie: movie_images failed: {}", e)
             return {}

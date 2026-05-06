@@ -1414,11 +1414,19 @@ async def artwork_candidates(path: str, kind: str = "series"):
                 if cands:
                     _extend(f"season-{sn:02d}-poster", _tag_provider(cands, "tvdb"))
     else:  # tmdb-bound
+        # v0.11.6: this is the *manual* artwork picker — the user is
+        # browsing every uploaded image to choose one. Pass
+        # include_all_languages=True so TMDB returns posters tagged with
+        # any language, not just null/en. Without this, anime / K-drama /
+        # foreign-language shows show no posters at all even though
+        # themoviedb.org has dozens.
         if kind == "movie":
             tmdb_id_for_fanart = str(binding["external_id"])
             try:
                 tc = get_tmdb_client()
-                imgs = await tc.movie_images(binding["external_id"])
+                imgs = await tc.movie_images(
+                    binding["external_id"], include_all_languages=True
+                )
                 details = await tc.movie_details(binding["external_id"])
                 if isinstance(details, dict) and details.get("imdb_id"):
                     imdb_id_for_fanart = details["imdb_id"]
@@ -1431,7 +1439,9 @@ async def artwork_candidates(path: str, kind: str = "series"):
             try:
                 tc = get_tmdb_client()
                 details = await tc.tv_details(binding["external_id"])
-                imgs = await tc.tv_images(binding["external_id"])
+                imgs = await tc.tv_images(
+                    binding["external_id"], include_all_languages=True
+                )
                 ext = details.get("external_ids") or {}
                 tvdb_id_for_fanart = str(ext.get("tvdb_id") or "") or None
                 imdb_id_for_fanart = str(ext.get("imdb_id") or "") or None
@@ -1446,7 +1456,10 @@ async def artwork_candidates(path: str, kind: str = "series"):
                     if sn is None or int(sn) < 0:
                         continue
                     try:
-                        season_imgs = await tc.tv_season_images(binding["external_id"], int(sn))
+                        season_imgs = await tc.tv_season_images(
+                            binding["external_id"], int(sn),
+                            include_all_languages=True,
+                        )
                         cands = _tmdb_to_candidates(season_imgs.get("posters") or [], season_number=int(sn))
                         if cands:
                             _extend(f"season-{int(sn):02d}-poster", _tag_provider(cands, "tmdb"))
@@ -1472,12 +1485,18 @@ async def artwork_candidates(path: str, kind: str = "series"):
         try:
             tc = get_tmdb_client()
             if kind == "movie":
-                imgs = await tc.movie_images(tmdb_id_for_fanart)
+                # Manual picker — show every uploaded poster regardless of
+                # language flag (v0.11.6).
+                imgs = await tc.movie_images(
+                    tmdb_id_for_fanart, include_all_languages=True
+                )
                 _extend("poster", _tag_provider(_tmdb_to_candidates(imgs.get("posters") or []), "tmdb"))
                 _extend("background", _tag_provider(_tmdb_to_candidates(imgs.get("backdrops") or []), "tmdb"))
                 _extend("clearlogo", _tag_provider(_tmdb_to_candidates(imgs.get("logos") or []), "tmdb"))
             else:
-                imgs = await tc.tv_images(tmdb_id_for_fanart)
+                imgs = await tc.tv_images(
+                    tmdb_id_for_fanart, include_all_languages=True
+                )
                 _extend("poster", _tag_provider(_tmdb_to_candidates(imgs.get("posters") or []), "tmdb"))
                 _extend("background", _tag_provider(_tmdb_to_candidates(imgs.get("backdrops") or []), "tmdb"))
                 _extend("clearlogo", _tag_provider(_tmdb_to_candidates(imgs.get("logos") or []), "tmdb"))
@@ -1501,7 +1520,10 @@ async def artwork_candidates(path: str, kind: str = "series"):
                     if sn_int < 0:
                         continue
                     try:
-                        season_imgs = await tc.tv_season_images(tmdb_id_for_fanart, sn_int)
+                        season_imgs = await tc.tv_season_images(
+                            tmdb_id_for_fanart, sn_int,
+                            include_all_languages=True,
+                        )
                         cands = _tmdb_to_candidates(season_imgs.get("posters") or [], season_number=sn_int)
                         if cands:
                             _extend(f"season-{sn_int:02d}-poster", _tag_provider(cands, "tmdb"))
