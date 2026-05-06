@@ -311,6 +311,49 @@ export default function HelpView() {
         </Bullets>
       </Section>
 
+      <Section title="Why is this show partial? (status breakdown panel)">
+        <p>
+          Every status pill on a Detail page is a button. Click it (or the{" "}
+          <Code>▾</Code> chevron) to drop down a live breakdown of exactly
+          why the folder isn't <Badge>complete</Badge>. The panel re-walks the
+          folder on disk on demand, so it reflects the current filesystem, not
+          a cached scan.
+        </p>
+        <Bullets>
+          <li>
+            <b>Counter cells</b> at the top: total videos, NFOs written by
+            this app, and foreign NFOs (NFOs without our provenance tag —
+            usually leftover Tinymediamanager / Kodi / Sonarr files).
+          </li>
+          <li>
+            <b>Reasons list</b> in plain English (e.g.{" "}
+            <i>“Season 02 is missing 3 episode NFO files.”</i>,{" "}
+            <i>“Show NFO was written by another tool.”</i>).
+          </li>
+          <li>
+            <b>Per-season table</b> showing video count vs NFO count,
+            foreign NFO count, and a <Code>show files</Code> expander that
+            lists the exact filenames missing an NFO and the foreign NFOs
+            that would block <Code>Build NFOs</Code> until you wipe them or
+            opt to overwrite.
+          </li>
+          <li>
+            <b>Orphan root videos</b> — videos sitting directly in the show
+            root (not under a season folder). Plex won't find them; move
+            them under a <Code>Season 0X</Code> folder or rename to fix.
+          </li>
+          <li>
+            <b>Recompute</b> button forces a fresh re-walk if you've just
+            added or wiped files in another tab.
+          </li>
+        </Bullets>
+        <Callout>
+          The endpoint is <Code>GET /api/items/nfo-explain?path=...</Code> if
+          you want to script around it. Same status logic as the library
+          list, just with all the supporting evidence attached.
+        </Callout>
+      </Section>
+
       <Section title="Episode mapping & renaming">
         <p>
           Open a series and switch to the <Code>episodes</Code> tab. Each local
@@ -374,6 +417,20 @@ export default function HelpView() {
           names get the anime template, files where the parser pulled an{" "}
           air-date get the daily template, everything else gets the standard
           template. Pin the selector when auto-detection guesses wrong.
+        </p>
+        <p>
+          <b>Release group override (anime).</b> Some fansub releases drop
+          the <Code>-Group</Code> tag from the filename, or wrap it in
+          brackets the parser doesn't recognise — and the{" "}
+          <Code>{"{Release Group}"}</Code> token then renders empty in the
+          rename preview. Type the group name into the{" "}
+          <Code>Release group</Code> field at the top of the rename modal
+          (e.g. <Code>SubsPlease</Code>, <Code>Erai-raws</Code>,{" "}
+          <Code>Judas</Code>) and every preview row re-renders with that
+          group baked in. Hit <Code>Enter</Code> or tab out of the field to
+          re-preview, or use the <Code>×</Code> button to clear and fall back
+          to auto-detection. Empty means auto, so this only ever overrides —
+          never hides — what the parser found.
         </p>
         <p>
           Templates use Sonarr/Radarr token grammar. Default schemes match the{" "}

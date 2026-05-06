@@ -443,6 +443,7 @@ def plan_series_rename(
     tmdb_id: Optional[str] = None,
     episodes_by_se: dict[tuple[int, int], dict],
     overrides_by_file: dict[str, dict],
+    release_group_override: Optional[str] = None,
 ) -> list[RenamePlanItem]:
     """Produce a rename plan for every episode file under ``folder``.
 
@@ -472,7 +473,13 @@ def plan_series_rename(
             parsed_air_date = (ep_meta.get("aired") or "")
         mi = mi_svc.probe_file(parsed_path)
         quality_full = mi_svc.build_quality_full(stem, mi)
-        release_group = mi_svc.extract_release_group(stem)
+        # v0.11.7: anime fansub names sometimes use a bracket layout that
+        # extract_release_group() can't safely guess (e.g. ``[Group A][Group B]Title``
+        # or ``Title (Group)``). When the user supplies a manual override we
+        # honour it verbatim and skip auto-detection so the {Release Group}
+        # token in their template actually expands instead of going blank.
+        rg_override = (release_group_override or "").strip()
+        release_group = rg_override if rg_override else mi_svc.extract_release_group(stem)
 
         # Pick template.
         if manual == "standard":
@@ -556,6 +563,7 @@ def plan_movie_rename(
     tmdb_id: Optional[str] = None,
     tvdb_id: Optional[str] = None,
     imdb_id: Optional[str] = None,
+    release_group_override: Optional[str] = None,
 ) -> list[RenamePlanItem]:
     """Produce a rename plan for every video file directly inside ``folder``."""
     folder_p = Path(folder)
@@ -571,13 +579,15 @@ def plan_movie_rename(
         if ext not in VIDEO_EXT:
             continue
         mi = mi_svc.probe_file(f)
+        rg_override = (release_group_override or "").strip()
+        rg = rg_override if rg_override else mi_svc.extract_release_group(f.stem)
         ctx = build_context(
             title=title,
             year=year,
             tmdb_id=tmdb_id,
             tvdb_id=tvdb_id,
             imdb_id=imdb_id,
-            release_group=mi_svc.extract_release_group(f.stem),
+            release_group=rg,
             quality_full=mi_svc.build_quality_full(f.stem, mi),
             mi=mi,
         )

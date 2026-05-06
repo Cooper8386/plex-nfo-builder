@@ -47,6 +47,35 @@ export type LocalEpisode = {
   has_file_override?: boolean;
 };
 
+// v0.11.7 — detailed "why is this folder partial?" payload returned by
+// /api/items/nfo-explain. Mirrors what scanner.explain_nfo_state produces.
+export type NfoExplainSeason = {
+  season: number;
+  folder: string;
+  video_count: number;
+  nfo_count: number;
+  foreign_nfo_count: number;
+  missing: string[];
+  missing_total: number;
+  foreign: string[];
+  foreign_total: number;
+  season_nfo: boolean;
+};
+
+export type NfoExplain = {
+  path: string;
+  status: "none" | "partial" | "complete" | "stale" | "foreign" | "mixed";
+  kind: "series" | "movie";
+  video_count: number;
+  nfo_count: number;
+  foreign_nfo_count: number;
+  show_nfo: { path: string | null; present: boolean; foreign: boolean } | null;
+  movie_nfo: { path: string | null; present: boolean; foreign: boolean } | null;
+  seasons: NfoExplainSeason[];
+  orphan_root_videos: string[];
+  reasons: string[];
+};
+
 export type RenamePlanItem = {
   src: string;
   dst: string;
@@ -210,6 +239,10 @@ export const api = {
         provider_used: string | null;
         tags: { tvdb: string[]; tmdb: string[]; custom: string[] };
       }>(fetch(`/api/items/detail?path=${encodeURIComponent(path)}`)),
+    nfoExplain: (path: string) =>
+      J<NfoExplain>(
+        fetch(`/api/items/nfo-explain?path=${encodeURIComponent(path)}`)
+      ),
     tags: {
       add: (folder_path: string, tag: string) =>
         J<{ ok: true; added: boolean; tags: string[] }>(
@@ -495,6 +528,9 @@ export const api = {
         daily_template?: string;
         anime_template?: string;
         series_type?: "auto" | "standard" | "daily" | "anime";
+        // v0.11.7: manual release-group override applied to every plan item.
+        // Useful for anime fansub layouts the auto-detector can't safely guess.
+        release_group?: string;
       }) =>
         J<{ folder_path: string; template: string; items: RenamePlanItem[] }>(
           fetch("/api/episodes/rename/preview", {
@@ -510,6 +546,7 @@ export const api = {
         anime_template?: string;
         series_type?: "auto" | "standard" | "daily" | "anime";
         only_src?: string[];
+        release_group?: string;
       }) =>
         J<{
           ok: true;

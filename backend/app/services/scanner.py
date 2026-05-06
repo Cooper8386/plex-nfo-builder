@@ -306,6 +306,250 @@ def hash_text(text: str) -> str:
 # actually has media in it. The walker bails out the instant it sees a
 # video file, so it's cheap even on huge libraries.
 
+# v0.11.7: rich "why is this folder partial?" diagnostic used by the Detail
+# page. The library list only knows the bucketed status (none/partial/foreign
+# /mixed/stale/complete) which is fine for filtering but tells the user
+# *nothing* about which file is actually missing or what to do about it. The
+# explainer below re-walks the folder, replays the same logic _scan_nfo_state
+# uses, and returns a structured payload listing every contributing fact: how
+# many seasons exist on disk, how many episodes per season have NFOs vs
+# don't, which NFOs lack our provenance comment (so are "foreign"), whether
+# tvshow.nfo is missing or foreign, and a flat list of human-readable
+# reasons. The Detail page renders this as a "Why partial?" panel.
+
+
+def explain_nfo_state(folder: Path, kind: str) -> dict:
+    """Diagnose why a folder is in its current NFO state.
+
+    Returns a dict shaped roughly like::
+
+        {
+          "status": "partial",
+          "kind": "series",
+          "video_count": 24,
+          "nfo_count": 18,
+          "foreign_nfo_count": 0,
+          "show_nfo": {"path": "…/tvshow.nfo", "present": True, "foreign": False},
+          "seasons": [
+            {
+              "season": 1,
+              "folder": "…/Season 01",
+              "video_count": 12,
+              "nfo_count": 12,
+              "foreign_nfo_count": 0,
+              "missing": [],
+              "foreign": [],
+              "season_nfo": True
+            },
+            {
+              "season": 2,
+              "video_count": 12,
+              "nfo_count": 6,
+              "foreign_nfo_count": 0,
+              "missing": ["E07.mkv", "E08.mkv", …],
+              "foreign": []
+            }
+          ],
+          "reasons": [
+            "Season 02 has 6 of 12 episode NFOs.",
+            "6 episode files have no matching .nfo yet."
+          ]
+        }
+
+    Best-effort: any error inspecting one path is logged and skipped so the
+    overall payload still surfaces what we *can* see.
+    """
+    out: dict = {
+        "status": "none",
+        "kind": kind,
+        "video_count": 0,
+        "nfo_count": 0,
+        "foreign_nfo_count": 0,
+        "show_nfo": None,
+        "movie_nfo": None,
+        "seasons": [],
+        "orphan_root_videos": [],
+        "reasons": [],
+    }
+
+    if kind == "movie":
+        videos = folder_root_videos(folder)
+        out["video_count"] = len(videos)
+        main = videos[0] if videos else None
+        nfo_path = main.with_suffix(".nfo") if main else (folder / "movie.nfo")
+        present = nfo_path.exists() if main else False
+        foreign = False
+        if present:
+            try:
+                head = nfo_path.read_text(errors="ignore")[:2000]
+                foreign = PROVENANCE_TAG not in head
+            except Exception:
+                pass
+        out["movie_nfo"] = {
+            "path": str(nfo_path) if main else None,
+            "present": bool(present),
+            "foreign": bool(foreign),
+        }
+        if not main:
+            out["status"] = "none"
+            out["reasons"].append("No video file found in this folder.")
+        elif not present:
+            out["status"] = "none"
+            out["reasons"].append(f"No NFO next to {main.name}.")
+        elif foreign:
+            out["status"] = "foreign"
+            out["reasons"].append(
+                f"NFO for {main.name} was not written by plex-nfo-builder "
+                "(missing provenance comment). Use Force rebuild to overwrite it."
+            )
+        else:
+            out["status"] = "complete"
+            out["reasons"].append("Movie NFO present and built by plex-nfo-builder.")
+        return out
+
+    # Series ---------------------------------------------------------------
+    show_nfo = folder / "tvshow.nfo"
+    show_present = show_nfo.exists()
+    show_foreign = False
+    if show_present:
+        try:
+            show_foreign = PROVENANCE_TAG not in show_nfo.read_text(errors="ignore")[:2000]
+        except Exception:
+            pass
+    out["show_nfo"] = {
+        "path": str(show_nfo),
+        "present": bool(show_present),
+        "foreign": bool(show_foreign),
+    }
+
+    total_videos = 0
+    total_nfos = 0
+    total_foreign_nfos = 0
+    season_entries: list[dict] = []
+
+    season_dirs = list(detect_season_dirs(folder))
+    for sd in season_dirs:
+        snum = season_number_from_dir(sd.name)
+        eps = list_season_episodes(sd)
+        # Map every video stem -> True so we can detect orphan NFOs / missing NFOs.
+        video_stems: dict[str, str] = {}
+        for parsed in eps:
+            try:
+                video_stems[parsed.path.stem] = parsed.path.name
+            except Exception:
+                continue
+        nfo_files: list[Path] = []
+        try:
+            for f in sd.iterdir():
+                if f.is_file() and f.suffix.lower() == ".nfo":
+                    nfo_files.append(f)
+        except Exception as e:
+            logger.warning("explain_nfo_state: cannot read {} ({})", sd, e)
+            continue
+
+        # season.nfo is a sidecar, never an episode NFO.
+        season_nfo = next((f for f in nfo_files if f.name.lower() == "season.nfo"), None)
+        episode_nfos = [f for f in nfo_files if f.name.lower() != "season.nfo"]
+
+        nfo_stems = {f.stem: f for f in episode_nfos}
+        missing: list[str] = []
+        for stem, video_name in video_stems.items():
+            if stem not in nfo_stems:
+                missing.append(video_name)
+        foreign: list[str] = []
+        for stem, f in nfo_stems.items():
+            try:
+                head = f.read_text(errors="ignore")[:2000]
+                if PROVENANCE_TAG not in head:
+                    foreign.append(f.name)
+            except Exception:
+                pass
+
+        season_entries.append({
+            "season": int(snum),
+            "folder": str(sd),
+            "video_count": len(eps),
+            "nfo_count": len(episode_nfos),
+            "foreign_nfo_count": len(foreign),
+            "missing": sorted(missing)[:50],          # cap to keep payload small
+            "missing_total": len(missing),
+            "foreign": sorted(foreign)[:50],
+            "foreign_total": len(foreign),
+            "season_nfo": season_nfo is not None,
+        })
+        total_videos += len(eps)
+        total_nfos += len(episode_nfos)
+        total_foreign_nfos += len(foreign)
+
+    # Loose root videos (anime/OVAs sitting at the series root, no Season XX).
+    root_eps = list_season_episodes(folder)
+    if root_eps:
+        out["orphan_root_videos"] = [p.path.name for p in root_eps][:50]
+        total_videos += len(root_eps)
+
+    out["seasons"] = sorted(season_entries, key=lambda s: s["season"])
+    out["video_count"] = total_videos
+    out["nfo_count"] = total_nfos
+    out["foreign_nfo_count"] = total_foreign_nfos
+
+    # Replay the bucketing logic so the exposed "status" matches what the
+    # library list shows. Keep this in sync with _scan_nfo_state above.
+    if not show_present and total_nfos == 0:
+        status = "none"
+    elif show_present and total_nfos == total_videos and total_videos > 0 and (not show_foreign or total_foreign_nfos == 0):
+        status = "complete"
+    elif not show_present and total_foreign_nfos == total_nfos and total_nfos > 0:
+        status = "foreign"
+    elif show_present and total_nfos < total_videos:
+        status = "partial"
+    elif show_present and total_nfos > 0:
+        status = "mixed"
+    else:
+        status = "partial"
+    out["status"] = status
+
+    # Friendly reasons.
+    reasons: list[str] = []
+    if not show_present:
+        reasons.append("tvshow.nfo is missing.")
+    elif show_foreign:
+        reasons.append(
+            "tvshow.nfo exists but was not written by plex-nfo-builder "
+            "(no provenance comment). Use Force rebuild to overwrite it."
+        )
+    if total_videos == 0:
+        reasons.append("No episode video files found under any Season folder.")
+    if status in ("partial", "mixed") and total_nfos < total_videos:
+        gap = total_videos - total_nfos
+        reasons.append(
+            f"{gap} episode file{'s' if gap != 1 else ''} have no matching .nfo yet."
+        )
+    if total_foreign_nfos > 0:
+        reasons.append(
+            f"{total_foreign_nfos} episode NFO{'s' if total_foreign_nfos != 1 else ''} "
+            "were not written by plex-nfo-builder. Force rebuild to overwrite them."
+        )
+    for s in out["seasons"]:
+        if s["video_count"] > 0 and s["nfo_count"] < s["video_count"]:
+            reasons.append(
+                f"Season {s['season']:02d}: {s['nfo_count']} of {s['video_count']} episode NFOs present."
+            )
+        if s["foreign_nfo_count"] > 0:
+            reasons.append(
+                f"Season {s['season']:02d}: {s['foreign_nfo_count']} foreign NFO(s)."
+            )
+    if out["orphan_root_videos"]:
+        n = len(out["orphan_root_videos"])
+        reasons.append(
+            f"{n} video file{'s' if n != 1 else ''} sit at the series root "
+            "(not inside a Season XX folder). They still count toward the episode total."
+        )
+    if status == "complete" and not reasons:
+        reasons.append("Every episode has an NFO and tvshow.nfo is built.")
+    out["reasons"] = reasons
+    return out
+
+
 def folder_has_media(folder: Path) -> bool:
     """True if *any* descendant file is a recognised video file.
 

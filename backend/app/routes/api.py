@@ -779,6 +779,30 @@ async def item_detail(path: str):
     }
 
 
+@router.get("/items/nfo-explain")
+async def items_nfo_explain(path: str):
+    """Return a structured \"why does this folder have this status?\" payload.
+
+    The library list only carries the bucketed status (none/partial/foreign/
+    mixed/stale/complete) which doesn't tell the user *which* file is
+    missing or what to do about it. The Detail page calls this on demand to
+    render a per-season breakdown of NFO coverage.
+    """
+    p = _safe_under_root(path)
+    binding = db.get_binding(str(p))
+    # Default to series unless we know it's a movie (binding wins; otherwise
+    # the folder shape decides). The explainer is tolerant of either.
+    if binding and binding["kind"] == "movie":
+        kind = "movie"
+    elif binding and binding["kind"] == "series":
+        kind = "series"
+    else:
+        kind = "movie" if scanner.folder_looks_like_movie(p) else "series"
+    payload = scanner.explain_nfo_state(p, kind=kind)
+    payload["path"] = str(p)
+    return payload
+
+
 async def _gather_tags_for_detail(folder: Path, binding) -> dict:
     """Collect TVDB genres, TMDB keywords, and custom tags for a folder.
 
@@ -2026,6 +2050,11 @@ class RenamePreviewIn(BaseModel):
     anime_template: Optional[str] = None
     # "auto" | "standard" | "daily" | "anime" — ignored for movies.
     series_type: str = "auto"
+    # v0.11.7: manual release-group override applied to every plan item.
+    # Mainly useful for anime where the fansub group is laid out in a
+    # bracket pattern the auto-detector can't safely guess (e.g.
+    # ``[Group A][Group B]Title``). Empty / None means "auto-detect as before".
+    release_group: Optional[str] = None
 
 
 async def _resolve_localized_title(
@@ -2155,6 +2184,7 @@ async def episodes_rename_preview(payload: RenamePreviewIn):
             tmdb_id=tmdb_id,
             episodes_by_se=episodes_idx,
             overrides_by_file=db.get_episode_file_overrides(str(p)),
+            release_group_override=payload.release_group,
         )
     else:
         template = template or settings.rename_movie_template
@@ -2170,6 +2200,7 @@ async def episodes_rename_preview(payload: RenamePreviewIn):
             year=binding["year"],
             tmdb_id=tmdb_id,
             tvdb_id=tvdb_id,
+            release_group_override=payload.release_group,
         )
     return {
         "folder_path": str(p),
@@ -2200,6 +2231,8 @@ class RenameApplyIn(BaseModel):
     # Restrict the apply to a subset of source paths (per-row checkbox UI).
     # If empty/null, every plan item that's safe to rename is applied.
     only_src: Optional[list[str]] = None
+    # v0.11.7: same release-group override the preview accepted.
+    release_group: Optional[str] = None
 
 
 @router.post("/episodes/rename/apply")
@@ -2238,6 +2271,7 @@ async def episodes_rename_apply(payload: RenameApplyIn):
             tmdb_id=tmdb_id,
             episodes_by_se=episodes_idx,
             overrides_by_file=db.get_episode_file_overrides(str(p)),
+            release_group_override=payload.release_group,
         )
     else:
         template = template or settings.rename_movie_template
@@ -2253,6 +2287,7 @@ async def episodes_rename_apply(payload: RenameApplyIn):
             year=binding["year"],
             tmdb_id=tmdb_id,
             tvdb_id=tvdb_id,
+            release_group_override=payload.release_group,
         )
     if payload.only_src:
         wanted = set(payload.only_src)

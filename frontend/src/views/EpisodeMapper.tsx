@@ -348,6 +348,12 @@ function RenameModal({
   const [seriesType, setSeriesType] = useState<
     "auto" | "standard" | "daily" | "anime"
   >("auto");
+  // v0.11.7 — manual release-group override. Anime fansub layouts often use
+  // bracket patterns the auto-detector can't safely guess (e.g.
+  // ``[Group A][Group B]Title``), so the {Release Group} token comes out
+  // empty in their template. Typing a value here forces it for every plan
+  // item until cleared.
+  const [releaseGroup, setReleaseGroup] = useState<string>("");
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -355,14 +361,17 @@ function RenameModal({
   const load = async (
     overrideTemplate?: string,
     overrideSeriesType?: "auto" | "standard" | "daily" | "anime",
+    overrideReleaseGroup?: string,
   ) => {
     setBusy(true);
     setMsg(null);
     try {
+      const rgArg = overrideReleaseGroup ?? releaseGroup;
       const r = await api.episodes.rename.preview({
         folder_path: path,
         template: overrideTemplate || undefined,
         series_type: overrideSeriesType ?? seriesType,
+        release_group: rgArg.trim() ? rgArg.trim() : undefined,
       });
       setItems(r.items);
       setTemplate(r.template);
@@ -408,6 +417,7 @@ function RenameModal({
         template: template || undefined,
         series_type: seriesType,
         only_src,
+        release_group: releaseGroup.trim() ? releaseGroup.trim() : undefined,
       });
       const renamed = r.renamed.length;
       const skipped = r.skipped.length;
@@ -420,7 +430,7 @@ function RenameModal({
         }`,
       );
       await onApplied();
-      await load(template, seriesType); // re-preview to show the new state
+      await load(template, seriesType, releaseGroup); // re-preview to show the new state
     } catch (e: any) {
       setMsg(e?.message ?? String(e));
     } finally {
@@ -470,7 +480,7 @@ function RenameModal({
                 setSeriesType(next);
                 // Re-preview with the new mode and the user's current
                 // ad-hoc template (if any).
-                load(template || undefined, next);
+                load(template || undefined, next, releaseGroup);
               }}
             >
               <option value="auto">Auto-detect</option>
@@ -480,6 +490,45 @@ function RenameModal({
             </select>
             <span className="text-[11px] text-slate-500">
               Auto: anime fansub names → anime template, files with an air-date → daily, otherwise standard.
+            </span>
+          </div>
+          {/* v0.11.7 — manual release group override. Useful for anime
+              where the auto-detector can't read the fansub bracket layout. */}
+          <div className="flex items-center gap-3">
+            <label className="text-xs uppercase tracking-wide text-slate-500">
+              Release group
+            </label>
+            <input
+              value={releaseGroup}
+              disabled={busy}
+              onChange={(e) => setReleaseGroup(e.target.value)}
+              onBlur={() => load(template || undefined, seriesType, releaseGroup)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  load(template || undefined, seriesType, releaseGroup);
+                }
+              }}
+              className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs w-44 font-mono"
+              placeholder="e.g. SubsPlease"
+              spellCheck={false}
+            />
+            {releaseGroup && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setReleaseGroup("");
+                  load(template || undefined, seriesType, "");
+                }}
+                className="text-[11px] text-slate-400 hover:text-white"
+                title="Clear override and go back to auto-detection"
+              >
+                clear
+              </button>
+            )}
+            <span className="text-[11px] text-slate-500 leading-snug">
+              Optional. Force the {"{Release Group}"} token to this value for every file. Mainly for anime fansub layouts the auto-detector misses.
             </span>
           </div>
           <label className="text-xs uppercase tracking-wide text-slate-500">

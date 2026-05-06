@@ -2,6 +2,74 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.7 — 2026-05-06
+
+Makes the per-folder NFO status actually explainable, and gives the
+renamer a manual release-group override for anime fansub files where
+the group name can't be auto-detected.
+
+### Why does this folder say "partial"?
+
+The library list shows a one-word status pill on every show / movie
+(`none` / `partial` / `mixed` / `foreign` / `complete`). That bucketed
+label is fine for filtering, but it told you nothing about *which* file
+was actually missing or what to do about it. A user staring at
+`partial` on a 24-episode show couldn't tell whether one episode was
+uncovered, ten were, or the show NFO itself was foreign.
+
+### Added
+
+- **Status breakdown panel** on the Detail page. The status pill in
+  the title bar is now clickable; clicking it opens an inline panel
+  that re-walks the folder live and reports:
+  - Whether `tvshow.nfo` (or `movie.nfo`) is missing, present, or
+    foreign (i.e. NFO exists but lacks the plex-nfo-builder provenance
+    comment).
+  - Total episode-NFO coverage as `built / total videos`.
+  - Total foreign episode NFOs (those that didn't come from this app).
+  - A bulleted list of human-readable reasons ("Season 02: 6 of 12
+    episode NFOs present.", "3 episode NFOs were not written by
+    plex-nfo-builder. Force rebuild to overwrite them.", etc.).
+  - A per-season coverage table with one row per season showing video
+    count, NFO count, missing count, foreign count, and whether
+    `season.nfo` exists. Click *show files* on any troubled row to
+    expand the actual filenames that are missing or foreign.
+  - A list of any video files sitting at the series root rather than
+    inside a `Season XX/` subfolder (the renamer / NFO writer still
+    counts those, but Plex usually wants them in a season folder).
+  - A short legend distinguishing `partial`, `mixed`, and `foreign`,
+    with a hint to use *Force rebuild* to overwrite foreign NFOs.
+- New `GET /api/items/nfo-explain?path=...` endpoint that powers the
+  panel. Returns a structured payload (status, kind, video / nfo /
+  foreign-nfo counts, per-season list with up to 50 missing /
+  foreign filenames each, root-level orphan video list, and the
+  human-readable reasons array). The bucketing logic mirrors the
+  scanner's existing `_scan_nfo_state` so the panel agrees with the
+  library list.
+- New `scanner.explain_nfo_state(folder, kind)` helper backing the
+  endpoint. Walks the folder once, records every contributing fact,
+  and never throws on a single unreadable subdirectory.
+
+### Renamer: manual release-group override
+
+Anime fansub layouts often use bracket patterns the auto-detector
+can't safely guess (e.g. `[Group A][Group B]Title - 01 [1080p].mkv`).
+The `{Release Group}` token in the rename template comes out empty,
+leaving you with `Title - 01 [1080p]-.mkv`-style results.
+
+- **Release group input** added to the rename modal next to the
+  Series-type selector. Type a value (e.g. `SubsPlease`) and every
+  plan item uses that as the `{Release Group}` token, including the
+  `{-Release Group}` conditional. Press Enter or blur the field to
+  re-preview. *Clear* button restores auto-detection. Empty value
+  keeps the existing behaviour (auto-detect from the filename).
+- `POST /api/episodes/rename/preview` and `POST /api/episodes/
+  rename/apply` now accept `release_group: str | None` and forward
+  it to the renamer.
+- `renamer.plan_series_rename` and `renamer.plan_movie_rename` got a
+  `release_group_override` kwarg. When set, it short-circuits
+  `mediainfo.extract_release_group()` for that run.
+
 ## 0.11.6 — 2026-05-06
 
 Fixes artwork resolution for non-English shows and movies. Anime,
