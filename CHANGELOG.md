@@ -2,6 +2,60 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.4 — 2026-05-06
+
+Quality-of-life polish: know what version is actually running, find the
+shows that still need work, browse libraries in the same order Plex /
+Sonarr / Radarr use, and stop losing your scroll position when you back
+out of a detail page.
+
+### Added
+
+- **Backend version chip in the top bar.** When you run the
+  `:latest` Docker tag and a new release rolls in, you can confirm at a
+  glance which numbered version is actually live (e.g. `v0.11.4`).
+  Hover for tooltip context. Settings → About lists the same info
+  alongside the repo link and the matching
+  `ghcr.io/cooper8386/plex-nfo-builder:vX.Y.Z` container tag.
+- **`GET /api/version`** returns `{version, name, repo}`. The same
+  version is now also reported by `GET /api/health` and the FastAPI
+  OpenAPI doc (`/docs`).
+- **"Needs work / Complete / All" filter pill** on every library
+  toolbar. "Needs work" surfaces folders whose status is
+  `none / partial / stale / foreign / mixed` — anything you'd want to
+  open and finish. "Complete" shows only the green ones. The choice is
+  remembered per-library so each library opens to whichever filter you
+  used last.
+- **Sort title support.** Library grids and lists now order shows the
+  way Plex/Sonarr/Radarr do — leading articles (`The`, `A`, `An`) are
+  ignored, and any manual `sorttitle` override you've set on the
+  Overview → Overrides tab wins. The Yamato/Star Blazers split-anime
+  case (one TVDB record but four community-recognized shows) Just
+  Works: set `sorttitle` to `Star Blazers 2199 / 2202 / 2205 / 3199`
+  on each folder and they'll cluster together.
+- **Scroll restoration.** Clicking a poster, then hitting the back
+  arrow or your mouse-back button, now drops you back at exactly the
+  scroll position you came from instead of the top of the library.
+  Bounded to the most recent ten library views to keep memory tiny.
+- **Settings rewrite.** New left-rail subnav splits the page into
+  Metadata · Providers · Artwork · Plex · Renaming · Schedules ·
+  About panes with a single sticky save bar at the bottom. The Plex
+  test result is now an inline card under the Plex form. The Renaming
+  pane groups Episodes / Folders / Movies and the token reference
+  collapses out of the way.
+
+### Changed
+
+- `item_state` gains a `sort_title TEXT` column with a backfill
+  migration; `list_item_state` orders by `COALESCE(sort_title, title)`.
+  Editing a series or movie `sorttitle` override now refreshes the
+  cached sort key automatically.
+- The scanner and builder both populate `sort_title` on every upsert
+  (override → provider `sortName` → leading-article-stripped fallback).
+- `GET /api/items` accepts a comma-separated `status=` query
+  parameter and the legacy `hide_organized=1` flag, both consumed by
+  the new filter pill.
+
 ## 0.11.3 — 2026-05-06
 
 Manual secondary provider id — the missing piece for shows whose TVDB

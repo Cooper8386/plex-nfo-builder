@@ -1,38 +1,214 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, Library, Schedule, ScheduleAction } from "../lib/api";
+
+type SectionKey =
+  | "metadata"
+  | "providers"
+  | "artwork"
+  | "plex"
+  | "renaming"
+  | "schedules"
+  | "about";
+
+const SECTIONS: { key: SectionKey; label: string; description: string }[] = [
+  { key: "metadata", label: "Metadata", description: "Source, language, matching" },
+  { key: "providers", label: "Providers", description: "TVDB, TMDB, fanart.tv keys" },
+  { key: "artwork", label: "Artwork", description: "Which provider's images win" },
+  { key: "plex", label: "Plex", description: "Server URL, token, auto-refresh" },
+  { key: "renaming", label: "Renaming", description: "Sonarr/Radarr-style templates" },
+  { key: "schedules", label: "Schedules", description: "Recurring scan/match/build" },
+  { key: "about", label: "About", description: "Version & links" },
+];
 
 export default function SettingsView() {
   const [s, setS] = useState<any>(null);
+  const [section, setSection] = useState<SectionKey>(() => {
+    try {
+      const v = localStorage.getItem("pnb.settings.section") as SectionKey | null;
+      if (v && SECTIONS.find((x) => x.key === v)) return v;
+    } catch {}
+    return "metadata";
+  });
+
+  // Field state shared across panes (pending secrets typed by the user).
   const [apiKey, setApiKey] = useState("");
   const [pin, setPin] = useState("");
   const [tmdbKey, setTmdbKey] = useState("");
   const [fanartKey, setFanartKey] = useState("");
   const [plexToken, setPlexToken] = useState("");
-  const [plexTesting, setPlexTesting] = useState(false);
-  const [plexResult, setPlexResult] = useState<
-    | null
-    | {
-        ok: boolean;
-        error?: string;
-        identity?: { friendly_name?: string; version?: string };
-        sections?: { id: string; title: string; type: string; locations: string[] }[];
-      }
-  >(null);
-  const [saved, setSaved] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api.settings.get().then(setS);
   }, []);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem("pnb.settings.section", section);
+    } catch {}
+  }, [section]);
+
   if (!s) return <div className="p-6 text-slate-500">Loading…</div>;
 
   const update = (k: string, v: any) => setS({ ...s, [k]: v });
 
-  return (
-    <div className="p-6 max-w-2xl">
-      <h2 className="text-xl font-semibold mb-4">Settings</h2>
+  const dirty =
+    !!apiKey || !!pin || !!tmdbKey || !!fanartKey || !!plexToken; // settings object itself is always sent on Save
 
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">Metadata</h3>
+  const saveAll = async () => {
+    setSaving(true);
+    try {
+      const body: any = { ...s };
+      delete body.tvdb_api_key_configured;
+      delete body.tvdb_pin_configured;
+      delete body.tmdb_api_key_configured;
+      delete body.fanart_api_key_configured;
+      delete body.plex_token_configured;
+      if (apiKey) body.tvdb_api_key = apiKey;
+      if (pin) body.tvdb_pin = pin;
+      if (tmdbKey) body.tmdb_api_key = tmdbKey;
+      if (fanartKey) body.fanart_api_key = fanartKey;
+      if (plexToken) body.plex_token = plexToken;
+      await api.settings.set(body);
+      const fresh = await api.settings.get();
+      setS(fresh);
+      setApiKey("");
+      setPin("");
+      setTmdbKey("");
+      setFanartKey("");
+      setPlexToken("");
+      setSavedMsg("Saved.");
+      setTimeout(() => setSavedMsg(null), 1800);
+    } catch (e: any) {
+      setSavedMsg(`Save failed: ${e?.message || e}`);
+      setTimeout(() => setSavedMsg(null), 4000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Schedules has its own UI and doesn't need the save bar.
+  const showSaveBar = section !== "schedules" && section !== "about";
+
+  return (
+    <div className="flex h-full min-h-0">
+      {/* Left rail */}
+      <aside className="w-56 shrink-0 border-r border-slate-800 bg-slate-950/40 overflow-auto">
+        <div className="px-4 py-4">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-3">
+            Settings
+          </div>
+          <nav className="flex flex-col gap-1">
+            {SECTIONS.map((sec) => {
+              const active = sec.key === section;
+              return (
+                <button
+                  key={sec.key}
+                  onClick={() => setSection(sec.key)}
+                  className={`text-left px-3 py-2 rounded-md transition border ${
+                    active
+                      ? "bg-indigo-600/15 border-indigo-600/50 text-white"
+                      : "bg-transparent border-transparent text-slate-300 hover:bg-slate-900 hover:text-white"
+                  }`}
+                >
+                  <div className="text-sm font-medium">{sec.label}</div>
+                  <div className="text-[11px] text-slate-500">{sec.description}</div>
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+      </aside>
+
+      {/* Pane */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        <div className="flex-1 min-h-0 overflow-auto">
+          <div className="p-6 max-w-3xl">
+            {section === "metadata" && (
+              <MetadataPane s={s} update={update} />
+            )}
+            {section === "providers" && (
+              <ProvidersPane
+                s={s}
+                update={update}
+                apiKey={apiKey}
+                setApiKey={setApiKey}
+                pin={pin}
+                setPin={setPin}
+                tmdbKey={tmdbKey}
+                setTmdbKey={setTmdbKey}
+                fanartKey={fanartKey}
+                setFanartKey={setFanartKey}
+                onClearCache={async () => {
+                  await api.tvdb.clearCache();
+                  setSavedMsg("Cache cleared.");
+                  setTimeout(() => setSavedMsg(null), 1500);
+                }}
+              />
+            )}
+            {section === "artwork" && <ArtworkPane s={s} update={update} />}
+            {section === "plex" && (
+              <PlexPane
+                s={s}
+                setS={setS}
+                update={update}
+                plexToken={plexToken}
+                setPlexToken={setPlexToken}
+              />
+            )}
+            {section === "renaming" && <RenamingPane s={s} setS={setS} update={update} />}
+            {section === "schedules" && <SchedulesSection />}
+            {section === "about" && <AboutPane />}
+          </div>
+        </div>
+        {showSaveBar && (
+          <div className="border-t border-slate-800 bg-slate-950/80 backdrop-blur px-6 py-3 flex items-center gap-3">
+            <button
+              onClick={saveAll}
+              disabled={saving}
+              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded text-sm disabled:opacity-50"
+            >
+              {saving ? "Saving…" : "Save changes"}
+            </button>
+            {dirty && !saving && (
+              <span className="text-xs text-amber-400">Unsaved secrets pending.</span>
+            )}
+            {savedMsg && <span className="text-xs text-emerald-400">{savedMsg}</span>}
+            <div className="flex-1" />
+            <span className="text-[11px] text-slate-500">
+              Settings apply immediately to scans and builds after save.
+            </span>
+          </div>
+        )}
+        {section === "about" && savedMsg && (
+          <div className="border-t border-slate-800 px-6 py-2 text-xs text-emerald-400">
+            {savedMsg}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ----------------------- Section panes ----------------------- */
+
+function PaneHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+  return (
+    <div className="mb-5">
+      <h2 className="text-xl font-semibold">{title}</h2>
+      {subtitle && <p className="text-sm text-slate-500 mt-1">{subtitle}</p>}
+    </div>
+  );
+}
+
+function MetadataPane({ s, update }: { s: any; update: (k: string, v: any) => void }) {
+  return (
+    <>
+      <PaneHeader
+        title="Metadata"
+        subtitle="Which provider drives titles, descriptions, cast, and how aggressively the matcher binds shows."
+      />
       <Field label="Primary metadata source">
         <select
           className="bg-slate-800 px-2 py-1 rounded"
@@ -54,7 +230,12 @@ export default function SettingsView() {
         <input
           className="bg-slate-800 px-2 py-1 rounded w-64"
           value={(s.fallback_languages || []).join(",")}
-          onChange={(e) => update("fallback_languages", e.target.value.split(",").map((x) => x.trim()))}
+          onChange={(e) =>
+            update(
+              "fallback_languages",
+              e.target.value.split(",").map((x: string) => x.trim())
+            )
+          }
         />
       </Field>
       <Field label="Cache TTL (hours)">
@@ -80,9 +261,43 @@ export default function SettingsView() {
           onChange={(e) => update("overwrite_foreign_nfo", e.target.checked)}
         />
       </Field>
+    </>
+  );
+}
 
-      <hr className="my-4 border-slate-800" />
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">TVDB</h3>
+function ProvidersPane({
+  s,
+  update,
+  apiKey,
+  setApiKey,
+  pin,
+  setPin,
+  tmdbKey,
+  setTmdbKey,
+  fanartKey,
+  setFanartKey,
+  onClearCache,
+}: {
+  s: any;
+  update: (k: string, v: any) => void;
+  apiKey: string;
+  setApiKey: (v: string) => void;
+  pin: string;
+  setPin: (v: string) => void;
+  tmdbKey: string;
+  setTmdbKey: (v: string) => void;
+  fanartKey: string;
+  setFanartKey: (v: string) => void;
+  onClearCache: () => void;
+}) {
+  return (
+    <>
+      <PaneHeader
+        title="Providers"
+        subtitle="API keys for the metadata and artwork providers."
+      />
+
+      <SubHeader>TVDB</SubHeader>
       <Field label={`TVDB API key${s.tvdb_api_key_configured ? " (configured)" : ""}`}>
         <input
           className="bg-slate-800 px-2 py-1 rounded w-80"
@@ -100,8 +315,8 @@ export default function SettingsView() {
         />
       </Field>
 
-      <hr className="my-4 border-slate-800" />
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">TMDB</h3>
+      <Divider />
+      <SubHeader>TMDB</SubHeader>
       <Field label={`TMDB API key${s.tmdb_api_key_configured ? " (configured)" : ""}`}>
         <input
           className="bg-slate-800 px-2 py-1 rounded w-80"
@@ -118,35 +333,97 @@ export default function SettingsView() {
         />
       </Field>
 
-      <hr className="my-4 border-slate-800" />
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">Artwork</h3>
+      <Divider />
+      <SubHeader>fanart.tv</SubHeader>
+      <Field label={`fanart.tv API key${s.fanart_api_key_configured ? " (configured)" : ""}`}>
+        <input
+          className="bg-slate-800 px-2 py-1 rounded w-80"
+          value={fanartKey}
+          placeholder={s.fanart_api_key_configured ? "leave blank to keep current" : "personal API key"}
+          onChange={(e) => setFanartKey(e.target.value)}
+        />
+      </Field>
+      <Field label="Pull artwork from fanart.tv">
+        <input
+          type="checkbox"
+          checked={s.fanart_enabled !== false}
+          onChange={(e) => update("fanart_enabled", e.target.checked)}
+        />
+      </Field>
+
+      <Divider />
+      <div className="ml-64 pl-3">
+        <button
+          className="text-xs text-amber-400 hover:underline"
+          onClick={onClearCache}
+        >
+          Clear metadata cache
+        </button>
+        <p className="text-[11px] text-slate-500 mt-1">
+          Forces the next scan/match/build to re-fetch from TVDB and TMDB.
+        </p>
+      </div>
+    </>
+  );
+}
+
+function ArtworkPane({ s, update }: { s: any; update: (k: string, v: any) => void }) {
+  return (
+    <>
+      <PaneHeader
+        title="Artwork"
+        subtitle="Choose which provider's images win during a build. Independent of the metadata source — e.g. use TVDB for descriptions and TMDB for posters."
+      />
       <Field label="Preferred artwork source">
         <select
           className="bg-slate-800 px-2 py-1 rounded"
           value={s.preferred_artwork_source || "auto"}
           onChange={(e) => update("preferred_artwork_source", e.target.value)}
-          title="Which provider's images win during a build. Independent of the metadata source — e.g. use TVDB for descriptions/cast and TMDB for artwork."
         >
           <option value="auto">Auto (match metadata source)</option>
           <option value="tvdb">Prefer TVDB artwork</option>
           <option value="tmdb">Prefer TMDB artwork</option>
         </select>
       </Field>
-      <div className="text-xs text-slate-500 mb-3 ml-64 pl-3">
+      <p className="text-xs text-slate-500 ml-64 pl-3 max-w-xl">
         Applies to posters, backgrounds, and season posters. Your per-show
         manual picks always override this. When the preferred provider can't
         be reached for a show, the metadata source's own artwork is used.
-      </div>
+      </p>
+    </>
+  );
+}
 
-      <hr className="my-4 border-slate-800" />
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">Plex</h3>
-      <div className="text-xs text-slate-500 mb-3">
-        After a successful build, the app can ask your Plex server to rescan
-        the show or movie folder so changes appear without manually clicking
-        refresh in Plex. Path mappings translate the app's view of the disk
-        (e.g. <code className="text-slate-400">/media</code>) to whatever Plex
-        sees (e.g. <code className="text-slate-400">/data</code>).
-      </div>
+function PlexPane({
+  s,
+  setS,
+  update,
+  plexToken,
+  setPlexToken,
+}: {
+  s: any;
+  setS: (v: any) => void;
+  update: (k: string, v: any) => void;
+  plexToken: string;
+  setPlexToken: (v: string) => void;
+}) {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<
+    | null
+    | {
+        ok: boolean;
+        error?: string;
+        identity?: { friendly_name?: string; version?: string };
+        sections?: { id: string; title: string; type: string; locations: string[] }[];
+      }
+  >(null);
+
+  return (
+    <>
+      <PaneHeader
+        title="Plex"
+        subtitle="After a build, the app can ask Plex to rescan the show or movie folder so changes appear without manual refresh. Path mappings translate the app's view of disk (e.g. /media) to whatever Plex sees (e.g. /data)."
+      />
       <Field label="Plex base URL">
         <input
           className="bg-slate-800 px-2 py-1 rounded w-80"
@@ -242,13 +519,12 @@ export default function SettingsView() {
       <div className="flex items-center gap-3 mb-3">
         <label className="text-sm text-slate-300 w-64"></label>
         <button
-          className="px-3 py-1 bg-slate-700 rounded text-sm disabled:opacity-50"
-          disabled={plexTesting}
+          className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm disabled:opacity-50"
+          disabled={testing}
           onClick={async () => {
-            setPlexTesting(true);
-            setPlexResult(null);
+            setTesting(true);
+            setResult(null);
             try {
-              // Save first if user typed a token or changed url so test uses live values.
               if (plexToken || s.plex_url !== undefined) {
                 const body: any = {
                   plex_url: s.plex_url || null,
@@ -261,70 +537,79 @@ export default function SettingsView() {
                 setS(fresh);
               }
               const r = await api.plex.test();
-              setPlexResult(r);
+              setResult(r);
             } catch (e: any) {
-              setPlexResult({ ok: false, error: String(e?.message || e) });
+              setResult({ ok: false, error: String(e?.message || e) });
             } finally {
-              setPlexTesting(false);
+              setTesting(false);
             }
           }}
         >
-          {plexTesting ? "Testing…" : "Test connection"}
+          {testing ? "Testing…" : "Test connection"}
         </button>
       </div>
-      {plexResult && (
-        <div className="ml-64 pl-3 mb-4 text-xs">
-          {plexResult.ok ? (
-            <div>
-              <div className="text-emerald-400">
-                Connected to {plexResult.identity?.friendly_name || "Plex"}
-                {plexResult.identity?.version ? ` (v${plexResult.identity.version})` : ""}
-              </div>
-              {plexResult.sections && plexResult.sections.length > 0 ? (
-                <div className="mt-2 text-slate-400">
-                  <div className="mb-1">Sections:</div>
-                  <ul className="list-disc ml-5 space-y-1">
-                    {plexResult.sections.map((sec) => (
-                      <li key={sec.id}>
-                        <span className="text-slate-200">{sec.title}</span>{" "}
-                        <span className="text-slate-500">({sec.type})</span>
-                        {sec.locations.length > 0 && (
-                          <span className="text-slate-500">
-                            {" — "}
-                            {sec.locations.join(", ")}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
+      {result && (
+        <div className="ml-64 pl-3 mb-2">
+          <div
+            className={`rounded-md border p-3 text-xs ${
+              result.ok
+                ? "bg-emerald-900/20 border-emerald-800 text-emerald-100"
+                : "bg-rose-900/20 border-rose-800 text-rose-200"
+            }`}
+          >
+            {result.ok ? (
+              <>
+                <div className="font-semibold text-emerald-300">
+                  Connected to {result.identity?.friendly_name || "Plex"}
+                  {result.identity?.version ? ` (v${result.identity.version})` : ""}
                 </div>
-              ) : (
-                <div className="text-slate-500 mt-1">No sections found.</div>
-              )}
-            </div>
-          ) : (
-            <div className="text-rose-400">{plexResult.error || "Connection failed."}</div>
-          )}
+                {result.sections && result.sections.length > 0 ? (
+                  <div className="mt-2">
+                    <div className="mb-1 text-emerald-200/80">Sections:</div>
+                    <ul className="list-disc ml-5 space-y-1 text-slate-300">
+                      {result.sections.map((sec) => (
+                        <li key={sec.id}>
+                          <span className="text-slate-100">{sec.title}</span>{" "}
+                          <span className="text-slate-500">({sec.type})</span>
+                          {sec.locations.length > 0 && (
+                            <span className="text-slate-500">
+                              {" — "}
+                              {sec.locations.join(", ")}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <div className="text-slate-400 mt-1">No sections found.</div>
+                )}
+              </>
+            ) : (
+              <div>{result.error || "Connection failed."}</div>
+            )}
+          </div>
         </div>
       )}
+    </>
+  );
+}
 
-      <hr className="my-4 border-slate-800" />
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">
-        Renaming
-      </h3>
-      <p className="text-xs text-slate-500 mb-3 max-w-2xl">
-        Sonarr/Radarr-compatible token grammar. Defaults match the recommended
-        <a
-          href="https://trash-guides.info/Sonarr/Sonarr-recommended-naming-scheme/"
-          target="_blank"
-          rel="noreferrer"
-          className="text-indigo-400 hover:underline ml-1 mr-1"
-        >
-          Trash Guides
-        </a>
-        schemes. Quality, codec, channels, HDR type, bit depth, and audio
-        languages are pulled from the file via ffprobe at preview time.
-      </p>
+function RenamingPane({
+  s,
+  setS,
+  update,
+}: {
+  s: any;
+  setS: (v: any) => void;
+  update: (k: string, v: any) => void;
+}) {
+  return (
+    <>
+      <PaneHeader
+        title="Renaming"
+        subtitle="Sonarr/Radarr-compatible token grammar. Defaults match the recommended Trash Guides schemes. Quality, codec, channels, HDR type, bit depth, and audio languages are pulled from the file via ffprobe at preview time."
+      />
       <Field label="Renaming enabled">
         <input
           type="checkbox"
@@ -332,6 +617,8 @@ export default function SettingsView() {
           onChange={(e) => update("rename_enabled", e.target.checked)}
         />
       </Field>
+
+      <SubHeader>Episodes</SubHeader>
       <RenameTemplateField
         label="Standard episode"
         value={s.rename_episode_template || ""}
@@ -350,6 +637,9 @@ export default function SettingsView() {
         defaultValue={DEFAULT_TEMPLATES.anime}
         onChange={(v) => update("rename_anime_template", v)}
       />
+
+      <Divider />
+      <SubHeader>Folders</SubHeader>
       <RenameTemplateField
         label="Series folder"
         hint="Stored for reference; folder renames are not yet applied automatically."
@@ -364,6 +654,9 @@ export default function SettingsView() {
         defaultValue={DEFAULT_TEMPLATES.seasonFolder}
         onChange={(v) => update("rename_season_folder_template", v)}
       />
+
+      <Divider />
+      <SubHeader>Movies</SubHeader>
       <RenameTemplateField
         label="Movie"
         value={s.rename_movie_template || ""}
@@ -377,7 +670,8 @@ export default function SettingsView() {
         defaultValue={DEFAULT_TEMPLATES.movieFolder}
         onChange={(v) => update("rename_movie_folder_template", v)}
       />
-      <div className="ml-64 pl-3 mb-3">
+
+      <div className="ml-64 pl-3 mb-3 mt-2">
         <button
           type="button"
           className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded"
@@ -397,6 +691,7 @@ export default function SettingsView() {
           Reset all to Sonarr/Radarr recommended defaults
         </button>
       </div>
+
       <details className="ml-64 pl-3 mb-3 text-xs text-slate-400 max-w-2xl">
         <summary className="cursor-pointer text-slate-300 mb-2">
           Token reference
@@ -423,70 +718,105 @@ export default function SettingsView() {
           <code>{"{episode_title}"}</code>, <code>{"{ext}"}</code>,{" "}
           <code>{"{quality}"}</code>) still work as fallbacks.
         </p>
+        <p className="mt-2 text-slate-500">
+          See the{" "}
+          <a
+            href="https://trash-guides.info/Sonarr/Sonarr-recommended-naming-scheme/"
+            target="_blank"
+            rel="noreferrer"
+            className="text-indigo-400 hover:underline"
+          >
+            Trash Guides naming scheme
+          </a>{" "}
+          for context on each token.
+        </p>
       </details>
+    </>
+  );
+}
 
-      <hr className="my-4 border-slate-800" />
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">fanart.tv</h3>
-      <Field label={`fanart.tv API key${s.fanart_api_key_configured ? " (configured)" : ""}`}>
-        <input
-          className="bg-slate-800 px-2 py-1 rounded w-80"
-          value={fanartKey}
-          placeholder={s.fanart_api_key_configured ? "leave blank to keep current" : "personal API key"}
-          onChange={(e) => setFanartKey(e.target.value)}
-        />
-      </Field>
-      <Field label="Pull artwork from fanart.tv">
-        <input
-          type="checkbox"
-          checked={s.fanart_enabled !== false}
-          onChange={(e) => update("fanart_enabled", e.target.checked)}
-        />
-      </Field>
+function AboutPane() {
+  const [info, setInfo] = useState<{ version: string; name: string; repo: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
-      <hr className="my-4 border-slate-800" />
-      <button
-        className="px-4 py-1 bg-indigo-600 rounded text-sm"
-        onClick={async () => {
-          const body: any = { ...s };
-          // Strip masked confirmation booleans
-          delete body.tvdb_api_key_configured;
-          delete body.tvdb_pin_configured;
-          delete body.tmdb_api_key_configured;
-          delete body.fanart_api_key_configured;
-          delete body.plex_token_configured;
-          if (apiKey) body.tvdb_api_key = apiKey;
-          if (pin) body.tvdb_pin = pin;
-          if (tmdbKey) body.tmdb_api_key = tmdbKey;
-          if (fanartKey) body.fanart_api_key = fanartKey;
-          if (plexToken) body.plex_token = plexToken;
-          await api.settings.set(body);
-          // Re-fetch to refresh masked status
-          const fresh = await api.settings.get();
-          setS(fresh);
-          setApiKey(""); setPin(""); setTmdbKey(""); setFanartKey(""); setPlexToken("");
-          setSaved("Saved.");
-          setTimeout(() => setSaved(null), 1500);
-        }}
-      >
-        Save
-      </button>
-      {saved && <span className="ml-3 text-emerald-400 text-xs">{saved}</span>}
-      <hr className="my-4 border-slate-800" />
-      <button
-        className="text-xs text-amber-400"
-        onClick={async () => {
-          await api.tvdb.clearCache();
-          setSaved("Cache cleared.");
-          setTimeout(() => setSaved(null), 1500);
-        }}
-      >
-        Clear metadata cache
-      </button>
+  useEffect(() => {
+    api
+      .version()
+      .then(setInfo)
+      .catch((e) => setErr(String(e?.message || e)));
+  }, []);
 
-      <hr className="my-6 border-slate-800" />
-      <SchedulesSection />
+  return (
+    <>
+      <PaneHeader title="About" subtitle="Build identity for the running container." />
+      {err && <div className="text-xs text-rose-400">{err}</div>}
+      {!info && !err && <div className="text-xs text-slate-500">Loading…</div>}
+      {info && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl">
+          <Card>
+            <CardLabel>App</CardLabel>
+            <div className="text-sm text-slate-100">{info.name}</div>
+          </Card>
+          <Card>
+            <CardLabel>Backend version</CardLabel>
+            <div className="text-sm font-mono text-slate-100">v{info.version}</div>
+          </Card>
+          <Card>
+            <CardLabel>Repository</CardLabel>
+            <a
+              href={info.repo}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm text-indigo-400 hover:underline break-all"
+            >
+              {info.repo}
+            </a>
+          </Card>
+          <Card>
+            <CardLabel>Container</CardLabel>
+            <div className="text-sm font-mono text-slate-100 break-all">
+              ghcr.io/cooper8386/plex-nfo-builder:v{info.version}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">
+              The <code className="text-slate-300">:latest</code> tag tracks the
+              newest release; the version chip in the top bar shows what's actually
+              running.
+            </div>
+          </Card>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ----------------------- Atoms ----------------------- */
+
+function Card({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+      {children}
     </div>
   );
+}
+
+function CardLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">
+      {children}
+    </div>
+  );
+}
+
+function SubHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <h3 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2 mt-1">
+      {children}
+    </h3>
+  );
+}
+
+function Divider() {
+  return <hr className="my-5 border-slate-800" />;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -665,7 +995,6 @@ function SchedulesSection() {
     setBusy(true);
     try {
       await api.schedules.run(id);
-      // Give the server a moment to flip status to "running" / "ok".
       setTimeout(reload, 1500);
     } catch (e: any) {
       setError(e?.message ?? String(e));
@@ -675,15 +1004,11 @@ function SchedulesSection() {
   };
 
   return (
-    <div>
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">
-        Schedules
-      </h3>
-      <p className="text-xs text-slate-500 mb-3">
-        Periodically scan, auto-match, and build NFOs for new or changed items.
-        Cron expressions are evaluated in UTC. A schedule with no library applies
-        to every enabled library.
-      </p>
+    <>
+      <PaneHeader
+        title="Schedules"
+        subtitle="Periodically scan, auto-match, and build NFOs for new or changed items. Cron expressions are evaluated in UTC. A schedule with no library applies to every enabled library."
+      />
 
       <div className="bg-slate-900/60 border border-slate-800 rounded-md p-3 mb-4">
         <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">
@@ -783,7 +1108,7 @@ function SchedulesSection() {
           ))}
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -805,7 +1130,7 @@ function ScheduleRow({
   const [cron, setCron] = useState(sch.cron);
   const dirty = cron !== sch.cron;
 
-  const statusBadge = (() => {
+  const statusBadge = useMemo(() => {
     const status = sch.last_status;
     if (status === "running") {
       return (
@@ -832,7 +1157,7 @@ function ScheduleRow({
       );
     }
     return null;
-  })();
+  }, [sch.last_status, sch.last_message]);
 
   return (
     <div className="bg-slate-900/40 border border-slate-800 rounded-md p-3">

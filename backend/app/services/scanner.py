@@ -156,11 +156,18 @@ def scan_series_folder(folder: Path, library: str) -> SeriesFolderScan:
     provider = pf.provider or (binding["provider"] if binding else None)
     eid = pf.external_id or (binding["external_id"] if binding else None)
 
+    # v0.11.4: cache the effective sort title alongside item_state so the
+    # library list orders Plex/Sonarr-style without having to re-derive it on
+    # every list call. Manual ``sorttitle`` overrides take precedence; the
+    # fallback strips a leading article.
+    series_overrides = db.get_nfo_overrides(str(folder)).get("series", {})
+    sort_title = db.compute_sort_title(pf.title, series_overrides.get("sorttitle"))
     db.upsert_item_state(
         str(folder),
         library=library,
         kind="series",
         title=pf.title,
+        sort_title=sort_title,
         year=pf.year,
         provider=provider,
         external_id=eid,
@@ -206,11 +213,15 @@ def scan_movie_folder(folder: Path, library: str) -> dict:
     eid = pm_eid or folder_pf.external_id or (binding["external_id"] if binding else None)
     state = "complete" if has_nfo and has_prov else ("foreign" if has_nfo else "none")
     poster = _local_poster_for(folder)
+    movie_overrides = db.get_nfo_overrides(str(folder)).get("movie", {})
+    movie_title = pm_title or folder_pf.title
+    sort_title = db.compute_sort_title(movie_title, movie_overrides.get("sorttitle"))
     db.upsert_item_state(
         str(folder),
         library=library,
         kind="movie",
-        title=pm_title or folder_pf.title,
+        title=movie_title,
+        sort_title=sort_title,
         year=pm_year or folder_pf.year,
         provider=provider,
         external_id=eid,

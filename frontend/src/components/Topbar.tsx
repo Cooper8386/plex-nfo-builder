@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { ViewMode } from "../App";
+import { api } from "../lib/api";
 
 export default function Topbar(props: {
   viewMode: ViewMode;
@@ -9,12 +11,37 @@ export default function Topbar(props: {
   route: string;
   showLibraryControls?: boolean;
 }) {
+  const [version, setVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .version()
+      .then((v) => {
+        if (alive) setVersion(v.version || null);
+      })
+      .catch(() => {
+        // ignore — chip just won't render
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   return (
     <div className="sticky top-0 z-30 flex items-center gap-3 px-4 h-14 border-b border-slate-800 bg-slate-950/95 backdrop-blur supports-[backdrop-filter]:bg-slate-950/80">
       <h1 className="font-bold text-base tracking-tight">
         <span className="text-indigo-400">Plex</span>{" "}
         <span className="text-slate-200">NFO</span>
       </h1>
+      {version && (
+        <span
+          className="px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border border-slate-800 bg-slate-900 text-slate-400 select-none"
+          title={`Backend version ${version} — useful when running the :latest Docker tag.`}
+        >
+          v{version}
+        </span>
+      )}
       <div className="flex bg-slate-900 border border-slate-800 rounded-md p-0.5">
         {(["library", "jobs", "logs", "settings", "help"] as const).map((r) => (
           <button

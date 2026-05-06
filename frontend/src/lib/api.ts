@@ -101,6 +101,8 @@ export type Item = {
   episode_count_tvdb: number | null;
   poster_path: string | null;
   last_built?: number | null;
+  /** v0.11.4 — sortable title (override → provider → stripped article fallback). */
+  sort_title?: string | null;
 };
 
 const J = <T,>(p: Promise<Response>): Promise<T> =>
@@ -110,7 +112,8 @@ const J = <T,>(p: Promise<Response>): Promise<T> =>
   });
 
 export const api = {
-  health: () => J<{ ok: boolean; tvdb_configured: boolean }>(fetch("/api/health")),
+  health: () => J<{ ok: boolean; tvdb_configured: boolean; version?: string }>(fetch("/api/health")),
+  version: () => J<{ version: string; name: string; repo: string }>(fetch("/api/version")),
   settings: {
     get: () => J<any>(fetch("/api/settings")),
     set: (body: any) =>
@@ -183,10 +186,17 @@ export const api = {
       ),
   },
   items: {
-    list: (params: { library?: string; q?: string }) => {
+    list: (params: {
+      library?: string;
+      q?: string;
+      status?: string;
+      hide_organized?: boolean;
+    }) => {
       const qs = new URLSearchParams();
       if (params.library) qs.set("library", params.library);
       if (params.q) qs.set("q", params.q);
+      if (params.status) qs.set("status", params.status);
+      if (params.hide_organized) qs.set("hide_organized", "1");
       return J<{ items: Item[] }>(fetch(`/api/items?${qs}`));
     },
     detail: (path: string) =>

@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
 
+from . import __version__
 from . import db
 from .config import CONFIG_DIR, MEDIA_ROOT, env
 from .logging_setup import setup_logging
@@ -20,7 +21,7 @@ from .services.scheduler import scheduler
 setup_logging()
 db.conn()  # init sqlite
 
-app = FastAPI(title="Plex NFO Builder", version="0.1.0")
+app = FastAPI(title="Plex NFO Builder", version=__version__)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -72,7 +73,7 @@ else:
     async def root():
         return {
             "name": "plex-nfo-builder",
-            "version": "0.1.0",
+            "version": __version__,
             "docs": "/docs",
             "frontend": "not-built",
         }

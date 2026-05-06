@@ -14,6 +14,37 @@ _lock = threading.RLock()
 _conn: Optional[sqlite3.Connection] = None
 
 
+# v0.11.4: leading-article stripping for the auto-computed sort title. Plex,
+# Sonarr, Radarr, and Kodi all do roughly this when no explicit sort title
+# exists. We only handle English articles here — anything else, the user
+# should use a per-show ``sorttitle`` override (e.g. an anime where the
+# community uses a romanised release name like "Star Blazers 2199" but the
+# actual TVDB title is "Uchuu Senkan Yamato 2199").
+_LEADING_ARTICLES = ("the ", "a ", "an ")
+
+
+def compute_sort_title(title: Optional[str], override: Optional[str]) -> str:
+    """Resolve the effective sort title for an item.
+
+    Priority: explicit override > stripped-article fallback. The override is
+    the user-supplied ``sorttitle`` from ``nfo_overrides`` (or whatever the
+    metadata provider supplies as ``sortName``); when set, it wins outright.
+    Otherwise we strip a leading English article and return the rest.
+    """
+    if override:
+        s = str(override).strip()
+        if s:
+            return s
+    if not title:
+        return ""
+    raw = str(title).strip()
+    low = raw.lower()
+    for art in _LEADING_ARTICLES:
+        if low.startswith(art):
+            return raw[len(art):].strip()
+    return raw
+
+
 def conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
@@ -209,6 +240,36 @@ def _migrate(c: sqlite3.Connection) -> None:
         if sched_cols and "last_message" not in sched_cols:
             try:
                 c.execute("ALTER TABLE schedules ADD COLUMN last_message TEXT")
+            except Exception:
+                pass
+        # v0.11.4: item_state.sort_title — Plex/Sonarr-style ordering. Sourced
+        # from (1) per-show sorttitle override, (2) provider sortName, (3)
+        # title with leading articles stripped. Backfilled here for any rows
+        # already in the DB so the very first library load after upgrade
+        # already sorts correctly.
+        item_cols = {r[1] for r in c.execute("PRAGMA table_info(item_state)").fetchall()}
+        if item_cols and "sort_title" not in item_cols:
+            try:
+                c.execute("ALTER TABLE item_state ADD COLUMN sort_title TEXT")
+            except Exception:
+                pass
+            try:
+                c.execute("CREATE INDEX IF NOT EXISTS idx_item_state_sort ON item_state(sort_title COLLATE NOCASE)")
+            except Exception:
+                pass
+            # Backfill: derive a sort title from the existing display title for
+            # every row that doesn't have one yet. Manual sorttitle overrides
+            # take effect on the next scan/build.
+            try:
+                rows = c.execute(
+                    "SELECT folder_path, title FROM item_state WHERE sort_title IS NULL OR sort_title = ''"
+                ).fetchall()
+                for r in rows:
+                    st = compute_sort_title(r["title"], None)
+                    c.execute(
+                        "UPDATE item_state SET sort_title = ? WHERE folder_path = ?",
+                        (st, r["folder_path"]),
+                    )
             except Exception:
                 pass
 
@@ -435,7 +496,13 @@ def list_item_state(library: Optional[str] = None,
     if title_q:
         sql += " AND title LIKE ? COLLATE NOCASE"
         args.append(f"%{title_q}%")
-    sql += " ORDER BY title COLLATE NOCASE LIMIT ?"
+    # v0.11.4: order by sort_title (Plex/Sonarr-style), falling back to the
+    # display title when sort_title is NULL or empty. NOCASE so "the matrix"
+    # and "The Matrix" sort the same.
+    sql += (
+        " ORDER BY COALESCE(NULLIF(sort_title, ''), title) COLLATE NOCASE,"
+        " title COLLATE NOCASE LIMIT ?"
+    )
     args.append(limit)
     with _lock:
         return c.execute(sql, args).fetchall()

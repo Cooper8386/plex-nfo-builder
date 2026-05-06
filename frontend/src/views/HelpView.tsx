@@ -9,6 +9,95 @@ export default function HelpView() {
         </p>
       </header>
 
+      <Section title="Versioning">
+        <p>
+          The version chip next to <b>Plex NFO</b> in the top bar shows the
+          backend version that's actually running. When you run the{" "}
+          <Code>:latest</Code> Docker tag, that chip is the source of truth
+          for which numbered release Compose pulled — useful when a release
+          rolls out and you want to confirm it landed.
+        </p>
+        <Bullets>
+          <li>
+            <b>Settings → About</b> shows the same version, the repository
+            link, and the matching{" "}
+            <Code>ghcr.io/cooper8386/plex-nfo-builder:vX.Y.Z</Code> container
+            tag if you ever want to pin to a specific build.
+          </li>
+          <li>
+            <Code>GET /api/version</Code> returns{" "}
+            <Code>{"{version, name, repo}"}</Code> for scripts /
+            health checks; <Code>GET /api/health</Code> includes the version
+            too.
+          </li>
+        </Bullets>
+      </Section>
+
+      <Section title="Library sort order">
+        <p>
+          Library grids and lists order shows the way Plex / Sonarr / Radarr
+          do, not by raw title. The sort key is decided per folder using a
+          three-step fallback:
+        </p>
+        <Ol>
+          <li>
+            Your manual <Code>sorttitle</Code> override on the Overview →
+            Overrides tab wins, full stop. Use this for the Yamato /
+            Star Blazers split-anime case (one TVDB record, four
+            community-recognised shows): set each folder's sorttitle to
+            <Code>Star Blazers 2199 / 2202 / 2205 / 3199</Code> and they'll
+            cluster together in the grid.
+          </li>
+          <li>
+            Otherwise the provider's <Code>sortName</Code> field is used
+            (TVDB and TMDB both publish one).
+          </li>
+          <li>
+            If neither is set, the title is used with a leading{" "}
+            <Code>The </Code> / <Code>A </Code> / <Code>An </Code>{" "}
+            stripped — so <i>The Matrix</i> sorts under <b>M</b>, not <b>T</b>.
+          </li>
+        </Ol>
+        <Callout>
+          Editing a series or movie sorttitle override automatically refreshes
+          the cached sort key. No rescan needed.
+        </Callout>
+      </Section>
+
+      <Section title="Library status filter">
+        <p>
+          Each library toolbar has a three-way pill: <b>All</b> /{" "}
+          <b>Needs work</b> / <b>Complete</b>. The choice is remembered
+          per-library so each library opens to whichever filter you used
+          last.
+        </p>
+        <Bullets>
+          <li>
+            <b>Needs work</b> surfaces folders whose status is{" "}
+            <Badge>none</Badge>, <Badge>partial</Badge>, <Badge>stale</Badge>,{" "}
+            <Badge>foreign</Badge>, or <Badge>mixed</Badge> — anything you'd
+            want to open and finish.
+          </li>
+          <li>
+            <b>Complete</b> shows only the green ones, so you can spot-check
+            already-built shows.
+          </li>
+          <li>
+            <b>All</b> is the unfiltered view.
+          </li>
+        </Bullets>
+      </Section>
+
+      <Section title="Scroll restoration">
+        <p>
+          Click into a show, then hit the back arrow (or your mouse-back
+          button) and the library drops you back at the exact scroll
+          position you came from — not the top of the page. The app
+          remembers the last ten library views, so swapping between
+          libraries also keeps each one's scroll where you left it.
+        </p>
+      </Section>
+
       <Section title="The 60-second tour">
         <Ol>
           <li>

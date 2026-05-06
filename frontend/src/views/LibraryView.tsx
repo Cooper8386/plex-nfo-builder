@@ -1,7 +1,27 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, Item } from "../lib/api";
 import { ViewMode } from "../App";
+
+// v0.11.4 — "Needs work / Complete / All" filter pill on the library toolbar.
+// `Needs work` is anything that isn't fully built. `Complete` is the inverse.
+type LibFilter = "all" | "needs" | "complete";
+const NEEDS_WORK_STATUSES = "none,partial,stale,foreign,mixed";
+
+function filterToParams(f: LibFilter): { status?: string } {
+  if (f === "needs") return { status: NEEDS_WORK_STATUSES };
+  if (f === "complete") return { status: "complete" };
+  return {};
+}
+
+function loadFilterFor(library: string | null): LibFilter {
+  if (!library) return "all";
+  try {
+    const v = localStorage.getItem(`pnb.libFilter.${library}`);
+    if (v === "needs" || v === "complete" || v === "all") return v;
+  } catch {}
+  return "all";
+}
 
 const STATUS_COLOR: Record<string, string> = {
   none: "bg-slate-700 text-slate-200",
@@ -17,21 +37,51 @@ export default function LibraryView(props: {
   viewMode: ViewMode;
   search: string;
   onOpenDetail: (path: string) => void;
+  /**
+   * v0.11.4 — fires after the items query resolves so App.tsx can restore
+   * the previous scroll position when the user navigates back into a library.
+   */
+  onItemsReady?: () => void;
 }) {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [filter, setFilter] = useState<LibFilter>(() => loadFilterFor(props.library));
+
+  // Reload persisted filter when the active library changes.
+  useEffect(() => {
+    setFilter(loadFilterFor(props.library));
+  }, [props.library]);
+
+  const setFilterPersisted = (f: LibFilter) => {
+    setFilter(f);
+    if (props.library) {
+      try {
+        localStorage.setItem(`pnb.libFilter.${props.library}`, f);
+      } catch {}
+    }
+  };
 
   const { data, isFetching } = useQuery({
-    queryKey: ["items", props.library, props.search],
+    queryKey: ["items", props.library, props.search, filter],
     queryFn: () =>
       api.items.list({
         library: props.library || undefined,
         q: props.search || undefined,
+        ...filterToParams(filter),
       }),
     enabled: !!props.library,
   });
+
+  // Notify App.tsx as soon as items have rendered so it can restore scroll
+  // position. We tie this to `data` (not isFetching) so a background refetch
+  // doesn't trigger a re-restore that would yank the user back to the top.
+  useEffect(() => {
+    if (!data) return;
+    props.onItemsReady?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   const items = data?.items ?? [];
   const allSelected = items.length > 0 && items.every((i) => selected.has(i.folder_path));
@@ -197,6 +247,29 @@ export default function LibraryView(props: {
               </span>
             )}
           </label>
+
+          {/* Status filter pill — v0.11.4 */}
+          <div className="flex bg-slate-900 border border-slate-800 rounded-md p-0.5">
+            {(
+              [
+                { key: "all", label: "All" },
+                { key: "needs", label: "Needs work" },
+                { key: "complete", label: "Complete" },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.key}
+                onClick={() => setFilterPersisted(f.key)}
+                className={`px-2.5 py-1 text-xs rounded transition ${
+                  filter === f.key
+                    ? "bg-indigo-600 text-white"
+                    : "text-slate-400 hover:text-white hover:bg-slate-800"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
 
           {someSelected ? (
             <>

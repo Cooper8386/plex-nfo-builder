@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from loguru import logger
 from pydantic import BaseModel
 
+from .. import __version__
 from .. import db
 from ..config import (
     CUSTOM_ARTWORK_DIR,
@@ -59,6 +60,7 @@ async def health():
     s = get_user_settings()
     return {
         "ok": True,
+        "version": __version__,
         "media_root": str(MEDIA_ROOT),
         "tvdb_configured": bool(api_key),
         "tmdb_configured": bool(effective_tmdb_credentials()),
@@ -66,6 +68,21 @@ async def health():
         "metadata_source": (s.metadata_source or "tvdb"),
         "plex_configured": bool(s.plex_url and s.plex_token),
         "plex_auto_refresh": bool(s.plex_auto_refresh),
+    }
+
+
+@router.get("/version")
+async def version():
+    """Return the running app version.
+
+    Useful when you're pinning the Docker image to ``:latest`` and want the
+    UI to surface exactly which release is currently in flight. Cheap call;
+    safe to poll.
+    """
+    return {
+        "version": __version__,
+        "name": "plex-nfo-builder",
+        "repo": "https://github.com/Cooper8386/plex-nfo-builder",
     }
 
 
@@ -261,10 +278,13 @@ async def items_list(library: Optional[str] = None,
                      hide_organized: bool = False):
     """List items in a library.
 
-    v0.8.0: status / hide_organized are kept as optional query params for
-    backward compatibility, but the UI no longer sends them so by default
-    every item in the library is returned. Filtering by completion status
-    used to mask items the user expected to see.
+    v0.11.4: the UI ships a 3-way "All / Needs work / Complete" pill that
+    toggles ``status`` and ``hide_organized``. ``status`` accepts a
+    comma-separated list of NFO state values (``none``, ``partial``,
+    ``stale``, ``foreign``, ``mixed``, ``complete``) and is the canonical
+    filter; ``hide_organized`` is the legacy boolean equivalent of
+    ``status=none,partial,stale,foreign,mixed`` and remains for backwards
+    compatibility.
     """
     statuses = status.split(",") if status else None
     rows = db.list_item_state(library=library, statuses=statuses, title_q=q)
@@ -936,6 +956,22 @@ async def overrides_set(payload: OverrideIn):
     if not _OVR_SCOPE_RE.match(payload.scope or ""):
         raise HTTPException(status_code=400, detail="invalid scope")
     db.set_nfo_override(str(p), payload.scope, payload.field, payload.value)
+    # v0.11.4: keep item_state.sort_title in sync when the user edits the
+    # series/movie sorttitle override. Without this the library list keeps
+    # using the previous order until the next scan.
+    if payload.field == "sorttitle" and payload.scope in ("series", "movie"):
+        try:
+            row = db.conn().execute(
+                "SELECT title FROM item_state WHERE folder_path = ?", (str(p),)
+            ).fetchone()
+            if row:
+                ovr_value = payload.value if (payload.value or "").strip() else None
+                db.upsert_item_state(
+                    str(p),
+                    sort_title=db.compute_sort_title(row["title"], ovr_value),
+                )
+        except Exception as e:
+            logger.warning("sort_title refresh after override {}: {}", p, e)
     try:
         sidecar_svc.write_sidecar(p)
     except Exception as e:
@@ -953,6 +989,23 @@ class OverrideClearIn(BaseModel):
 async def overrides_clear(payload: OverrideClearIn):
     p = _safe_under_root(payload.folder_path)
     n = db.clear_nfo_override(str(p), scope=payload.scope, field=payload.field)
+    # v0.11.4: if the cleared override was a sorttitle, fall back to the
+    # auto-derived sort title so the library list re-orders right away.
+    cleared_sort = payload.field in (None, "sorttitle") and payload.scope in (
+        None, "series", "movie",
+    )
+    if cleared_sort:
+        try:
+            row = db.conn().execute(
+                "SELECT title FROM item_state WHERE folder_path = ?", (str(p),)
+            ).fetchone()
+            if row:
+                db.upsert_item_state(
+                    str(p),
+                    sort_title=db.compute_sort_title(row["title"], None),
+                )
+        except Exception as e:
+            logger.warning("sort_title refresh after override clear {}: {}", p, e)
     try:
         sidecar_svc.write_sidecar(p)
     except Exception as e:
