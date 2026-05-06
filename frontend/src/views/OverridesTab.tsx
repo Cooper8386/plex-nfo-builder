@@ -243,11 +243,181 @@ export default function OverridesTab({
         </section>
       )}
 
+      {/* v0.11.8 — Episode thumbnails gallery. Kept here (Overrides) rather
+          than the Artwork tab because per-episode stills would swamp the
+          cleaner series-level artwork picker, and this tab is already where
+          the user goes to verify per-episode correctness. */}
+      {kind === "series" && binding && matchedEpisodes.length > 0 && (
+        <EpisodeThumbnails episodes={matchedEpisodes} />
+      )}
+
       <div className="text-[11px] text-slate-500">
         Overrides are saved into both the database and a sidecar file
         (<code className="font-mono">.plex-nfo-builder.json</code>) inside the folder, so
         they survive a database wipe. Run "Force rebuild" on the Overview tab to apply
         changes to the NFO files on disk.
+      </div>
+    </div>
+  );
+}
+
+function EpisodeThumbnails({
+  episodes,
+}: {
+  episodes: {
+    file_path: string;
+    file_name: string;
+    matched_title: string | null;
+    matched_season: number | null;
+    matched_number: number | null;
+    parsed_season: number;
+    parsed_episode: number;
+    matched_image?: string | null;
+    local_thumb?: string | null;
+  }[];
+}) {
+  // Group by effective season for a tidy, collapsible display. A show with
+  // 300 episodes would be overwhelming as one flat grid.
+  const bySeason: Record<number, typeof episodes> = {};
+  for (const e of episodes) {
+    const s = e.matched_season ?? e.parsed_season ?? 0;
+    (bySeason[s] ||= []).push(e);
+  }
+  const seasonNums = Object.keys(bySeason)
+    .map(Number)
+    .sort((a, b) => a - b);
+
+  return (
+    <section className="bg-slate-900 border border-slate-800 rounded p-4">
+      <h3 className="font-semibold mb-1">Episode thumbnails</h3>
+      <p className="text-xs text-slate-500 mb-3">
+        Quick preview of each matched episode: the still from the metadata
+        source on the left, and the generated{" "}
+        <code className="font-mono">-thumb.*</code> file already on disk on
+        the right. If the right column is empty, run Build (or Force rebuild)
+        to download the thumbnail.
+      </p>
+      <div className="space-y-4">
+        {seasonNums.map((s) => (
+          <ThumbSeason key={s} season={s} episodes={bySeason[s]} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ThumbSeason({
+  season,
+  episodes,
+}: {
+  season: number;
+  episodes: {
+    file_path: string;
+    file_name: string;
+    matched_title: string | null;
+    matched_season: number | null;
+    matched_number: number | null;
+    parsed_season: number;
+    parsed_episode: number;
+    matched_image?: string | null;
+    local_thumb?: string | null;
+  }[];
+}) {
+  const [open, setOpen] = useState(season !== 0 && season <= 1);
+  const label = season === 0 ? "Specials" : `Season ${season}`;
+  return (
+    <div className="border border-slate-800 rounded">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-800/60"
+      >
+        <span className="text-slate-500 text-xs">{open ? "▾" : "▸"}</span>
+        <span className="text-xs font-semibold flex-1">{label}</span>
+        <span className="text-[10px] text-slate-500">
+          {episodes.length} episode{episodes.length === 1 ? "" : "s"}
+        </span>
+      </button>
+      {open && (
+        <div className="p-3 border-t border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-3">
+          {episodes.map((e) => (
+            <ThumbRow key={e.file_path} ep={e} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThumbRow({
+  ep,
+}: {
+  ep: {
+    file_path: string;
+    file_name: string;
+    matched_title: string | null;
+    matched_season: number | null;
+    matched_number: number | null;
+    parsed_season: number;
+    parsed_episode: number;
+    matched_image?: string | null;
+    local_thumb?: string | null;
+  };
+}) {
+  const s = ep.matched_season ?? ep.parsed_season ?? 0;
+  const n = ep.matched_number ?? ep.parsed_episode ?? 0;
+  const code = `S${String(s).padStart(2, "0")}E${String(n).padStart(2, "0")}`;
+  // No cache-bust here — the response uses standard browser caching by URL.
+  // After a Force rebuild the user can hard-refresh; we don't want a fresh
+  // network round-trip on every parent re-render.
+  const localThumb = ep.local_thumb ? api.artwork.fileUrl(ep.local_thumb) : null;
+
+  return (
+    <div className="bg-slate-950/40 border border-slate-800/70 rounded p-2">
+      <div className="text-[11px] text-slate-300 mb-1.5 truncate" title={ep.matched_title ?? ep.file_name}>
+        <span className="font-mono text-slate-500">{code}</span>{" "}
+        {ep.matched_title ?? <span className="italic text-slate-500">(no title)</span>}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <ThumbCell label="Provider" src={ep.matched_image ?? null} emptyText="no still" />
+        <ThumbCell
+          label="On disk"
+          src={localThumb}
+          emptyText="no -thumb file yet"
+        />
+      </div>
+      <div
+        className="text-[10px] text-slate-500 mt-1 truncate font-mono"
+        title={ep.file_name}
+      >
+        {ep.file_name}
+      </div>
+    </div>
+  );
+}
+
+function ThumbCell({
+  label,
+  src,
+  emptyText,
+}: {
+  label: string;
+  src: string | null;
+  emptyText: string;
+}) {
+  return (
+    <div>
+      <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1">{label}</div>
+      <div className="aspect-video bg-slate-800 rounded overflow-hidden flex items-center justify-center">
+        {src ? (
+          <img
+            src={src}
+            alt={label}
+            loading="lazy"
+            className="w-full h-full object-cover"
+          />
+        ) : (
+          <span className="text-[10px] text-slate-600">{emptyText}</span>
+        )}
       </div>
     </div>
   );

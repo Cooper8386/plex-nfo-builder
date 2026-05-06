@@ -564,6 +564,17 @@ export default function HelpView() {
           <li>
             Reset any field back to the source value with one click.
           </li>
+          <li>
+            See an <b>Episode thumbnails</b> gallery (series only) that pairs
+            each matched episode's provider still with the{" "}
+            <Code>{"<stem>-thumb.{jpg,jpeg,png}"}</Code> file already on
+            disk. Grouped by season with collapsible headers. Lives here
+            (Overrides) on purpose — per-episode stills would clutter the
+            series-level Artwork picker. If the right column is empty for an
+            episode, run <Code>Build NFOs</Code> or{" "}
+            <Code>Force rebuild</Code> on the Overview tab to download the
+            thumbnail.
+          </li>
         </Bullets>
         <p>
           Every override is written into both the database and a{" "}

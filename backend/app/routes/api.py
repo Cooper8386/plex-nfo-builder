@@ -767,6 +767,20 @@ async def item_detail(path: str):
     # v0.8.0: tags from each metadata source plus user-added custom tags.
     tags_payload = await _gather_tags_for_detail(p, binding)
 
+    # v0.11.8: surface the parent library's declared kind so the front-end can
+    # default the manual-match dropdown correctly. A folder that was scanned
+    # before any video was downloaded — or one that scanner.py mis-bucketed as
+    # a movie because a single trailer file lives at the root — would
+    # otherwise show "Movie" in the Match panel inside a TV library.
+    library_kind: Optional[str] = None
+    try:
+        lib_name = p.parent.name
+        lib_row = db.get_library(lib_name)
+        if lib_row and lib_row["kind"]:
+            library_kind = lib_row["kind"]
+    except Exception:
+        library_kind = None
+
     return {
         "path": str(p),
         "binding": dict(binding) if binding else None,
@@ -776,6 +790,7 @@ async def item_detail(path: str):
         "provider_episode_count": provider_episode_count,
         "provider_used": provider_used,
         "tags": tags_payload,
+        "library_kind": library_kind,
     }
 
 
@@ -1881,6 +1896,21 @@ async def episodes_list(path: str):
     legacy_overrides = db.get_episode_overrides(str(p))           # {(s,e): id}
     file_overrides = db.get_episode_file_overrides(str(p))         # {file_path: {...}}
 
+    def _local_thumb_for(video_path: Path) -> Optional[str]:
+        """Return the existing on-disk ``<stem>-thumb.{jpg,jpeg,png}`` for a
+        given video file, or ``None`` if no thumbnail has been generated yet.
+
+        The Overrides tab renders these next to each matched episode so the
+        user can sanity-check at a glance whether the correct still is being
+        written — separate from the full Artwork picker grid, which would be
+        far too cluttered for per-episode verification. (v0.11.8)
+        """
+        for ext in (".jpg", ".jpeg", ".png"):
+            c = video_path.with_name(f"{video_path.stem}-thumb{ext}")
+            if c.exists() and c.is_file():
+                return str(c)
+        return None
+
     def _row_for(parsed_path: Path, parsed_season: int, parsed_episode: int,
                  unparsed: bool) -> dict:
         """Build one row for the Episodes endpoint, applying overrides.
@@ -1930,6 +1960,20 @@ async def episodes_list(path: str):
             "matched_season": matched.get("seasonNumber") if matched else None,
             "matched_number": matched.get("number") if matched else None,
             "matched_title": matched.get("name") if matched else None,
+            # v0.11.8: remote episode still (if the provider has one) and the
+            # local ``<stem>-thumb.{jpg,jpeg,png}`` already on disk. The
+            # Overrides tab shows both so the user can confirm at a glance
+            # that the generated thumbnail matches the matched episode.
+            #
+            # TVDB episode ``image`` values are relative artwork paths and
+            # must be absolutized. TMDB values are already full URLs because
+            # we normalised them at the top of this endpoint.
+            "matched_image": (
+                artwork_svc.absolutize_tvdb_url(matched.get("image"))
+                if matched and provider != "tmdb"
+                else (matched.get("image") if matched else None)
+            ),
+            "local_thumb": _local_thumb_for(parsed_path),
             "unparsed": bool(unparsed),
             "has_file_override": bool(ovr),
         }

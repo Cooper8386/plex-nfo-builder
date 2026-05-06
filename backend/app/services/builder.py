@@ -427,6 +427,9 @@ async def build_movie(folder: Path, *, force: bool = False,
             job["messages"].append("No video file in folder")
             return jid
         main = videos[0]
+        # v0.11.8: report progress for movie builds too. One movie folder =
+        # one NFO + artwork pass, surfaced as a 1/1 progress in the Jobs view.
+        job["total"] = 1
         client = get_client()
         movie_translation = await client.best_translation(
             "movies", data["id"], lang, fallbacks, force=force
@@ -455,6 +458,7 @@ async def build_movie(folder: Path, *, force: bool = False,
             manual_secondary=_manual_secondary_tuple(binding),
         )
         main.with_suffix(".nfo").write_text(nfo_text, encoding="utf-8")
+        job["progress"] += 1
 
         # Artwork — direct canonical files in the movie folder.
         try:
@@ -593,6 +597,13 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
         for sd in detect_season_dirs(folder):
             snum = season_number_from_dir(sd.name)
             local_seasons[snum] = list(list_season_episodes(sd))
+        # v0.11.8: surface job progress for TMDB builds the same way the TVDB
+        # path does. Total = 1 (tvshow.nfo) + every local episode file we'll
+        # try to write a per-episode .nfo for. Without this the Jobs view
+        # always renders "0/0" for TMDB-bound shows even though episodes
+        # are being written correctly underneath.
+        _tmdb_total_eps = sum(len(v) for v in local_seasons.values())
+        job["total"] = 1 + _tmdb_total_eps
         preferred_overrides = await resolve_preferred_artwork_series(
             settings=settings,
             bound_provider="tmdb",
@@ -616,6 +627,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
                                          overrides=nfo_overrides,
                                          manual_secondary=_manual_secondary_tuple(binding))
         (folder / "tvshow.nfo").write_text(nfo_text, encoding="utf-8")
+        job["progress"] += 1
         log.info("Wrote tvshow.nfo (TMDB tv_id={})", data.get("id"))
 
         unmatched: list[str] = []
@@ -654,9 +666,16 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
             except Exception as se:
                 log.warning("TMDB season.nfo for s{:02d} failed: {}", snum, se)
             for parsed in parsed_list:
+                # v0.9.0 parity: skip un-parseable placeholder rows but still
+                # advance progress so the Jobs view counter doesn't stall.
+                if not getattr(parsed, "parsed", True):
+                    unmatched.append(parsed.path.name)
+                    job["progress"] += 1
+                    continue
                 ep = ep_by_num.get(int(parsed.episode))
                 if not ep:
                     unmatched.append(parsed.path.name)
+                    job["progress"] += 1
                     continue
                 ep_text = build_episode_nfo_tmdb(ep, language=lang, fallbacks=fallbacks,
                                                   overrides=nfo_overrides)
@@ -667,6 +686,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
                     url = tmdb_image_url(still, "original")
                     dest = parsed.path.with_name(f"{parsed.path.stem}-thumb.jpg")
                     await _download_url(url, dest, force=force)
+                job["progress"] += 1
         if unmatched:
             log.warning("{} unmatched local episodes: {}", len(unmatched), unmatched[:5])
             job["messages"].append(f"{len(unmatched)} episode file(s) unmatched")
@@ -773,6 +793,8 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
             job["messages"].append("No video file in folder")
             return jid
         main = videos[0]
+        # v0.11.8: report progress for TMDB movie builds too.
+        job["total"] = 1
         nfo_overrides = db.get_nfo_overrides(str(folder))
         preferred_overrides = await resolve_preferred_artwork_movie(
             settings=settings,
@@ -795,6 +817,7 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
                                         overrides=nfo_overrides,
                                         manual_secondary=_manual_secondary_tuple(binding))
         main.with_suffix(".nfo").write_text(nfo_text, encoding="utf-8")
+        job["progress"] += 1
 
         poster = _pick_art(folder, "poster", preferred_overrides,
                            tmdb_image_url(data.get("poster_path"), "original"))

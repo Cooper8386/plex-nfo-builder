@@ -2,6 +2,52 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.8 — 2026-05-06
+
+A small TMDB-parity release that closes three rough edges between the
+TVDB and TMDB code paths.
+
+### Fixed
+
+- **Jobs view always showed `0/0` for TMDB-bound shows and movies.**
+  Only the TVDB build paths set `job["total"]` and incremented
+  `job["progress"]`; the TMDB series build, TMDB movie build, and
+  even the TVDB movie build silently skipped progress reporting.
+  Episodes were being written correctly underneath, but the UI
+  couldn't show it. All four build paths now publish per-step
+  progress (`1/(1 + #episodes)` for series, `1/1` for movies),
+  including a tick for unparseable / unmatched files so the counter
+  doesn't stall when a fansub release has stray files we can't map.
+- **Manual match dropdown defaulted to `Movie` inside a TV library.**
+  The Detail view derived the dropdown's initial value from
+  `state.kind`, which is empty until the folder has been scanned at
+  least once. That fell back to `"series"` for unbound folders, but
+  was still flipping to `"movie"` whenever the per-folder scanner
+  bucketed a single-video TV folder as a movie (common during early
+  downloads). The detail endpoint now also returns the parent
+  library's declared kind (`tv` / `movies`), and the manual-match
+  panel uses that as the default for unbound folders.
+
+### Added
+
+- **Episode thumbnails gallery** in the Overrides tab. For every
+  matched episode, the gallery shows the still pulled from the
+  metadata source on the left and the existing
+  `<stem>-thumb.{jpg,jpeg,png}` file already on disk on the right,
+  grouped by season with collapsible season headers. This
+  intentionally lives in the Overrides tab rather than the Artwork
+  tab — per-episode stills would clutter the series-level artwork
+  picker. The new view also adds a `matched_image` /
+  `local_thumb` field to `GET /api/episodes` for any tooling that
+  wants the same data.
+
+### Internals
+
+- TVDB episode `image` paths returned by `/api/episodes` are now
+  absolutized via `artwork_svc.absolutize_tvdb_url` before being sent
+  to the frontend. TMDB stills are normalised at the top of the
+  endpoint as before.
+
 ## 0.11.7 — 2026-05-06
 
 Makes the per-folder NFO status actually explainable, and gives the

@@ -49,9 +49,21 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
   }, []);
 
   if (!detail.data) return <div className="p-6 text-slate-500">Loading…</div>;
-  const { state, binding, artwork_files, provider_episode_count, provider_used, tags } =
+  const { state, binding, artwork_files, provider_episode_count, provider_used, tags, library_kind } =
     detail.data as any;
   const kind: "series" | "movie" = state?.kind === "movie" ? "movie" : "series";
+  // v0.11.8: when offering manual matching, default the dropdown to whatever
+  // the parent library was detected as ("tv" → series, "movies" → movie). For
+  // empty / freshly-downloaded folders the per-folder scanner can't tell what
+  // kind it is yet, and the previous code hard-coded "series" which in
+  // practice flipped to "movie" whenever the scanner had bucketed a
+  // single-video folder as a movie inside a TV library. The match panel now
+  // honours the library kind unless the user has already bound the folder.
+  const libraryDefaultKind: "series" | "movie" =
+    library_kind === "movies" ? "movie" : library_kind === "tv" ? "series" : kind;
+  const matchDefaultKind: "series" | "movie" = binding
+    ? (binding.kind as "series" | "movie")
+    : libraryDefaultKind;
   const providerLabel = (provider_used ?? binding?.provider ?? "tvdb").toUpperCase();
   const cacheBust = state?.last_built ?? 0;
   const filesByName: Record<string, string> = {};
@@ -309,13 +321,13 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
           {!binding ? (
             <BindEmptyState
               path={path}
-              detectedKind={kind}
+              detectedKind={matchDefaultKind}
               onBound={() => qc.invalidateQueries({ queryKey: ["detail", path] })}
             />
           ) : showMatcher ? (
             <MatchPanel
               path={path}
-              detectedKind={kind}
+              detectedKind={matchDefaultKind}
               onBound={() => {
                 qc.invalidateQueries({ queryKey: ["detail", path] });
                 setShowMatcher(false);

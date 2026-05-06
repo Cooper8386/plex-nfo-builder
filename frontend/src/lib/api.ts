@@ -41,6 +41,10 @@ export type LocalEpisode = {
   matched_season: number | null;
   matched_number: number | null;
   matched_title: string | null;
+  /** v0.11.8 — absolute URL of the provider's episode still (if any). */
+  matched_image?: string | null;
+  /** v0.11.8 — path on disk of the existing ``<stem>-thumb.*`` file, if any. */
+  local_thumb?: string | null;
   /** True when the parser couldn't extract season/episode from the filename. */
   unparsed?: boolean;
   /** True when the user has set a per-file override for this row. */
