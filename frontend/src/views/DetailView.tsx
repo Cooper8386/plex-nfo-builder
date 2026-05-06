@@ -474,7 +474,7 @@ function MatchPanel({
           className="bg-slate-800 px-2 py-1 rounded text-sm border border-slate-700"
           title="Metadata provider to search"
         >
-          <option value="tvdb">TheTVDB</option>
+          <option value="tvdb">TVDB</option>
           <option value="tmdb">TMDB</option>
         </select>
         <select

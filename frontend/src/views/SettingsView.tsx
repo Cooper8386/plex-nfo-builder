@@ -39,8 +39,8 @@ export default function SettingsView() {
           value={s.metadata_source || "tvdb"}
           onChange={(e) => update("metadata_source", e.target.value)}
         >
-          <option value="tvdb">TheTVDB</option>
-          <option value="tmdb">TheMovieDB (TMDB)</option>
+          <option value="tvdb">TVDB</option>
+          <option value="tmdb">TMDB</option>
         </select>
       </Field>
       <Field label="Preferred language (3-letter)">
@@ -128,8 +128,8 @@ export default function SettingsView() {
           title="Which provider's images win during a build. Independent of the metadata source — e.g. use TVDB for descriptions/cast and TMDB for artwork."
         >
           <option value="auto">Auto (match metadata source)</option>
-          <option value="tvdb">Prefer TheTVDB artwork</option>
-          <option value="tmdb">Prefer TheMovieDB artwork</option>
+          <option value="tvdb">Prefer TVDB artwork</option>
+          <option value="tmdb">Prefer TMDB artwork</option>
         </select>
       </Field>
       <div className="text-xs text-slate-500 mb-3 ml-64 pl-3">
@@ -309,18 +309,21 @@ export default function SettingsView() {
       )}
 
       <hr className="my-4 border-slate-800" />
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">Renaming</h3>
-      <p className="text-xs text-slate-500 mb-3 max-w-xl">
-        Templates used by the Episodes → Rename to scheme button. Tokens:{" "}
-        <code className="text-slate-300">{"{title}"}</code>,{" "}
-        <code className="text-slate-300">{"{year}"}</code>,{" "}
-        <code className="text-slate-300">{"{season}"}</code>,{" "}
-        <code className="text-slate-300">{"{season:02}"}</code>,{" "}
-        <code className="text-slate-300">{"{episode}"}</code>,{" "}
-        <code className="text-slate-300">{"{episode:02}"}</code>,{" "}
-        <code className="text-slate-300">{"{episode_title}"}</code>,{" "}
-        <code className="text-slate-300">{"{quality}"}</code>,{" "}
-        <code className="text-slate-300">{"{ext}"}</code>.
+      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">
+        Renaming
+      </h3>
+      <p className="text-xs text-slate-500 mb-3 max-w-2xl">
+        Sonarr/Radarr-compatible token grammar. Defaults match the recommended
+        <a
+          href="https://trash-guides.info/Sonarr/Sonarr-recommended-naming-scheme/"
+          target="_blank"
+          rel="noreferrer"
+          className="text-indigo-400 hover:underline ml-1 mr-1"
+        >
+          Trash Guides
+        </a>
+        schemes. Quality, codec, channels, HDR type, bit depth, and audio
+        languages are pulled from the file via ffprobe at preview time.
       </p>
       <Field label="Renaming enabled">
         <input
@@ -329,22 +332,98 @@ export default function SettingsView() {
           onChange={(e) => update("rename_enabled", e.target.checked)}
         />
       </Field>
-      <Field label="Series episode template">
-        <input
-          className="bg-slate-800 px-2 py-1 rounded w-[28rem] font-mono text-xs"
-          value={s.rename_episode_template || ""}
-          onChange={(e) => update("rename_episode_template", e.target.value)}
-          placeholder="{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}"
-        />
-      </Field>
-      <Field label="Movie template">
-        <input
-          className="bg-slate-800 px-2 py-1 rounded w-[28rem] font-mono text-xs"
-          value={s.rename_movie_template || ""}
-          onChange={(e) => update("rename_movie_template", e.target.value)}
-          placeholder="{title} ({year}){ext}"
-        />
-      </Field>
+      <RenameTemplateField
+        label="Standard episode"
+        value={s.rename_episode_template || ""}
+        defaultValue={DEFAULT_TEMPLATES.standard}
+        onChange={(v) => update("rename_episode_template", v)}
+      />
+      <RenameTemplateField
+        label="Daily episode"
+        value={s.rename_daily_template || ""}
+        defaultValue={DEFAULT_TEMPLATES.daily}
+        onChange={(v) => update("rename_daily_template", v)}
+      />
+      <RenameTemplateField
+        label="Anime episode"
+        value={s.rename_anime_template || ""}
+        defaultValue={DEFAULT_TEMPLATES.anime}
+        onChange={(v) => update("rename_anime_template", v)}
+      />
+      <RenameTemplateField
+        label="Series folder"
+        hint="Stored for reference; folder renames are not yet applied automatically."
+        value={s.rename_series_folder_template || ""}
+        defaultValue={DEFAULT_TEMPLATES.seriesFolder}
+        onChange={(v) => update("rename_series_folder_template", v)}
+      />
+      <RenameTemplateField
+        label="Season folder"
+        hint="Stored for reference; folder renames are not yet applied automatically."
+        value={s.rename_season_folder_template || ""}
+        defaultValue={DEFAULT_TEMPLATES.seasonFolder}
+        onChange={(v) => update("rename_season_folder_template", v)}
+      />
+      <RenameTemplateField
+        label="Movie"
+        value={s.rename_movie_template || ""}
+        defaultValue={DEFAULT_TEMPLATES.movie}
+        onChange={(v) => update("rename_movie_template", v)}
+      />
+      <RenameTemplateField
+        label="Movie folder"
+        hint="Stored for reference; folder renames are not yet applied automatically."
+        value={s.rename_movie_folder_template || ""}
+        defaultValue={DEFAULT_TEMPLATES.movieFolder}
+        onChange={(v) => update("rename_movie_folder_template", v)}
+      />
+      <div className="ml-64 pl-3 mb-3">
+        <button
+          type="button"
+          className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded"
+          onClick={() =>
+            setS({
+              ...s,
+              rename_episode_template: DEFAULT_TEMPLATES.standard,
+              rename_daily_template: DEFAULT_TEMPLATES.daily,
+              rename_anime_template: DEFAULT_TEMPLATES.anime,
+              rename_series_folder_template: DEFAULT_TEMPLATES.seriesFolder,
+              rename_season_folder_template: DEFAULT_TEMPLATES.seasonFolder,
+              rename_movie_template: DEFAULT_TEMPLATES.movie,
+              rename_movie_folder_template: DEFAULT_TEMPLATES.movieFolder,
+            })
+          }
+        >
+          Reset all to Sonarr/Radarr recommended defaults
+        </button>
+      </div>
+      <details className="ml-64 pl-3 mb-3 text-xs text-slate-400 max-w-2xl">
+        <summary className="cursor-pointer text-slate-300 mb-2">
+          Token reference
+        </summary>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
+          <div><code className="text-slate-200">{"{Series TitleYear}"}</code> Severance (2022)</div>
+          <div><code className="text-slate-200">{"{Episode CleanTitle}"}</code> the matched episode title</div>
+          <div><code className="text-slate-200">{"{season:00}"}</code> / <code className="text-slate-200">{"{episode:00}"}</code> zero-padded</div>
+          <div><code className="text-slate-200">{"{Air-Date}"}</code> 2024-05-08</div>
+          <div><code className="text-slate-200">{"{Quality Full}"}</code> WEBDL-1080p / Bluray-2160p</div>
+          <div><code className="text-slate-200">{"{MediaInfo VideoCodec}"}</code> x264 / x265 / AV1</div>
+          <div><code className="text-slate-200">{"{MediaInfo VideoBitDepth}"}</code> 8 / 10</div>
+          <div><code className="text-slate-200">{"{MediaInfo VideoDynamicRangeType}"}</code> HDR10 / DV / HLG</div>
+          <div><code className="text-slate-200">{"{MediaInfo AudioCodec}"}</code> EAC3 Atmos / DTS-HD MA</div>
+          <div><code className="text-slate-200">{"{MediaInfo AudioChannels}"}</code> 5.1 / 7.1 / 2.0</div>
+          <div><code className="text-slate-200">{"{MediaInfo AudioLanguages}"}</code> [EN] / [EN+JA]</div>
+          <div><code className="text-slate-200">{"{Release Group}"}</code> / <code className="text-slate-200">{"{-Release Group}"}</code></div>
+          <div><code className="text-slate-200">{"{TvdbId}"}</code>, <code className="text-slate-200">{"{TmdbId}"}</code>, <code className="text-slate-200">{"{ImdbId}"}</code></div>
+          <div><code className="text-slate-200">{"{Movie CleanTitle}"}</code>, <code className="text-slate-200">{"{(Release Year)}"}</code></div>
+          <div><code className="text-slate-200">{"{[Token]}"}</code> wraps in [..] when present, drops otherwise</div>
+        </div>
+        <p className="mt-2 text-slate-500">
+          Old v0.10.0 simple tokens (<code>{"{title}"}</code>, <code>{"{year}"}</code>,{" "}
+          <code>{"{episode_title}"}</code>, <code>{"{ext}"}</code>,{" "}
+          <code>{"{quality}"}</code>) still work as fallbacks.
+        </p>
+      </details>
 
       <hr className="my-4 border-slate-800" />
       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide mb-2">fanart.tv</h3>
@@ -415,6 +494,74 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div className="flex items-center gap-3 mb-3">
       <label className="text-sm text-slate-300 w-64">{label}</label>
       {children}
+    </div>
+  );
+}
+
+const DEFAULT_TEMPLATES = {
+  standard:
+    "{Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} " +
+    "{[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}" +
+    "{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}" +
+    "{[MediaInfo VideoCodec]}{-Release Group}",
+  daily:
+    "{Series TitleYear} - {Air-Date} - {Episode CleanTitle} " +
+    "{[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}" +
+    "{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}" +
+    "{[MediaInfo VideoCodec]}{-Release Group}",
+  anime:
+    "{Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} " +
+    "{[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}" +
+    "[{MediaInfo VideoBitDepth}bit]{[MediaInfo VideoCodec]}" +
+    "[{Mediainfo AudioCodec} { Mediainfo AudioChannels}]" +
+    "{MediaInfo AudioLanguages}{-Release Group}",
+  seriesFolder: "{Series TitleYear} {tvdb-{TvdbId}}",
+  seasonFolder: "Season {season:00}",
+  movie:
+    "{Movie CleanTitle} {(Release Year)} {tmdb-{TmdbId}} {edition-{Edition Tags}} " +
+    "{[Custom Formats]}{[Quality Full]}{[MediaInfo 3D]}{[MediaInfo VideoDynamicRangeType]}" +
+    "{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}" +
+    "{[Mediainfo VideoCodec]}{-Release Group}",
+  movieFolder: "{Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}",
+} as const;
+
+function RenameTemplateField({
+  label,
+  value,
+  defaultValue,
+  onChange,
+  hint,
+}: {
+  label: string;
+  value: string;
+  defaultValue: string;
+  onChange: (v: string) => void;
+  hint?: string;
+}) {
+  return (
+    <div className="flex items-start gap-3 mb-3">
+      <label className="text-sm text-slate-300 w-64 mt-1">{label}</label>
+      <div className="flex-1 max-w-2xl">
+        <textarea
+          className="bg-slate-800 px-2 py-1 rounded w-full font-mono text-xs leading-relaxed"
+          rows={2}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={defaultValue}
+          spellCheck={false}
+        />
+        <div className="flex items-center gap-2 mt-1">
+          <button
+            type="button"
+            className="text-[11px] text-indigo-400 hover:underline"
+            onClick={() => onChange(defaultValue)}
+            title={defaultValue}
+          >
+            Reset to default
+          </button>
+          {hint && <span className="text-[11px] text-slate-500">{hint}</span>}
+        </div>
+      </div>
     </div>
   );
 }

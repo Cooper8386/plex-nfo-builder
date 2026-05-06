@@ -99,7 +99,7 @@ export default function OverridesTab({
               onChange={(e) => setProvider(e.target.value as any)}
               className="bg-slate-800 px-2 py-1 rounded text-sm border border-slate-700"
             >
-              <option value="tvdb">TheTVDB</option>
+              <option value="tvdb">TVDB</option>
               <option value="tmdb">TMDB</option>
             </select>
             <label className="text-xs text-slate-300 inline-flex items-center gap-2">

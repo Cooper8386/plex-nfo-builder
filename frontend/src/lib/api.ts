@@ -393,7 +393,13 @@ export const api = {
         })
       ),
     rename: {
-      preview: (body: { folder_path: string; template?: string }) =>
+      preview: (body: {
+        folder_path: string;
+        template?: string;
+        daily_template?: string;
+        anime_template?: string;
+        series_type?: "auto" | "standard" | "daily" | "anime";
+      }) =>
         J<{ folder_path: string; template: string; items: RenamePlanItem[] }>(
           fetch("/api/episodes/rename/preview", {
             method: "POST",
@@ -404,6 +410,9 @@ export const api = {
       apply: (body: {
         folder_path: string;
         template?: string;
+        daily_template?: string;
+        anime_template?: string;
+        series_type?: "auto" | "standard" | "daily" | "anime";
         only_src?: string[];
       }) =>
         J<{

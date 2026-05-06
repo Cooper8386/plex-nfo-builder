@@ -5,7 +5,9 @@ What is removed:
   - Show / movie .nfo (tvshow.nfo, <movie>.nfo at the folder level)
   - Episode .nfo and season.nfo inside Season XX/ subfolders
   - Show-level artwork: poster.jpg/png, background.jpg/png, fanart.jpg,
-    banner.jpg/png, clearlogo.png, folder.jpg, cover.jpg, season<NN>-poster.jpg
+    banner.jpg/png, clearlogo.png, folder.jpg, cover.jpg, Season<NN>-poster.jpg,
+    season-specials-poster.jpg (Plex's season-0 filename), and the legacy
+    Season00-poster.jpg written by older versions
   - Per-season artwork: <season-dir>/poster.jpg, <season-dir>/banner.jpg
   - The .plex-nfo-builder.json sidecar (optional, controlled by `keep_sidecar`)
 
@@ -21,6 +23,7 @@ from typing import Iterable
 
 from loguru import logger
 
+from .artwork import is_season_poster_filename
 from .scanner import detect_season_dirs, is_video
 
 
@@ -76,7 +79,7 @@ def clean_folder(folder: Path, *, keep_sidecar: bool = True) -> dict:
             _remove(f, "nfo")
         elif f.name in SHOW_ARTWORK:
             _remove(f, "artwork")
-        elif f.name.startswith("Season") and f.name.endswith("-poster.jpg"):
+        elif is_season_poster_filename(f.name):
             _remove(f, "artwork")
         elif keep_sidecar is False and f.name == ".plex-nfo-builder.json":
             _remove(f, "sidecar")
@@ -106,7 +109,7 @@ def preview_clean(folder: Path) -> list[str]:
             continue
         if f.suffix.lower() == ".nfo" or f.name in SHOW_ARTWORK:
             out.append(f.name)
-        elif f.name.startswith("Season") and f.name.endswith("-poster.jpg"):
+        elif is_season_poster_filename(f.name):
             out.append(f.name)
     for sd in detect_season_dirs(folder):
         for f in sd.iterdir():

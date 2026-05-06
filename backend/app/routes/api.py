@@ -106,6 +106,12 @@ class SettingsIn(BaseModel):
     rename_episode_template: Optional[str] = None
     rename_movie_template: Optional[str] = None
     rename_enabled: Optional[bool] = None
+    # v0.11.0 Sonarr/Radarr-compatible rename templates
+    rename_daily_template: Optional[str] = None
+    rename_anime_template: Optional[str] = None
+    rename_series_folder_template: Optional[str] = None
+    rename_season_folder_template: Optional[str] = None
+    rename_movie_folder_template: Optional[str] = None
 
 
 @router.post("/settings")
@@ -1621,7 +1627,13 @@ async def episodes_override_file(payload: EpisodeFileOverrideIn):
 
 class RenamePreviewIn(BaseModel):
     folder_path: str
-    template: Optional[str] = None  # falls back to UserSettings template
+    # Optional ad-hoc template overrides. When omitted, the UserSettings
+    # default for the chosen series_type (or movie) is used.
+    template: Optional[str] = None              # standard episode / movie
+    daily_template: Optional[str] = None
+    anime_template: Optional[str] = None
+    # "auto" | "standard" | "daily" | "anime" — ignored for movies.
+    series_type: str = "auto"
 
 
 async def _build_episodes_index(binding: dict, lang: Optional[str]) -> dict[tuple[int, int], dict]:
@@ -1683,21 +1695,38 @@ async def episodes_rename_preview(payload: RenamePreviewIn):
             )
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"provider lookup failed: {e}")
+        provider = (binding["provider"] or "").lower()
+        ext_id = str(binding["external_id"]) if binding["external_id"] is not None else None
+        tvdb_id = ext_id if provider == "tvdb" else None
+        tmdb_id = ext_id if provider == "tmdb" else None
+        daily_t = (payload.daily_template or "").strip() or settings.rename_daily_template
+        anime_t = (payload.anime_template or "").strip() or settings.rename_anime_template
         plan = renamer_svc.plan_series_rename(
             p,
-            template=template,
+            standard_template=template,
+            daily_template=daily_t,
+            anime_template=anime_t,
+            series_type=payload.series_type or "auto",
             title=(binding["title"] or Path(str(p)).name),
             year=binding["year"],
+            tvdb_id=tvdb_id,
+            tmdb_id=tmdb_id,
             episodes_by_se=episodes_idx,
             overrides_by_file=db.get_episode_file_overrides(str(p)),
         )
     else:
         template = template or settings.rename_movie_template
+        provider = (binding["provider"] or "").lower()
+        ext_id = str(binding["external_id"]) if binding["external_id"] is not None else None
+        tmdb_id = ext_id if provider == "tmdb" else None
+        tvdb_id = ext_id if provider == "tvdb" else None
         plan = renamer_svc.plan_movie_rename(
             p,
             template=template,
             title=(binding["title"] or Path(str(p)).name),
             year=binding["year"],
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id,
         )
     return {
         "folder_path": str(p),
@@ -1722,6 +1751,9 @@ async def episodes_rename_preview(payload: RenamePreviewIn):
 class RenameApplyIn(BaseModel):
     folder_path: str
     template: Optional[str] = None
+    daily_template: Optional[str] = None
+    anime_template: Optional[str] = None
+    series_type: str = "auto"
     # Restrict the apply to a subset of source paths (per-row checkbox UI).
     # If empty/null, every plan item that's safe to rename is applied.
     only_src: Optional[list[str]] = None
@@ -1742,21 +1774,38 @@ async def episodes_rename_apply(payload: RenameApplyIn):
         episodes_idx = await _build_episodes_index(
             dict(binding), settings.preferred_language
         )
+        provider = (binding["provider"] or "").lower()
+        ext_id = str(binding["external_id"]) if binding["external_id"] is not None else None
+        tvdb_id = ext_id if provider == "tvdb" else None
+        tmdb_id = ext_id if provider == "tmdb" else None
+        daily_t = (payload.daily_template or "").strip() or settings.rename_daily_template
+        anime_t = (payload.anime_template or "").strip() or settings.rename_anime_template
         plan = renamer_svc.plan_series_rename(
             p,
-            template=template,
+            standard_template=template,
+            daily_template=daily_t,
+            anime_template=anime_t,
+            series_type=payload.series_type or "auto",
             title=(binding["title"] or Path(str(p)).name),
             year=binding["year"],
+            tvdb_id=tvdb_id,
+            tmdb_id=tmdb_id,
             episodes_by_se=episodes_idx,
             overrides_by_file=db.get_episode_file_overrides(str(p)),
         )
     else:
         template = template or settings.rename_movie_template
+        provider = (binding["provider"] or "").lower()
+        ext_id = str(binding["external_id"]) if binding["external_id"] is not None else None
+        tmdb_id = ext_id if provider == "tmdb" else None
+        tvdb_id = ext_id if provider == "tvdb" else None
         plan = renamer_svc.plan_movie_rename(
             p,
             template=template,
             title=(binding["title"] or Path(str(p)).name),
             year=binding["year"],
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id,
         )
     if payload.only_src:
         wanted = set(payload.only_src)

@@ -2,7 +2,8 @@
 
 v0.3.0+: artwork is downloaded directly to the show/movie folder root using
 Plex's canonical filenames (poster.jpg, background.jpg, banner.jpg,
-Season01-poster.jpg, etc.). The NFO files always reference the TVDB CDN URL
+Season01-poster.jpg, season-specials-poster.jpg, etc.). The NFO files always
+reference the TVDB CDN URL
 in their <thumb> tags so Plex can fall back to the network if a local file is
 missing or unreadable. There is no .artwork/ subfolder and no symlinks — both
 caused mount/permission issues in earlier versions.
@@ -27,6 +28,37 @@ from .. import db
 # sometimes return paths like "/banners/v4/episode/.../screencap.jpg".
 # We always normalise to an absolute URL before download or embedding in NFOs.
 TVDB_IMAGE_BASE = "https://artworks.thetvdb.com"
+
+
+def season_poster_filename(season_number: int, ext: str = ".jpg") -> str:
+    """Return the Plex-canonical season-poster filename for ``season_number``.
+
+    Plex looks for ``season-specials-poster.<ext>`` for season 0 (Specials)
+    and ``Season<NN>-poster.<ext>`` for every other season. Pre-v0.11.1 the
+    app wrote ``Season00-poster.jpg`` for specials, which Plex ignored.
+    """
+    if not ext.startswith("."):
+        ext = "." + ext
+    if int(season_number) == 0:
+        return f"season-specials-poster{ext}"
+    return f"Season{int(season_number):02d}-poster{ext}"
+
+
+_SEASON_POSTER_RE = re.compile(
+    r"^(?:Season\d{2}-poster|season-specials-poster)\.(?:jpg|jpeg|png)$",
+    re.IGNORECASE,
+)
+
+
+def is_season_poster_filename(name: str) -> bool:
+    """Return True if ``name`` looks like a Plex season-poster filename
+    (any season, including the legacy ``Season00-poster.jpg`` form)."""
+    if _SEASON_POSTER_RE.match(name):
+        return True
+    # Legacy: pre-v0.11.1 the app wrote Season00-poster.jpg for specials.
+    if name.lower() == "season00-poster.jpg" or name.lower() == "season00-poster.png":
+        return True
+    return False
 
 
 def absolutize_tvdb_url(url: Optional[str]) -> Optional[str]:
@@ -272,8 +304,8 @@ async def download_series_canonical(folder: Path, series: dict,
             if sel.get("url"):
                 season_posters[sn] = sel["url"]
         for sn, url in season_posters.items():
-            dest = folder / f"Season{int(sn):02d}-poster.jpg"
-            tasks.append(asyncio.create_task(_grab(url, dest, f"season{sn:02d}_poster")))
+            dest = folder / season_poster_filename(int(sn), ".jpg")
+            tasks.append(asyncio.create_task(_grab(url, dest, f"season{int(sn):02d}_poster")))
 
         # Episode thumbnails: write next to the episode .nfo (caller provides
         # mapping via episodes argument with `_local_path` set).

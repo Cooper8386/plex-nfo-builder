@@ -5,7 +5,7 @@ export default function HelpView() {
         <h1 className="text-2xl font-bold tracking-tight">Plex NFO Builder — Help</h1>
         <p className="text-sm text-slate-400 mt-1">
           Generate Plex-compatible NFO files and artwork for your local library
-          from TheTVDB, TMDB, and fanart.tv.
+          from TVDB, TMDB, and fanart.tv.
         </p>
       </header>
 
@@ -154,24 +154,76 @@ export default function HelpView() {
           row alongside the file so your bindings survive.
         </p>
         <p>
-          Default templates (editable under <Code>Settings → Renaming</Code>):
+          The modal also has a <b>Series type</b> selector{" "}
+          (<Code>Auto</Code> / <Code>Standard</Code> / <Code>Daily</Code> /{" "}
+          <Code>Anime</Code>). <Code>Auto</Code> picks per file: anime fansub
+          names get the anime template, files where the parser pulled an{" "}
+          air-date get the daily template, everything else gets the standard
+          template. Pin the selector when auto-detection guesses wrong.
+        </p>
+        <p>
+          Templates use Sonarr/Radarr token grammar. Default schemes match the{" "}
+          <a
+            href="https://trash-guides.info/Sonarr/Sonarr-recommended-naming-scheme/"
+            target="_blank"
+            rel="noreferrer"
+            className="text-indigo-400 hover:text-indigo-300 underline"
+          >
+            Trash Guides
+          </a>{" "}
+          recommendations and produce filenames like:
         </p>
         <Bullets>
           <li>
-            Series:{" "}
-            <Code>{"{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}"}</Code>
+            Standard:{" "}
+            <Code>Severance (2022) - S02E08 - Sweet Vitriol [WEBDL-1080p][HDR10][EAC3 Atmos 5.1][x265]-FLUX.mkv</Code>
           </li>
           <li>
-            Movie: <Code>{"{title} ({year}){ext}"}</Code>
+            Daily:{" "}
+            <Code>The Daily Show (1996) - 2024-05-08 - Episode Title [WEBDL-1080p]-NTb.mkv</Code>
+          </li>
+          <li>
+            Anime:{" "}
+            <Code>Frieren (2023) - S01E12 - The Land Where Souls Rest [WEBDL-1080p][10bit][x265][EAC3 5.1][EN+JA]-SubsPlease.mkv</Code>
+          </li>
+          <li>
+            Movie:{" "}
+            <Code>Blade Runner 2049 (2017) tmdb-335984 [Bluray-2160p][HDR10][TrueHD Atmos 7.1][x265]-FraMeSToR.mkv</Code>
           </li>
         </Bullets>
         <p>
-          Available tokens: <Code>{"{title}"}</Code>,{" "}
-          <Code>{"{year}"}</Code>, <Code>{"{season}"}</Code>,{" "}
-          <Code>{"{season:02}"}</Code>, <Code>{"{episode}"}</Code>,{" "}
-          <Code>{"{episode:02}"}</Code>, <Code>{"{episode_title}"}</Code>,{" "}
-          <Code>{"{quality}"}</Code> (best-effort 1080p / WEB-DL / etc. pulled
-          from the original stem), <Code>{"{ext}"}</Code>.
+          Codec, bit depth, HDR/DV detection, audio channels, and language
+          tags are pulled directly from the file via <Code>ffprobe</Code> (the
+          container ships <Code>ffmpeg</Code> from v0.11.0). The quality tag
+          (<Code>WEBDL-1080p</Code>, <Code>Bluray-2160p</Code>, etc.) is
+          synthesised from the source word in the original filename plus the
+          probed resolution.
+        </p>
+        <p>
+          Common tokens: <Code>{"{Series TitleYear}"}</Code>,{" "}
+          <Code>{"{Episode CleanTitle}"}</Code>,{" "}
+          <Code>{"{season:00}"}</Code>, <Code>{"{episode:00}"}</Code>,{" "}
+          <Code>{"{Air-Date}"}</Code>, <Code>{"{Quality Full}"}</Code>,{" "}
+          <Code>{"{MediaInfo VideoCodec}"}</Code>,{" "}
+          <Code>{"{MediaInfo VideoBitDepth}"}</Code>,{" "}
+          <Code>{"{MediaInfo VideoDynamicRangeType}"}</Code>,{" "}
+          <Code>{"{MediaInfo AudioCodec}"}</Code>,{" "}
+          <Code>{"{MediaInfo AudioChannels}"}</Code>,{" "}
+          <Code>{"{MediaInfo AudioLanguages}"}</Code>,{" "}
+          <Code>{"{Release Group}"}</Code>, <Code>{"{-Release Group}"}</Code>,{" "}
+          <Code>{"{TvdbId}"}</Code>, <Code>{"{TmdbId}"}</Code>,{" "}
+          <Code>{"{Movie CleanTitle}"}</Code>,{" "}
+          <Code>{"{(Release Year)}"}</Code>. Conditional groups{" "}
+          <Code>{"{[Token]}"}</Code> wrap rendered output in literal{" "}
+          <Code>[..]</Code> brackets when the token resolves and drop the
+          group entirely when it's empty.
+        </p>
+        <p>
+          Old v0.10.0 simple tokens (<Code>{"{title}"}</Code>,{" "}
+          <Code>{"{year}"}</Code>, <Code>{"{season:02}"}</Code>,{" "}
+          <Code>{"{episode_title}"}</Code>, <Code>{"{quality}"}</Code>,{" "}
+          <Code>{"{ext}"}</Code>) still work as fallbacks if you don't want
+          the full Sonarr grammar.
         </p>
       </Section>
 

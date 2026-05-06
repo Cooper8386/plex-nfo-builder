@@ -14,7 +14,7 @@ Built around your Sonarr/Radarr-style filenames (e.g. `Severance (2022) - S02E08
 - **Manual NFO field overrides** at the series, season, or per-episode level (title, sorttitle, originaltitle, tagline, plot). Empty falls back to source.
 - **Sidecar (`.plex-nfo-builder.json`)** in every bound folder carries the binding, overrides, artwork selections, and episode mapping. A full database wipe is recoverable straight from the media library.
 - **Wipe NFOs & artwork** button per show — deletes every generated file in one click while leaving season folders and media files alone.
-- **Rename to scheme** — preview-then-apply renamer that rewrites loose anime/fansub filenames into a Sonarr-style template (`{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}`). Dry-run preview shows every rename, flags conflicts, and lets you uncheck individual files. Customizable templates live in Settings.
+- **Rename to scheme** — preview-then-apply renamer using full Sonarr/Radarr token grammar. Defaults match the [Trash Guides](https://trash-guides.info/Sonarr/Sonarr-recommended-naming-scheme/) recommended schemes. Codec, bit depth, HDR/DV, audio channels, and language tags are pulled from the file via `ffprobe`. Per-row preview, conflict detection, and series-type selector (Auto / Standard / Daily / Anime) are all in the rename modal.
 - **Provenance**: every NFO this app writes carries a header comment with version, source id, content hash, and timestamp. The scanner uses that to label items as `complete / partial / foreign / mixed / stale` and avoids clobbering foreign NFOs unless you opt in.
 - **Library views**: poster grid (default), dense list, and per-item detail. Filter by status, free-text title search, and a one-click toggle to **hide already-organized** items.
 - **In-app help** (Help in the top bar) — quick orientation, button reference, status badge legend.
@@ -117,14 +117,73 @@ Click **Rename to scheme** on the Episodes tab to open the rename modal:
 - Live preview of every `from → to` change.
 - Conflict badges (`exists`, `duplicate`) so you don't clobber existing files.
 - Per-row checkboxes — auto-checked except for unchanged or conflicting rows.
+- **Series type** selector — `Auto` (default) picks per file (anime fansub names → anime template, files with an air-date → daily, otherwise standard) or pin to `Standard` / `Daily` / `Anime` if auto-detection guesses wrong.
+- Ad-hoc template field overrides Settings for the current run.
 - Atomic per-file rename via `os.replace`. Per-file overrides are migrated alongside the file so your bindings stay intact.
 
-Default templates (editable in Settings → Renaming):
+### MediaInfo via ffprobe
 
-- Series: `{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}`
-- Movie: `{title} ({year}){ext}`
+From v0.11.0 the container ships `ffmpeg` so `ffprobe` is available at runtime. The renamer probes each candidate file once (cached by `(path, mtime)`) and exposes:
 
-Available tokens: `{title}`, `{year}`, `{season}`, `{season:02}`, `{episode}`, `{episode:02}`, `{episode_title}`, `{quality}` (best-effort `1080p` / `WEB-DL` / etc. from the original stem), `{ext}`.
+- **Video codec** (`x264`, `x265`, `AV1`, `VP9`, ...) and **bit depth** (`8` / `10`).
+- **Dynamic range type** — `HDR10`, `HDR10Plus`, `DV`, `HLG`, or empty for SDR.
+- **Audio codec** with Atmos / DTS-HD MA / DTS-X variant detection from track titles.
+- **Audio channels** (`5.1`, `7.1`, `2.0`, ...) and **3D** flag.
+- **Audio languages** as Sonarr-style tags (`[EN]`, `[EN+JA]`, ...).
+- **Quality Full** synthesised from the original filename's source word (`WEBDL`, `Bluray`, `Remux`, `HDTV`, ...) plus the probed resolution (`2160p` / `1080p` / `720p` / `480p`).
+- **Release group** — trailing `-FLUX` style and leading `[SubsPlease]` fansub style.
+
+### Default templates (editable in Settings → Renaming)
+
+All seven templates accept the full Sonarr/Radarr token grammar. Folder templates (Series / Season / Movie folder) are stored for reference but file-only renaming is what runs in v0.11.0.
+
+```
+Standard episode: {Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} {[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{[MediaInfo VideoCodec]}{-Release Group}
+
+Daily episode: {Series TitleYear} - {Air-Date} - {Episode CleanTitle} {[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{[MediaInfo VideoCodec]}{-Release Group}
+
+Anime episode: {Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} {[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}[{MediaInfo VideoBitDepth}bit]{[MediaInfo VideoCodec]}[{Mediainfo AudioCodec} { Mediainfo AudioChannels}]{MediaInfo AudioLanguages}{-Release Group}
+
+Movie: {Movie CleanTitle} {(Release Year)} {tmdb-{TmdbId}} {edition-{Edition Tags}} {[Custom Formats]}{[Quality Full]}{[MediaInfo 3D]}{[MediaInfo VideoDynamicRangeType]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{[Mediainfo VideoCodec]}{-Release Group}
+
+Series folder: {Series TitleYear} {tvdb-{TvdbId}}
+Season folder: Season {season:00}
+Movie folder:  {Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}
+```
+
+### Token reference
+
+| Token                                | Renders                                            |
+| ------------------------------------ | -------------------------------------------------- |
+| `{Series TitleYear}`                 | `Severance (2022)`                                 |
+| `{Series CleanTitle}`                | sanitised title without year                       |
+| `{Episode CleanTitle}`               | matched episode title (empty when unmatched)       |
+| `{season:00}` / `{episode:00}`       | zero-padded to width of format spec                |
+| `{Air-Date}`                         | `2024-05-08`                                       |
+| `{Quality Full}`                     | `WEBDL-1080p`, `Bluray-2160p`, etc.                |
+| `{MediaInfo VideoCodec}`             | `x264` / `x265` / `AV1` / `VP9`                    |
+| `{MediaInfo VideoBitDepth}`          | `8` / `10`                                         |
+| `{MediaInfo VideoDynamicRangeType}`  | `HDR10` / `HDR10Plus` / `DV` / `HLG`               |
+| `{MediaInfo AudioCodec}`             | `EAC3 Atmos`, `TrueHD Atmos`, `DTS-HD MA`, ...     |
+| `{MediaInfo AudioChannels}`          | `5.1`, `7.1`, `2.0`                                |
+| `{MediaInfo AudioLanguages}`         | `[EN]`, `[EN+JA]`                                  |
+| `{MediaInfo 3D}`                     | `3D` when the file is 3D, otherwise empty          |
+| `{Release Group}` / `{-Release Group}` | bare or dash-prefixed (`-FLUX`)                  |
+| `{TvdbId}` / `{TmdbId}` / `{ImdbId}` | provider IDs from the binding                      |
+| `{Movie CleanTitle}`                 | sanitised movie title                              |
+| `{Release Year}` / `{(Release Year)}` | `2017` or `(2017)` with parens                    |
+| `{Edition Tags}`                     | edition tags from the filename (Director's Cut...) |
+| `{Custom Formats}`                   | reserved — always empty in v0.11.0                 |
+
+Conditional groups handle missing values gracefully:
+
+- `{[Token]}` — wraps the token's value in literal `[..]` brackets when present, drops the whole group otherwise.
+- `{[Token1}{ Token2]}` — multi-token group with a literal separator (the leading whitespace before `Token2` is the separator).
+- `[{Token}suffix]` — square-bracket conditional with a static suffix (e.g. `[{MediaInfo VideoBitDepth}bit]` → `[10bit]`).
+- `{-Token}` — prefix-conditional, outputs `-VALUE` or empty.
+- `{tvdb-{TvdbId}}` / `{tmdb-{TmdbId}}` — nested template, drops entirely when the inner token is empty.
+
+Old v0.10.0 simple tokens (`{title}`, `{year}`, `{season}`, `{season:02}`, `{episode}`, `{episode:02}`, `{episode_title}`, `{quality}`, `{ext}`) still work as fallbacks, so existing templates keep rendering.
 
 ## NFO provenance
 
@@ -154,7 +213,8 @@ Artwork is written directly to the item folder using Plex-standard filenames —
 <series>/background.jpg
 <series>/banner.jpg
 <series>/clearlogo.png
-<series>/Season01-poster.jpg
+<series>/Season01-poster.jpg          # season ≥ 1
+<series>/season-specials-poster.jpg   # season 0 / Specials (Plex-specific name)
 <series>/Season 01/<file>-thumb.jpg
 <movie>/poster.jpg
 <movie>/background.jpg

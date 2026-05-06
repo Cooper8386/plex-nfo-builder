@@ -345,17 +345,24 @@ function RenameModal({
 }) {
   const [items, setItems] = useState<RenamePlanItem[] | null>(null);
   const [template, setTemplate] = useState<string>("");
+  const [seriesType, setSeriesType] = useState<
+    "auto" | "standard" | "daily" | "anime"
+  >("auto");
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  const load = async (overrideTemplate?: string) => {
+  const load = async (
+    overrideTemplate?: string,
+    overrideSeriesType?: "auto" | "standard" | "daily" | "anime",
+  ) => {
     setBusy(true);
     setMsg(null);
     try {
       const r = await api.episodes.rename.preview({
         folder_path: path,
         template: overrideTemplate || undefined,
+        series_type: overrideSeriesType ?? seriesType,
       });
       setItems(r.items);
       setTemplate(r.template);
@@ -399,6 +406,7 @@ function RenameModal({
       const r = await api.episodes.rename.apply({
         folder_path: path,
         template: template || undefined,
+        series_type: seriesType,
         only_src,
       });
       const renamed = r.renamed.length;
@@ -412,7 +420,7 @@ function RenameModal({
         }`,
       );
       await onApplied();
-      await load(template); // re-preview to show the new state
+      await load(template, seriesType); // re-preview to show the new state
     } catch (e: any) {
       setMsg(e?.message ?? String(e));
     } finally {
@@ -445,15 +453,44 @@ function RenameModal({
           </button>
         </div>
         <div className="p-4 border-b border-slate-800 space-y-2">
+          <div className="flex items-center gap-3">
+            <label className="text-xs uppercase tracking-wide text-slate-500">
+              Series type
+            </label>
+            <select
+              className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs"
+              value={seriesType}
+              disabled={busy}
+              onChange={(e) => {
+                const next = e.target.value as
+                  | "auto"
+                  | "standard"
+                  | "daily"
+                  | "anime";
+                setSeriesType(next);
+                // Re-preview with the new mode and the user's current
+                // ad-hoc template (if any).
+                load(template || undefined, next);
+              }}
+            >
+              <option value="auto">Auto-detect</option>
+              <option value="standard">Standard</option>
+              <option value="daily">Daily</option>
+              <option value="anime">Anime</option>
+            </select>
+            <span className="text-[11px] text-slate-500">
+              Auto: anime fansub names → anime template, files with an air-date → daily, otherwise standard.
+            </span>
+          </div>
           <label className="text-xs uppercase tracking-wide text-slate-500">
-            Template
+            Template (overrides Settings for this run)
           </label>
           <div className="flex gap-2">
             <input
               value={template}
               onChange={(e) => setTemplate(e.target.value)}
               className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm font-mono"
-              placeholder="{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}"
+              placeholder="{Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} {[Quality Full]}{-Release Group}"
               spellCheck={false}
             />
             <button
@@ -465,11 +502,16 @@ function RenameModal({
             </button>
           </div>
           <p className="text-[11px] text-slate-500 leading-snug">
-            Tokens: <code>{"{title}"}</code> <code>{"{year}"}</code>{" "}
-            <code>{"{season}"}</code> <code>{"{season:02}"}</code>{" "}
-            <code>{"{episode}"}</code> <code>{"{episode:02}"}</code>{" "}
-            <code>{"{episode_title}"}</code> <code>{"{quality}"}</code>{" "}
-            <code>{"{ext}"}</code>. Default matches Sonarr's standard scheme.
+            Sonarr/Radarr token grammar. Common tokens:{" "}
+            <code>{"{Series TitleYear}"}</code>{" "}
+            <code>{"{Episode CleanTitle}"}</code>{" "}
+            <code>{"{season:00}"}</code> <code>{"{episode:00}"}</code>{" "}
+            <code>{"{Air-Date}"}</code> <code>{"{Quality Full}"}</code>{" "}
+            <code>{"{MediaInfo VideoCodec}"}</code>{" "}
+            <code>{"{[MediaInfo VideoDynamicRangeType]}"}</code>{" "}
+            <code>{"{-Release Group}"}</code>. Conditional groups{" "}
+            <code>{"{[Token]}"}</code> wrap in [..] when present and drop
+            otherwise. Old <code>{"{title}"}</code>-style tokens still work.
           </p>
         </div>
         <div className="flex-1 overflow-auto">

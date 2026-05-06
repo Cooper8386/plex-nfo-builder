@@ -2,6 +2,58 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.0 — 2026-05-05
+
+Sonarr/Radarr-compatible naming, MediaInfo via ffprobe, and a stack of
+polish fixes from the v0.10.0 shake-out. The renamer now speaks the same
+token grammar as Sonarr/Radarr (Trash Guides defaults included), reads
+codec / HDR / audio metadata directly from the file with `ffprobe`, and
+fixes the long-standing Specials-poster filename mismatch with Plex.
+
+### Added
+
+- **MediaInfo extraction.** New `services/mediainfo.py` shells out to
+  `ffprobe` (now included in the container) and returns video codec,
+  resolution, bit depth, HDR/Dolby Vision flags, audio codec/channels,
+  language, and 3D type. Results are cached per-file by inode + size +
+  mtime so the renamer is fast on repeat runs.
+- **Sonarr/Radarr token grammar.** `services/renamer.py` rewritten
+  with a real expression engine — `{Series TitleYear}`, `{[Quality Full]}`,
+  `{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}`,
+  `{-Release Group}`, `{tvdb-{TvdbId}}`, `{(Release Year)}`, `{season:00}`,
+  and conditional groups all behave the way Trash Guides documents them.
+- **Series-type selector + new template fields.** Settings has five new
+  template fields (`rename_daily_template`, `rename_anime_template`,
+  `rename_series_folder_template`, `rename_season_folder_template`,
+  `rename_movie_folder_template`) all defaulted to the exact Trash Guides
+  recommendations. The rename modal in the Episode Mapper has an
+  Auto/Standard/Daily/Anime selector that picks the right template.
+- **Container ffmpeg.** `Dockerfile` now installs `ffmpeg` so MediaInfo
+  works out of the box.
+
+### Fixed
+
+- **Specials season poster filename.** Plex looks for
+  `season-specials-poster.<ext>` for season 0 — we were writing
+  `Season00-poster.jpg`, which Plex silently ignored. Builder now writes
+  the correct filename, and Wipe / preview-clean recognise both the new
+  name and the legacy `Season00-poster.jpg` so old files get cleaned up
+  on the next pass.
+- **Provider labels.** Several screens still said "TheTVDB" / "TheMovieDB"
+  in the dropdowns and field labels (DetailView, SettingsView,
+  OverridesTab, HelpView, Episode Mapper). Standardised to **TVDB** and
+  **TMDB** everywhere.
+
+### Changed
+
+- Rename templates now use Sonarr/Radarr syntax. Old `{title}`-style
+  templates from v0.10.0 still render via the legacy fallback path, but
+  the new defaults match Trash Guides exactly. Resetting any field in
+  Settings → Renaming gives you the canonical default back.
+- README and HelpView fully refreshed with the new token reference,
+  conditional-group rules, MediaInfo block, and the corrected season-
+  poster filenames.
+
 ## 0.10.0 — 2026-05-05
 
 Large-scale episode mapping & file rename overhaul. The Episodes tab is now

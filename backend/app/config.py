@@ -60,22 +60,47 @@ class UserSettings(BaseModel):
     # folder. Each item is {"from": "/media", "to": "/data"}. The longest
     # matching prefix wins. Empty list = no translation needed.
     plex_path_mappings: List[dict] = []
-    # v0.10.0: file-rename templates (Sonarr/Radarr style). Tokens supported:
-    #   {title}        e.g. "Severance"
-    #   {year}         e.g. 2022 (empty if unknown)
-    #   {season}       integer, no padding
-    #   {season:02}    zero-padded season
-    #   {episode}      integer, no padding
-    #   {episode:02}   zero-padded episode
-    #   {episode_title}  the matched episode title (empty when unmatched)
-    #   {ext}          the file extension *with* the leading dot (e.g. ".mkv")
-    #   {quality}      best-effort tag pulled from the original filename
-    #                  (1080p / 2160p / WEB-DL / BluRay etc.); blank when none.
+    # v0.11.0: Sonarr/Radarr-compatible file-rename templates.
+    # Tokens use Sonarr/Radarr grammar (case-insensitive):
+    #   {Series TitleYear}, {Series CleanTitle}, {Episode CleanTitle}
+    #   {season:00}, {episode:00}  — zero-padded to width of format spec
+    #   {Air-Date}, {Release Year}, {(Release Year)}
+    #   {Quality Full}, {Custom Formats}
+    #   {MediaInfo VideoCodec}, {MediaInfo VideoBitDepth}, {MediaInfo VideoDynamicRangeType}
+    #   {MediaInfo AudioCodec}, {MediaInfo AudioChannels}, {MediaInfo AudioLanguages}, {MediaInfo 3D}
+    #   {Release Group}, {-Release Group}
+    #   {TvdbId}, {TmdbId}, {ImdbId}, {Edition Tags}
+    # Conditional groups: {[Token]}, {[Token1}{ Token2]}, [{Token}suffix], {-Token}, {tvdb-{TvdbId}}
+    # Old v0.10.0 simple tokens ({title}, {year}, {episode_title}, {ext}, {quality}) still work.
     rename_episode_template: str = (
-        "{title} ({year}) - S{season:02}E{episode:02} - {episode_title}{ext}"
+        "{Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} "
+        "{[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}"
+        "{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}"
+        "{[MediaInfo VideoCodec]}{-Release Group}"
     )
+    rename_daily_template: str = (
+        "{Series TitleYear} - {Air-Date} - {Episode CleanTitle} "
+        "{[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}"
+        "{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}"
+        "{[MediaInfo VideoCodec]}{-Release Group}"
+    )
+    rename_anime_template: str = (
+        "{Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} "
+        "{[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}"
+        "[{MediaInfo VideoBitDepth}bit]{[MediaInfo VideoCodec]}"
+        "[{Mediainfo AudioCodec} { Mediainfo AudioChannels}]"
+        "{MediaInfo AudioLanguages}{-Release Group}"
+    )
+    rename_series_folder_template: str = "{Series TitleYear} {tvdb-{TvdbId}}"
+    rename_season_folder_template: str = "Season {season:00}"
     rename_movie_template: str = (
-        "{title} ({year}){ext}"
+        "{Movie CleanTitle} {(Release Year)} {tmdb-{TmdbId}} {edition-{Edition Tags}} "
+        "{[Custom Formats]}{[Quality Full]}{[MediaInfo 3D]}{[MediaInfo VideoDynamicRangeType]}"
+        "{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}"
+        "{[Mediainfo VideoCodec]}{-Release Group}"
+    )
+    rename_movie_folder_template: str = (
+        "{Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}"
     )
     # When True, builds offer a "Rename to scheme" affordance and the API will
     # accept rename requests. Set to False to keep the codepath dormant for

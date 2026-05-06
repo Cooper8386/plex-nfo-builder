@@ -12,7 +12,7 @@ from loguru import logger
 from .. import db
 from ..config import effective_metadata_source, get_user_settings
 from ..logging_setup import job_logger, close_job_logger
-from .artwork import download_movie_canonical, download_series_canonical
+from .artwork import download_movie_canonical, download_series_canonical, season_poster_filename
 from .artwork_resolver import (
     resolve_preferred_artwork_movie,
     resolve_preferred_artwork_series,
@@ -639,11 +639,11 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
             sels = db.get_artwork_selections(str(folder))
             user_sel = sels.get(slot)
             if user_sel and user_sel.get("url"):
-                await _download_url(user_sel["url"], folder / f"Season{snum:02d}-poster.jpg", force=force)
+                await _download_url(user_sel["url"], folder / season_poster_filename(snum, ".jpg"), force=force)
                 continue
             pref_url = (preferred_overrides or {}).get(slot)
             if pref_url:
-                await _download_url(pref_url, folder / f"Season{snum:02d}-poster.jpg", force=force)
+                await _download_url(pref_url, folder / season_poster_filename(snum, ".jpg"), force=force)
                 continue
             try:
                 season_data = await client.tv_season(data["id"], snum, language=lang, force=force)
@@ -652,7 +652,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
             sp = season_data.get("poster_path")
             if sp:
                 url = tmdb_image_url(sp, "original")
-                await _download_url(url, folder / f"Season{snum:02d}-poster.jpg", force=force)
+                await _download_url(url, folder / season_poster_filename(snum, ".jpg"), force=force)
 
         scan_series_folder(folder, library=folder.parent.name)
         db.upsert_item_state(str(folder), last_built=int(time.time()))
