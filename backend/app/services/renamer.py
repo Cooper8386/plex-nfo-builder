@@ -606,18 +606,76 @@ def plan_movie_rename(
     return plan
 
 
+# Companion-file extensions / suffixes that travel with a video file when it
+# gets renamed. ``.nfo`` is the Kodi/Plex sidecar; ``-thumb.{jpg,png}`` is the
+# Plex episode thumbnail. Subtitles in arbitrary languages are matched by
+# stem-prefix so ``foo.en.srt`` / ``foo.en.forced.srt`` move with ``foo.mkv``.
+_COMPANION_SIMPLE_SUFFIXES = (".nfo",)
+_COMPANION_THUMB_SUFFIXES = ("-thumb.jpg", "-thumb.jpeg", "-thumb.png")
+_SUBTITLE_EXTS = (".srt", ".ass", ".ssa", ".vtt", ".sub", ".idx", ".sup")
+
+
+def _companion_files_for(src_p: Path) -> list[tuple[Path, str]]:
+    """Return [(companion_path, suffix_relative_to_video_stem)] for ``src_p``.
+
+    The suffix is the *trailing* portion that should be reattached to the new
+    stem - e.g. ``".nfo"``, ``"-thumb.jpg"``, ``".en.srt"``. Only files that
+    sit next to ``src_p`` and obviously belong to it are matched.
+    """
+    stem = src_p.stem  # video filename without extension
+    parent = src_p.parent
+    out: list[tuple[Path, str]] = []
+    if not parent.is_dir():
+        return out
+    for sib in parent.iterdir():
+        if not sib.is_file() or sib == src_p:
+            continue
+        name = sib.name
+        # 1. Exact-stem .nfo: "<stem>.nfo"
+        for sfx in _COMPANION_SIMPLE_SUFFIXES:
+            if name == f"{stem}{sfx}":
+                out.append((sib, sfx))
+                break
+        else:
+            # 2. Plex episode thumb: "<stem>-thumb.{jpg,jpeg,png}"
+            matched = False
+            for sfx in _COMPANION_THUMB_SUFFIXES:
+                if name == f"{stem}{sfx}":
+                    out.append((sib, sfx))
+                    matched = True
+                    break
+            if matched:
+                continue
+            # 3. Subtitle / lang-tagged sidecar: "<stem>.<anything>.<ext>"
+            #    where <ext> is a known subtitle / nfo suffix. We only move
+            #    these when the trailing extension matches one we recognise -
+            #    refuse to touch random files that happen to share a prefix.
+            if name.startswith(stem + "."):
+                tail = name[len(stem):]  # starts with "."
+                low = tail.lower()
+                for ext in _SUBTITLE_EXTS:
+                    if low.endswith(ext):
+                        out.append((sib, tail))
+                        break
+    return out
+
+
 def apply_rename_plan(plan: Iterable[RenamePlanItem], *,
                       skip_conflicts: bool = True) -> dict:
     """Execute the plan. Returns a summary dict.
 
-    Each successful rename also moves any per-file override row in the
-    database so the Episodes tab keeps showing the same selection after
-    the rename. Source folder is enforced - any plan item whose ``dst``
-    would leave the parent directory is skipped.
+    Each successful video rename also relocates the matching ``.nfo``,
+    ``-thumb.{jpg,jpeg,png}``, and known subtitle sidecars so they stay
+    paired with the renamed video. Per-file override rows in the database
+    are migrated to the new path so the Episodes tab keeps showing the
+    same selection. Source folder is enforced - any plan item whose
+    ``dst`` would leave the parent directory is skipped.
     """
     renamed: list[dict] = []
     skipped: list[dict] = []
     failed: list[dict] = []
+    companions_moved: list[dict] = []
+    companions_failed: list[dict] = []
 
     for item in plan:
         if item.src == item.dst:
@@ -636,6 +694,10 @@ def apply_rename_plan(plan: Iterable[RenamePlanItem], *,
         if not src_p.exists():
             failed.append({"src": item.src, "reason": "source missing"})
             continue
+        # Snapshot companions BEFORE moving the video, since some are
+        # detected via stem-prefix and the stem is about to change.
+        companions = _companion_files_for(src_p)
+        new_stem = dst_p.stem
         try:
             os.replace(src_p, dst_p)
             try:
@@ -648,6 +710,28 @@ def apply_rename_plan(plan: Iterable[RenamePlanItem], *,
                     item.src, item.dst, de,
                 )
             renamed.append({"src": item.src, "dst": item.dst})
+            # Move every companion to match the new stem. We don't fail the
+            # parent rename if a companion can't be moved - we just record it.
+            for comp_src, suffix in companions:
+                comp_dst = comp_src.parent / f"{new_stem}{suffix}"
+                if comp_dst == comp_src:
+                    continue
+                if comp_dst.exists():
+                    companions_failed.append({
+                        "src": str(comp_src), "dst": str(comp_dst),
+                        "reason": "destination exists",
+                    })
+                    continue
+                try:
+                    os.replace(comp_src, comp_dst)
+                    companions_moved.append({
+                        "src": str(comp_src), "dst": str(comp_dst),
+                    })
+                except Exception as ce:  # noqa: BLE001
+                    companions_failed.append({
+                        "src": str(comp_src), "dst": str(comp_dst),
+                        "reason": str(ce),
+                    })
         except Exception as e:  # noqa: BLE001
             failed.append({"src": item.src, "dst": item.dst, "reason": str(e)})
 
@@ -655,4 +739,6 @@ def apply_rename_plan(plan: Iterable[RenamePlanItem], *,
         "renamed": renamed,
         "skipped": skipped,
         "failed": failed,
+        "companions_moved": companions_moved,
+        "companions_failed": companions_failed,
     }

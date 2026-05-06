@@ -3,7 +3,10 @@ folders and media files alone. Returns a summary of what was removed.
 
 What is removed:
   - Show / movie .nfo (tvshow.nfo, <movie>.nfo at the folder level)
+  - Movie-level companion files: <movie>-thumb.jpg/png next to the video
   - Episode .nfo and season.nfo inside Season XX/ subfolders
+  - Per-episode Plex thumbnails: <episode-stem>-thumb.{jpg,jpeg,png}
+    sitting next to the video file
   - Show-level artwork: poster.jpg/png, background.jpg/png, fanart.jpg,
     banner.jpg/png, clearlogo.png, folder.jpg, cover.jpg, Season<NN>-poster.jpg,
     season-specials-poster.jpg (Plex's season-0 filename), and the legacy
@@ -43,6 +46,18 @@ SEASON_ARTWORK = {
     "fanart.jpg",
 }
 
+# File-name suffixes that indicate a Plex / Kodi thumbnail. Any image file
+# ending in one of these is treated as a generated thumbnail and wiped.
+# We don't require the stem to match a current video file - that lets us
+# clean up orphan thumbs left over from a previous rename pass.
+_THUMB_SUFFIXES = ("-thumb.jpg", "-thumb.jpeg", "-thumb.png")
+
+
+def _is_thumb_filename(name: str) -> bool:
+    """True if ``name`` ends with a recognised thumbnail suffix."""
+    low = name.lower()
+    return any(low.endswith(sfx) for sfx in _THUMB_SUFFIXES)
+
 
 def clean_folder(folder: Path, *, keep_sidecar: bool = True) -> dict:
     """Delete generated NFOs and artwork. Returns counts by category.
@@ -71,9 +86,11 @@ def clean_folder(folder: Path, *, keep_sidecar: bool = True) -> dict:
         except Exception as e:
             logger.warning("clean: could not delete {}: {}", p, e)
 
-    # 1. Folder-level NFOs (tvshow.nfo + movie .nfo files)
+    # 1. Folder-level NFOs (tvshow.nfo + movie .nfo files) and movie thumbs.
     for f in folder.iterdir():
         if not f.is_file():
+            continue
+        if is_video(f):
             continue
         if f.suffix.lower() == ".nfo":
             _remove(f, "nfo")
@@ -81,10 +98,13 @@ def clean_folder(folder: Path, *, keep_sidecar: bool = True) -> dict:
             _remove(f, "artwork")
         elif is_season_poster_filename(f.name):
             _remove(f, "artwork")
+        elif _is_thumb_filename(f.name):
+            _remove(f, "artwork")
         elif keep_sidecar is False and f.name == ".plex-nfo-builder.json":
             _remove(f, "sidecar")
 
     # 2. Season folders: episode .nfo + season.nfo + season-level artwork
+    #    + per-episode ``<stem>-thumb.{jpg,jpeg,png}`` thumbnails.
     for sd in detect_season_dirs(folder):
         for f in sd.iterdir():
             if not f.is_file():
@@ -94,6 +114,8 @@ def clean_folder(folder: Path, *, keep_sidecar: bool = True) -> dict:
             if f.suffix.lower() == ".nfo":
                 _remove(f, "nfo")
             elif f.name.lower() in SEASON_ARTWORK:
+                _remove(f, "artwork")
+            elif _is_thumb_filename(f.name):
                 _remove(f, "artwork")
 
     return summary
@@ -105,17 +127,21 @@ def preview_clean(folder: Path) -> list[str]:
         return []
     out: list[str] = []
     for f in folder.iterdir():
-        if not f.is_file():
+        if not f.is_file() or is_video(f):
             continue
         if f.suffix.lower() == ".nfo" or f.name in SHOW_ARTWORK:
             out.append(f.name)
         elif is_season_poster_filename(f.name):
+            out.append(f.name)
+        elif _is_thumb_filename(f.name):
             out.append(f.name)
     for sd in detect_season_dirs(folder):
         for f in sd.iterdir():
             if not f.is_file() or is_video(f):
                 continue
             if f.suffix.lower() == ".nfo" or f.name.lower() in SEASON_ARTWORK:
+                out.append(str(f.relative_to(folder)))
+            elif _is_thumb_filename(f.name):
                 out.append(str(f.relative_to(folder)))
     return out
 

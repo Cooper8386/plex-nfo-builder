@@ -76,15 +76,52 @@ export default function HelpView() {
             <b>Wipe NFOs &amp; artwork</b> deletes every NFO file (
             <Code>tvshow.nfo</Code>, <Code>season.nfo</Code>, episode{" "}
             <Code>.nfo</Code>) and every generated artwork file from the show
-            folder. Season folders and your media files are never touched. Use
-            this when you want to start fresh — the next <Code>Build NFOs</Code>
-            click recreates everything.
+            folder — including per-episode{" "}
+            <Code>&lt;stem&gt;-thumb.jpg</Code>/<Code>.png</Code> thumbnails next
+            to videos (orphans from previous renames are wiped too). Season
+            folders and your media files are never touched. Use this when you
+            want to start fresh — the next <Code>Build NFOs</Code> click
+            recreates everything.
           </li>
         </Bullets>
         <Callout>
           The on-disk <Code>.plex-nfo-builder.json</Code> sidecar is preserved
           by Wipe so your binding and overrides survive. It only gets removed
-          if you call the API with <Code>keep_sidecar=false</Code>.
+          if you call the API with <Code>keep_sidecar=false</Code> — or hit the
+          <b> Blast every sidecar </b> button in the library Danger Zone.
+        </Callout>
+      </Section>
+
+      <Section title="Library Danger Zone">
+        <p>
+          Each library page has a collapsible <b>Danger zone</b> panel
+          (hazard-yellow border) at the top with two big buttons that operate
+          across <i>every</i> folder tracked under the current library. Both
+          run a dry-run preview first, show the exact file count, and require
+          an explicit confirmation before touching disk.
+        </p>
+        <Bullets>
+          <li>
+            <b>Wipe ALL NFOs + artwork</b> — same operation as the per-show
+            Wipe button, but applied to every folder in the library at once.
+            Sidecars are preserved so bindings + overrides survive and you can
+            rebuild straight after.
+          </li>
+          <li>
+            <b>Blast every sidecar</b> — deletes every{" "}
+            <Code>.plex-nfo-builder.json</Code> file in the library. The
+            database is untouched, so the app keeps working; but the only
+            on-disk record of bindings + overrides is gone, so a future
+            database wipe would no longer restore them. NFOs and artwork are
+            not touched. Use this when sidecars from a previous install have
+            gone bad and you want to regenerate them on the next save.
+          </li>
+        </Bullets>
+        <Callout>
+          Both library-wide buttons are intentionally hazard-yellow rather than
+          red — they're powerful but recoverable: the wipe is reversible by
+          rebuilding, and the sidecar blast is reversible by re-saving any
+          binding/override (which writes a fresh sidecar).
         </Callout>
       </Section>
 
@@ -152,6 +189,17 @@ export default function HelpView() {
           <Code>duplicate</Code>), and lets you uncheck individual files. Apply
           performs an atomic per-file rename and migrates the per-file override
           row alongside the file so your bindings survive.
+        </p>
+        <p>
+          <b>Companion files travel with the video.</b> When{" "}
+          <Code>video.mkv</Code> becomes <Code>new-name.mkv</Code>, the
+          matching <Code>video.nfo</Code>, <Code>video-thumb.jpg</Code>/
+          <Code>.png</Code>, and known subtitle sidecars (<Code>.srt</Code>,{" "}
+          <Code>.ass</Code>, <Code>.ssa</Code>, <Code>.vtt</Code>,{" "}
+          <Code>.sub</Code>, <Code>.idx</Code>, <Code>.sup</Code> — with any
+          language tag like <Code>video.en.forced.srt</Code>) are renamed in
+          lockstep. No more orphan thumbnails or NFOs left behind under the old
+          filename.
         </p>
         <p>
           The modal also has a <b>Series type</b> selector{" "}

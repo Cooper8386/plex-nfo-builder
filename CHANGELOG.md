@@ -2,6 +2,39 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.1 — 2026-05-05
+
+Bug-fix follow-up to v0.11.0 plus a small but long-overdue feature: a
+proper library-wide Danger Zone with two big hazard-yellow buttons.
+
+### Added
+
+- **Library Danger Zone.** Each Library page now has a collapsible
+  hazard-yellow panel at the top with two destructive buttons that run
+  across every folder tracked under the current library:
+  - **Wipe ALL NFOs + artwork** — same as the per-show Wipe button, but
+    applied to the whole library at once. Sidecars are preserved.
+  - **Blast every sidecar (`.plex-nfo-builder.json`)** — deletes every
+    sidecar in the library. Database and NFOs are untouched.
+
+  Both buttons run a dry-run preview, show the exact file count, and
+  require an explicit confirmation before touching disk. New API:
+  `POST /libraries/{name}/wipe-nfo` and `POST /libraries/{name}/wipe-sidecars`.
+
+### Fixed
+
+- **Renamer leaves orphan `.nfo` and `-thumb.jpg` files.** When you
+  renamed a video file, the matching sidecar `.nfo` and Plex thumbnail
+  stayed under the old name. The renamer now moves every recognised
+  companion file (`<stem>.nfo`, `<stem>-thumb.{jpg,jpeg,png}`, and
+  language-tagged subtitle sidecars `.srt` / `.ass` / `.ssa` / `.vtt` /
+  `.sub` / `.idx` / `.sup`) in lockstep with the video.
+- **Wipe NFOs & artwork doesn't delete `-thumb.jpg` files.** The cleaner
+  only knew about the show-level artwork filenames and `season.nfo`. It
+  now wipes any `*-thumb.{jpg,jpeg,png}` file sitting next to a video
+  (top-level for movies, inside Season folders for episodes), including
+  orphans left over from a previous rename.
+
 ## 0.11.0 — 2026-05-05
 
 Sonarr/Radarr-compatible naming, MediaInfo via ffprobe, and a stack of

@@ -13,7 +13,8 @@ Built around your Sonarr/Radarr-style filenames (e.g. `Severance (2022) - S02E08
 - **Plex NFO output** per the [Plex docs](https://support.plex.tv/articles/using-nfo-metadata-files-with-plex/): `tvshow.nfo`, `season.nfo`, per-episode `<file>.nfo`, per-movie `<file>.nfo`, `<file>-thumb.jpg` for episode thumbnails, canonical `poster.jpg` / `background.jpg` / `banner.jpg` for series and movies.
 - **Manual NFO field overrides** at the series, season, or per-episode level (title, sorttitle, originaltitle, tagline, plot). Empty falls back to source.
 - **Sidecar (`.plex-nfo-builder.json`)** in every bound folder carries the binding, overrides, artwork selections, and episode mapping. A full database wipe is recoverable straight from the media library.
-- **Wipe NFOs & artwork** button per show — deletes every generated file in one click while leaving season folders and media files alone.
+- **Wipe NFOs & artwork** button per show — deletes every generated file in one click while leaving season folders and media files alone. Per-episode `<stem>-thumb.{jpg,jpeg,png}` thumbnails next to videos are wiped too, including orphans from previous renames.
+- **Library-wide Danger Zone** — collapsible hazard-yellow panel on every Library view with two big buttons: **Wipe ALL NFOs + artwork** (every folder in the library) and **Blast every sidecar (`.plex-nfo-builder.json`)**. Both run a dry-run preview, show the exact file count, and require an explicit confirm before touching disk.
 - **Rename to scheme** — preview-then-apply renamer using full Sonarr/Radarr token grammar. Defaults match the [Trash Guides](https://trash-guides.info/Sonarr/Sonarr-recommended-naming-scheme/) recommended schemes. Codec, bit depth, HDR/DV, audio channels, and language tags are pulled from the file via `ffprobe`. Per-row preview, conflict detection, and series-type selector (Auto / Standard / Daily / Anime) are all in the rename modal.
 - **Provenance**: every NFO this app writes carries a header comment with version, source id, content hash, and timestamp. The scanner uses that to label items as `complete / partial / foreign / mixed / stale` and avoids clobbering foreign NFOs unless you opt in.
 - **Library views**: poster grid (default), dense list, and per-item detail. Filter by status, free-text title search, and a one-click toggle to **hide already-organized** items.
@@ -120,6 +121,7 @@ Click **Rename to scheme** on the Episodes tab to open the rename modal:
 - **Series type** selector — `Auto` (default) picks per file (anime fansub names → anime template, files with an air-date → daily, otherwise standard) or pin to `Standard` / `Daily` / `Anime` if auto-detection guesses wrong.
 - Ad-hoc template field overrides Settings for the current run.
 - Atomic per-file rename via `os.replace`. Per-file overrides are migrated alongside the file so your bindings stay intact.
+- **Companion files travel with the video.** When `video.mkv` becomes `new-name.mkv`, the matching `video.nfo`, `video-thumb.jpg`/`-thumb.png`, and known subtitle sidecars (`video.en.srt`, `video.en.forced.srt`, `.ass`, `.ssa`, `.vtt`, `.sub`, `.idx`, `.sup`) are renamed in lockstep so nothing gets orphaned and Plex doesn't re-pull thumbnails.
 
 ### MediaInfo via ffprobe
 

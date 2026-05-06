@@ -143,6 +143,44 @@ export const api = {
       J<{ ok: true; items: number; bindings: number }>(
         fetch(`/api/libraries/${encodeURIComponent(name)}`, { method: "DELETE" })
       ),
+    wipeNfo: (
+      name: string,
+      body: { dry_run?: boolean; keep_sidecar?: boolean; rescan?: boolean } = {}
+    ) =>
+      J<{
+        ok: true;
+        dry_run?: boolean;
+        library: string;
+        folder_count: number;
+        file_count?: number;
+        nfo_deleted?: number;
+        artwork_deleted?: number;
+        sidecar_deleted?: number;
+        folders?: any[];
+        failed?: any[];
+      }>(
+        fetch(`/api/libraries/${encodeURIComponent(name)}/wipe-nfo`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ library: name, ...body }),
+        })
+      ),
+    wipeSidecars: (name: string, body: { dry_run?: boolean } = {}) =>
+      J<{
+        ok: true;
+        dry_run?: boolean;
+        library: string;
+        sidecar_count: number;
+        files?: string[];
+        deleted?: string[];
+        failed?: any[];
+      }>(
+        fetch(`/api/libraries/${encodeURIComponent(name)}/wipe-sidecars`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ library: name, ...body }),
+        })
+      ),
   },
   items: {
     list: (params: { library?: string; q?: string }) => {

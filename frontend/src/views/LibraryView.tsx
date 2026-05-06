@@ -166,6 +166,11 @@ export default function LibraryView(props: {
   const btnGhost = `${btnBase} bg-transparent hover:bg-slate-800 text-slate-300 border border-slate-800`;
   const btnDanger = `${btnBase} bg-rose-900/40 hover:bg-rose-900/70 text-rose-200 border border-rose-800`;
 
+  // Hazard-yellow buttons for the Danger Zone. Black text on amber-400 with a
+  // chunkier border so they read as "don't press unless you mean it".
+  const btnHazard = `${btnBase} bg-amber-400 hover:bg-amber-300 text-black border-2 border-amber-500 shadow-sm`;
+  const btnHazardOutline = `${btnBase} bg-transparent hover:bg-amber-400/10 text-amber-300 border-2 border-amber-500`;
+
   return (
     <div className="p-6 max-w-[1600px] mx-auto">
       {/* Library header */}
@@ -264,6 +269,15 @@ export default function LibraryView(props: {
           {toast}
         </div>
       )}
+      <DangerZone
+        library={props.library}
+        busy={busy}
+        setBusy={setBusy}
+        flash={flash}
+        invalidateItems={() => qc.invalidateQueries({ queryKey: ["items"] })}
+        btnHazard={btnHazard}
+        btnHazardOutline={btnHazardOutline}
+      />
       {props.viewMode === "grid" ? (
         <Grid
           items={items}
@@ -280,6 +294,169 @@ export default function LibraryView(props: {
           onToggleAll={toggleAll}
           onOpen={props.onOpenDetail}
         />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Danger Zone
+// ---------------------------------------------------------------------------
+// Two library-wide "big yellow buttons" for emergencies:
+//   1. Wipe ALL NFOs + artwork in this library
+//   2. Blast every .plex-nfo-builder.json sidecar in this library
+// Both run a dry-run preview first, show a count, and require explicit
+// confirmation before touching disk. Collapsed by default so they don't
+// scream at the user every time they open a library.
+
+function DangerZone(props: {
+  library: string;
+  busy: string | null;
+  setBusy: (v: string | null) => void;
+  flash: (msg: string) => void;
+  invalidateItems: () => void;
+  btnHazard: string;
+  btnHazardOutline: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const runWipeNfo = async () => {
+    if (props.busy) return;
+    props.setBusy("Scanning library for NFOs and artwork…");
+    let preview: { folder_count: number; file_count?: number };
+    try {
+      preview = await api.libraries.wipeNfo(props.library, { dry_run: true });
+    } catch (e: any) {
+      props.flash(`Wipe preview failed: ${e?.message ?? e}`);
+      props.setBusy(null);
+      return;
+    }
+    props.setBusy(null);
+    if (!preview.file_count) {
+      props.flash(
+        `Nothing to wipe in "${props.library}" — checked ${preview.folder_count} folder(s).`
+      );
+      return;
+    }
+    const ok = window.confirm(
+      `WIPE NFO + ARTWORK across the entire "${props.library}" library?\n\n` +
+        `This will delete ${preview.file_count} file(s) across ` +
+        `${preview.folder_count} folder(s):\n` +
+        `  • Every tvshow.nfo / movie .nfo / episode .nfo / season.nfo\n` +
+        `  • Every poster.jpg / background.jpg / banner.jpg / clearlogo.png\n` +
+        `  • Every Season<NN>-poster.jpg / season-specials-poster.jpg\n` +
+        `  • Every <episode>-thumb.jpg next to a video file\n\n` +
+        `Sidecars (.plex-nfo-builder.json) and your media files are NOT touched. ` +
+        `Bindings + overrides survive — you can rebuild straight after.\n\n` +
+        `This cannot be undone. Continue?`
+    );
+    if (!ok) return;
+    props.setBusy(`Wiping NFOs + artwork from ${preview.folder_count} folder(s)…`);
+    try {
+      const res = await api.libraries.wipeNfo(props.library, { dry_run: false });
+      props.flash(
+        `Wiped ${res.nfo_deleted ?? 0} NFO(s) + ${res.artwork_deleted ?? 0} artwork file(s) ` +
+          `across ${res.folder_count} folder(s)` +
+          (res.failed && res.failed.length ? ` — ${res.failed.length} folder(s) failed` : "")
+      );
+      props.invalidateItems();
+    } catch (e: any) {
+      props.flash(`Wipe failed: ${e?.message ?? e}`);
+    } finally {
+      props.setBusy(null);
+    }
+  };
+
+  const runWipeSidecars = async () => {
+    if (props.busy) return;
+    props.setBusy("Scanning library for sidecar files…");
+    let preview: { sidecar_count: number; files?: string[] };
+    try {
+      preview = await api.libraries.wipeSidecars(props.library, { dry_run: true });
+    } catch (e: any) {
+      props.flash(`Sidecar preview failed: ${e?.message ?? e}`);
+      props.setBusy(null);
+      return;
+    }
+    props.setBusy(null);
+    if (!preview.sidecar_count) {
+      props.flash(`No .plex-nfo-builder.json sidecars found in "${props.library}".`);
+      return;
+    }
+    const ok = window.confirm(
+      `BLAST EVERY .plex-nfo-builder.json sidecar in "${props.library}"?\n\n` +
+        `Found ${preview.sidecar_count} sidecar file(s) to delete.\n\n` +
+        `The sidecar is the only on-disk record of bindings + overrides for ` +
+        `each folder. After wiping them, the database still remembers everything, ` +
+        `but if you ever wipe the database too you'll have to re-bind from scratch.\n\n` +
+        `NFOs and artwork are NOT touched.\n\n` +
+        `This cannot be undone. Continue?`
+    );
+    if (!ok) return;
+    props.setBusy(`Deleting ${preview.sidecar_count} sidecar file(s)…`);
+    try {
+      const res = await api.libraries.wipeSidecars(props.library, { dry_run: false });
+      props.flash(
+        `Deleted ${res.deleted?.length ?? 0} sidecar file(s)` +
+          (res.failed && res.failed.length ? ` — ${res.failed.length} failed` : "")
+      );
+    } catch (e: any) {
+      props.flash(`Sidecar wipe failed: ${e?.message ?? e}`);
+    } finally {
+      props.setBusy(null);
+    }
+  };
+
+  return (
+    <div className="mb-6 rounded-lg border-2 border-amber-500/60 bg-amber-500/[0.04]">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-left"
+      >
+        <div className="flex items-center gap-2">
+          <span
+            aria-hidden
+            className="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-400 text-black text-xs font-black"
+            title="Hazard"
+          >
+            ⚠
+          </span>
+          <span className="text-sm font-semibold text-amber-200">
+            Danger zone
+          </span>
+          <span className="text-xs text-amber-300/70">
+            library-wide destructive operations
+          </span>
+        </div>
+        <span className="text-xs text-amber-300/80">{open ? "hide" : "show"}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-4 pt-1 border-t border-amber-500/30 space-y-3">
+          <p className="text-xs text-amber-200/80 leading-relaxed">
+            These actions touch every folder tracked under{" "}
+            <span className="font-mono text-amber-100">{props.library}</span>. Each
+            one shows you exactly what it will delete and asks for confirmation
+            before touching disk. Don't press unless you're sure.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={runWipeNfo}
+              disabled={!!props.busy}
+              className={props.btnHazard}
+              title="Delete every generated NFO and artwork file across this whole library. Bindings survive via the sidecar."
+            >
+              ⚠ Wipe ALL NFOs + artwork
+            </button>
+            <button
+              onClick={runWipeSidecars}
+              disabled={!!props.busy}
+              className={props.btnHazardOutline}
+              title="Delete every .plex-nfo-builder.json sidecar in this library. Database is untouched."
+            >
+              ⚠ Blast every sidecar (.plex-nfo-builder.json)
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

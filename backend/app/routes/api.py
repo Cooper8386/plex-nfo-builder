@@ -405,6 +405,169 @@ async def items_prune(payload: ItemsPruneIn):
     }
 
 
+# ---- Library-wide DANGER ZONE ----------------------------------------------
+#
+# These two endpoints power the "big yellow buttons" on the Library view.
+# They iterate every folder tracked under a given library and either wipe
+# generated NFOs/artwork (clean_folder) or delete the .plex-nfo-builder.json
+# sidecar files. Both support dry-run mode so the UI can show a preview
+# before the user confirms.
+
+
+class LibraryWipeIn(BaseModel):
+    library: str
+    dry_run: bool = False
+    keep_sidecar: bool = True       # ignored when wiping sidecars
+    rescan: bool = True
+
+
+@router.post("/libraries/{name}/wipe-nfo")
+async def library_wipe_nfo(name: str, payload: LibraryWipeIn):
+    """Wipe generated NFOs and artwork from EVERY tracked folder in ``name``.
+
+    For each folder this is the same operation as `/items/clean`. Sidecar
+    files are preserved by default so bindings + overrides survive. Pass
+    ``dry_run=true`` to get a preview without touching disk.
+    """
+    if payload.library != name:
+        raise HTTPException(400, "library mismatch")
+    rows = [dict(r) for r in db.list_item_state(library=name)]
+    folders: list[Path] = []
+    for r in rows:
+        fp = r.get("folder_path")
+        if not fp:
+            continue
+        try:
+            p = _safe_under_root(fp)
+        except Exception:
+            continue
+        if p.is_dir():
+            folders.append(p)
+
+    if payload.dry_run:
+        preview: list[dict] = []
+        total = 0
+        for p in folders:
+            files = cleaner_svc.preview_clean(p)
+            total += len(files)
+            if files:
+                preview.append({
+                    "folder_path": str(p),
+                    "file_count": len(files),
+                    "files": files[:25],  # cap per-folder preview
+                })
+        return {
+            "ok": True,
+            "dry_run": True,
+            "library": name,
+            "folder_count": len(folders),
+            "file_count": total,
+            "folders": preview,
+        }
+
+    nfo_total = 0
+    artwork_total = 0
+    sidecar_total = 0
+    cleaned_folders: list[dict] = []
+    failed: list[dict] = []
+    for p in folders:
+        try:
+            summary = cleaner_svc.clean_folder(p, keep_sidecar=payload.keep_sidecar)
+            nfo_total += summary.get("nfo_deleted", 0)
+            artwork_total += summary.get("artwork_deleted", 0)
+            sidecar_total += summary.get("sidecar_deleted", 0)
+            cleaned_folders.append({
+                "folder_path": str(p),
+                **{k: summary.get(k, 0) for k in ("nfo_deleted", "artwork_deleted", "sidecar_deleted")},
+            })
+        except Exception as e:  # noqa: BLE001
+            failed.append({"folder_path": str(p), "reason": str(e)})
+            logger.warning("library wipe-nfo: clean failed for {}: {}", p, e)
+            continue
+        if payload.rescan:
+            try:
+                kind = next(
+                    (r.get("kind") for r in rows if r.get("folder_path") == str(p)),
+                    None,
+                )
+                lib = next(
+                    (r.get("library") for r in rows if r.get("folder_path") == str(p)),
+                    name,
+                )
+                if kind == "movie":
+                    scanner.scan_movie_folder(p, library=lib or name)
+                else:
+                    scanner.scan_series_folder(p, library=lib or name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("library wipe-nfo: rescan failed for {}: {}", p, e)
+
+    return {
+        "ok": True,
+        "library": name,
+        "folder_count": len(folders),
+        "nfo_deleted": nfo_total,
+        "artwork_deleted": artwork_total,
+        "sidecar_deleted": sidecar_total,
+        "folders": cleaned_folders,
+        "failed": failed,
+    }
+
+
+@router.post("/libraries/{name}/wipe-sidecars")
+async def library_wipe_sidecars(name: str, payload: LibraryWipeIn):
+    """Delete every ``.plex-nfo-builder.json`` sidecar in ``name``.
+
+    The sidecar is the only on-disk record of bindings + overrides, so this
+    is destructive: after running, scanning the library re-discovers folders
+    but they come back unmatched. Use this when sidecars from a previous
+    install have gone bad and you want to start clean from the database.
+    NFOs and artwork are NOT touched - run wipe-nfo for that.
+    """
+    if payload.library != name:
+        raise HTTPException(400, "library mismatch")
+    rows = [dict(r) for r in db.list_item_state(library=name)]
+    targets: list[Path] = []
+    for r in rows:
+        fp = r.get("folder_path")
+        if not fp:
+            continue
+        try:
+            p = _safe_under_root(fp)
+        except Exception:
+            continue
+        sidecar = p / sidecar_svc.SIDECAR_NAME
+        if sidecar.is_file():
+            targets.append(sidecar)
+
+    if payload.dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "library": name,
+            "sidecar_count": len(targets),
+            "files": [str(t) for t in targets],
+        }
+
+    deleted: list[str] = []
+    failed: list[dict] = []
+    for t in targets:
+        try:
+            t.unlink()
+            deleted.append(str(t))
+        except FileNotFoundError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            failed.append({"path": str(t), "reason": str(e)})
+            logger.warning("library wipe-sidecars: delete failed for {}: {}", t, e)
+    return {
+        "ok": True,
+        "library": name,
+        "sidecar_count": len(targets),
+        "deleted": deleted,
+        "failed": failed,
+    }
+
+
 @router.get("/items/detail")
 async def item_detail(path: str):
     p = _safe_under_root(path)
