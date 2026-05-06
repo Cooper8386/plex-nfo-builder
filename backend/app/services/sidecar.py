@@ -71,6 +71,8 @@ def build_sidecar_payload(folder: Path | str) -> dict:
             "year": bd.get("year"),
             "language": bd.get("language"),
             "source_locked": bool(bd.get("source_locked") or 0),
+            "secondary_provider": bd.get("secondary_provider"),
+            "secondary_external_id": bd.get("secondary_external_id"),
         }
     overrides = db.get_nfo_overrides(folder_str)
     artwork_selections = db.get_artwork_selections(folder_str)
@@ -148,6 +150,13 @@ def restore_from_sidecar(folder: Path | str) -> bool:
             restored = True
             logger.info("Restored binding for {} from sidecar ({}-{})",
                         folder_str, binding.get("provider"), binding.get("external_id"))
+            sec_p = binding.get("secondary_provider")
+            sec_id = binding.get("secondary_external_id")
+            if sec_p and sec_id:
+                try:
+                    db.set_binding_secondary(folder_str, str(sec_p), str(sec_id))
+                except Exception as e:
+                    logger.warning("Sidecar secondary id restore failed for {}: {}", folder_str, e)
         except Exception as e:
             logger.warning("Sidecar binding restore failed for {}: {}", folder_str, e)
     overrides = data.get("overrides") or {}

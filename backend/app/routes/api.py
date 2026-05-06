@@ -851,6 +851,53 @@ async def match_set_source(payload: SourceIn):
     return {"ok": True}
 
 
+class SecondaryIn(BaseModel):
+    folder_path: str
+    # Pass provider+external_id to set; pass both as null/empty to clear.
+    provider: Optional[str] = None    # 'tvdb' | 'tmdb'
+    external_id: Optional[str] = None
+
+
+@router.post("/match/secondary")
+async def match_set_secondary(payload: SecondaryIn):
+    """Attach (or clear) a manual secondary provider id on a folder.
+
+    Use this when you've matched a folder to one provider (e.g. TVDB) but
+    that record doesn't cross-reference the *other* provider. Setting a
+    secondary id lets the artwork resolver pull cross-provider images, the
+    fanart.tv resolver use the right key, and the NFO writer emit a second
+    ``<uniqueid type="...">`` row — even when the providers don't link
+    each other.
+    """
+    p = _safe_under_root(payload.folder_path)
+    binding = db.get_binding(str(p))
+    if not binding:
+        raise HTTPException(
+            status_code=400,
+            detail="Folder must be matched to a primary provider before setting a secondary id",
+        )
+    prov_in = (payload.provider or "").strip().lower() or None
+    eid_in = (payload.external_id or "").strip() or None
+    if prov_in and prov_in not in ("tvdb", "tmdb"):
+        raise HTTPException(status_code=400, detail="provider must be 'tvdb' or 'tmdb'")
+    if prov_in and prov_in == (binding["provider"] or "").lower():
+        raise HTTPException(
+            status_code=400,
+            detail="secondary provider must differ from the primary binding",
+        )
+    if prov_in and not eid_in:
+        raise HTTPException(status_code=400, detail="external_id is required when provider is set")
+    try:
+        db.set_binding_secondary(str(p), prov_in, eid_in)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        sidecar_svc.write_sidecar(p)
+    except Exception as e:
+        logger.warning("sidecar after secondary id change {}: {}", p, e)
+    return {"ok": True, "secondary_provider": prov_in, "secondary_external_id": eid_in}
+
+
 @router.post("/match/unbind")
 async def match_unbind(folder_path: str):
     p = _safe_under_root(folder_path)
@@ -1258,6 +1305,17 @@ async def artwork_candidates(path: str, kind: str = "series"):
                         continue
             except Exception as e:
                 logger.warning("TMDB tv images failed: {}", e)
+
+    # v0.11.3: a manual secondary id on the binding wins over whatever the
+    # primary provider's record happened to cross-reference (or fills the gap
+    # when nothing was cross-referenced at all). The user has explicitly told
+    # us "this folder is also that record", so trust it.
+    sec_p = (binding["secondary_provider"] or "").lower() if "secondary_provider" in binding.keys() else ""
+    sec_eid = binding["secondary_external_id"] if "secondary_external_id" in binding.keys() else None
+    if sec_p == "tmdb" and sec_eid:
+        tmdb_id_for_fanart = str(sec_eid)
+    elif sec_p == "tvdb" and sec_eid:
+        tvdb_id_for_fanart = str(sec_eid)
 
     # ---- TMDB as supplement when TVDB is primary ---------------------------
     if (binding["provider"] == "tvdb" and settings.tmdb_artwork_enabled

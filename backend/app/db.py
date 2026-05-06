@@ -47,6 +47,9 @@ def _init_schema(c: sqlite3.Connection) -> None:
                 title TEXT,
                 year INTEGER,
                 language TEXT,
+                source_locked INTEGER NOT NULL DEFAULT 0,
+                secondary_provider TEXT,      -- tvdb | tmdb (the "other" source)
+                secondary_external_id TEXT,   -- manual cross-id, optional
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -180,6 +183,21 @@ def _migrate(c: sqlite3.Connection) -> None:
                 c.execute("ALTER TABLE bindings ADD COLUMN source_locked INTEGER NOT NULL DEFAULT 0")
             except Exception:
                 pass
+        # v0.11.3: optional secondary provider id so a TVDB-bound show can
+        # carry a manual TMDB id (or vice versa) for cross-provider artwork,
+        # fanart.tv lookups, and dual-uniqueid NFOs even when the providers
+        # don't cross-reference each other.
+        cols = {r[1] for r in c.execute("PRAGMA table_info(bindings)").fetchall()}
+        if "secondary_provider" not in cols:
+            try:
+                c.execute("ALTER TABLE bindings ADD COLUMN secondary_provider TEXT")
+            except Exception:
+                pass
+        if "secondary_external_id" not in cols:
+            try:
+                c.execute("ALTER TABLE bindings ADD COLUMN secondary_external_id TEXT")
+            except Exception:
+                pass
         lib_cols = {r[1] for r in c.execute("PRAGMA table_info(libraries)").fetchall()}
         if lib_cols and "metadata_source" not in lib_cols:
             try:
@@ -269,6 +287,38 @@ def upsert_binding(folder_path: str, kind: str, provider: str, external_id: str,
             (folder_path, kind, provider, external_id, title, year, language, locked, now, now),
         )
         return True
+
+
+def set_binding_secondary(folder_path: str, provider: Optional[str],
+                          external_id: Optional[str]) -> None:
+    """Set or clear the manual secondary provider id on a binding.
+
+    Pass ``provider=None`` (or empty ``external_id``) to clear.
+    Provider must be 'tvdb' or 'tmdb' and must differ from the primary.
+    No-op if the folder has no primary binding.
+    """
+    c = conn()
+    with _lock:
+        row = c.execute(
+            "SELECT provider FROM bindings WHERE folder_path = ?", (folder_path,)
+        ).fetchone()
+        if not row:
+            return
+        primary = (row["provider"] or "").lower()
+        if not provider or not external_id:
+            sec_p, sec_id = None, None
+        else:
+            p = provider.lower()
+            if p not in ("tvdb", "tmdb"):
+                raise ValueError("secondary provider must be 'tvdb' or 'tmdb'")
+            if p == primary:
+                raise ValueError("secondary provider must differ from primary")
+            sec_p, sec_id = p, str(external_id)
+        c.execute(
+            "UPDATE bindings SET secondary_provider = ?, secondary_external_id = ?, updated_at = ? "
+            "WHERE folder_path = ?",
+            (sec_p, sec_id, int(time.time()), folder_path),
+        )
 
 
 def set_binding_lock(folder_path: str, locked: bool) -> None:

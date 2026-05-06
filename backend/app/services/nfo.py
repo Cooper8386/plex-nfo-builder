@@ -101,7 +101,8 @@ def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[st
                      translation: Optional[dict] = None,
                      folder_path: Optional[str] = None,
                      overrides: Optional[dict] = None,
-                     preferred_overrides: Optional[dict] = None) -> str:
+                     preferred_overrides: Optional[dict] = None,
+                     manual_secondary: Optional[tuple[str, str]] = None) -> str:
     s = series_extended
     title = _ovr(overrides, "series", "title",
                  _t(translation, "name", s.get("name")) or "")
@@ -143,11 +144,19 @@ def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[st
         _el(root, "runtime", runtime)
     # uniqueids
     _el(root, "uniqueid", str(s.get("id") or ""), attrib={"type": "tvdb", "default": "true"})
+    emitted_uid_types: set[str] = {"tvdb"}
     rms = s.get("remoteIds") or []
     for rm in rms:
         if isinstance(rm, dict) and rm.get("sourceName"):
+            slug = _provider_slug(rm.get("sourceName"))
             _el(root, "uniqueid", str(rm.get("id") or ""),
-                attrib={"type": _provider_slug(rm.get("sourceName"))})
+                attrib={"type": slug})
+            emitted_uid_types.add(slug)
+    if manual_secondary:
+        sp, sid = manual_secondary
+        sp = (sp or "").lower()
+        if sp and sid and sp not in emitted_uid_types:
+            _el(root, "uniqueid", str(sid), attrib={"type": sp})
 
     # Artwork: always TVDB CDN URLs, unless the user's preferred-artwork-source
     # has supplied cross-provider URLs (e.g. TMDB images while bound to TVDB).
@@ -220,7 +229,8 @@ def build_movie_nfo(movie_extended: dict, *, language: str, fallbacks: list[str]
                     translation: Optional[dict] = None,
                     folder_path: Optional[str] = None,
                     overrides: Optional[dict] = None,
-                    preferred_overrides: Optional[dict] = None) -> str:
+                    preferred_overrides: Optional[dict] = None,
+                    manual_secondary: Optional[tuple[str, str]] = None) -> str:
     m = movie_extended
     title = _ovr(overrides, "movie", "title",
                  _t(translation, "name", m.get("name")) or "")
@@ -248,11 +258,19 @@ def build_movie_nfo(movie_extended: dict, *, language: str, fallbacks: list[str]
         _el(root, "runtime", m["runtime"])
     _emit_genres(root, m.get("genres") or [], folder_path)
     _el(root, "uniqueid", str(m.get("id") or ""), attrib={"type": "tvdb", "default": "true"})
+    emitted_uid_types: set[str] = {"tvdb"}
     rms = m.get("remoteIds") or []
     for rm in rms:
         if isinstance(rm, dict) and rm.get("sourceName"):
+            slug = _provider_slug(rm.get("sourceName"))
             _el(root, "uniqueid", str(rm.get("id") or ""),
-                attrib={"type": _provider_slug(rm.get("sourceName"))})
+                attrib={"type": slug})
+            emitted_uid_types.add(slug)
+    if manual_secondary:
+        sp, sid = manual_secondary
+        sp = (sp or "").lower()
+        if sp and sid and sp not in emitted_uid_types:
+            _el(root, "uniqueid", str(sid), attrib={"type": sp})
 
     urls = movie_image_urls(
         m, m.get("artworks") or [],
@@ -302,7 +320,8 @@ def has_provenance(nfo_text: str) -> bool:
 def build_series_nfo_tmdb(tv: dict, *, language: str, fallbacks: list[str],
                           folder_path: Optional[str] = None,
                           extra_artwork: Optional[dict] = None,
-                          overrides: Optional[dict] = None) -> str:
+                          overrides: Optional[dict] = None,
+                          manual_secondary: Optional[tuple[str, str]] = None) -> str:
     title = _ovr(overrides, "series", "title", tv.get("name") or "")
     plot = _ovr(overrides, "series", "plot", tv.get("overview") or "")
     original_title = _ovr(overrides, "series", "originaltitle", tv.get("original_name") or title)
@@ -333,11 +352,19 @@ def build_series_nfo_tmdb(tv: dict, *, language: str, fallbacks: list[str],
         _el(root, "runtime", runtimes[0])
     # uniqueids
     _el(root, "uniqueid", str(tv.get("id") or ""), attrib={"type": "tmdb", "default": "true"})
+    emitted_uid_types: set[str] = {"tmdb"}
     ext = tv.get("external_ids") or {}
     if ext.get("tvdb_id"):
         _el(root, "uniqueid", str(ext["tvdb_id"]), attrib={"type": "tvdb"})
+        emitted_uid_types.add("tvdb")
     if ext.get("imdb_id"):
         _el(root, "uniqueid", str(ext["imdb_id"]), attrib={"type": "imdb"})
+        emitted_uid_types.add("imdb")
+    if manual_secondary:
+        sp, sid = manual_secondary
+        sp = (sp or "").lower()
+        if sp and sid and sp not in emitted_uid_types:
+            _el(root, "uniqueid", str(sid), attrib={"type": sp})
 
     # Artwork: respect per-folder selections, else use TMDB poster + backdrop URLs.
     extra = extra_artwork or {}
@@ -390,7 +417,8 @@ def build_episode_nfo_tmdb(ep: dict, *, language: str, fallbacks: list[str],
 def build_movie_nfo_tmdb(mv: dict, *, language: str, fallbacks: list[str],
                          folder_path: Optional[str] = None,
                          extra_artwork: Optional[dict] = None,
-                         overrides: Optional[dict] = None) -> str:
+                         overrides: Optional[dict] = None,
+                         manual_secondary: Optional[tuple[str, str]] = None) -> str:
     title = _ovr(overrides, "movie", "title", mv.get("title") or mv.get("name") or "")
     plot = _ovr(overrides, "movie", "plot", mv.get("overview") or "")
     original_title = _ovr(overrides, "movie", "originaltitle", mv.get("original_title") or title)
@@ -418,11 +446,19 @@ def build_movie_nfo_tmdb(mv: dict, *, language: str, fallbacks: list[str],
         if isinstance(s, dict) and s.get("name"):
             _el(root, "studio", s["name"])
     _el(root, "uniqueid", str(mv.get("id") or ""), attrib={"type": "tmdb", "default": "true"})
+    emitted_uid_types: set[str] = {"tmdb"}
     if mv.get("imdb_id"):
         _el(root, "uniqueid", str(mv.get("imdb_id")), attrib={"type": "imdb"})
+        emitted_uid_types.add("imdb")
     ext = mv.get("external_ids") or {}
     if ext.get("tvdb_id"):
         _el(root, "uniqueid", str(ext["tvdb_id"]), attrib={"type": "tvdb"})
+        emitted_uid_types.add("tvdb")
+    if manual_secondary:
+        sp, sid = manual_secondary
+        sp = (sp or "").lower()
+        if sp and sid and sp not in emitted_uid_types:
+            _el(root, "uniqueid", str(sid), attrib={"type": sp})
 
     extra = extra_artwork or {}
     poster = extra.get("poster") or _tmdb_image(mv.get("poster_path"), "original")

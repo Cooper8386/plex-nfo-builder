@@ -308,6 +308,17 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
             />
           ) : null}
 
+          {binding && (
+            <SecondarySourcePanel
+              path={path}
+              kind={kind}
+              primaryProvider={(binding.provider as "tvdb" | "tmdb") ?? "tvdb"}
+              secondaryProvider={(binding.secondary_provider as string | null) ?? null}
+              secondaryExternalId={(binding.secondary_external_id as string | null) ?? null}
+              onChanged={() => qc.invalidateQueries({ queryKey: ["detail", path] })}
+            />
+          )}
+
           <h3 className="font-semibold mt-6 mb-2">Current artwork</h3>
           <p className="text-xs text-slate-500 mb-3">
             The active local files Plex reads from the folder. Rebuilds overwrite these in place.
@@ -602,6 +613,249 @@ function MatchPanel({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Lets the user pin a manual TMDB id on a TVDB-bound show (or vice versa)
+ * when the primary metadata record doesn't include a cross-reference. The
+ * stored secondary id is used by the cross-provider artwork resolver, the
+ * fanart.tv lookup, and the NFO ``<uniqueid>`` block. Persists to the sidecar
+ * so it survives a DB wipe.
+ */
+function SecondarySourcePanel({
+  path,
+  kind,
+  primaryProvider,
+  secondaryProvider,
+  secondaryExternalId,
+  onChanged,
+}: {
+  path: string;
+  kind: "series" | "movie";
+  primaryProvider: "tvdb" | "tmdb";
+  secondaryProvider: string | null;
+  secondaryExternalId: string | null;
+  onChanged: () => void;
+}) {
+  const otherProvider: "tvdb" | "tmdb" = primaryProvider === "tvdb" ? "tmdb" : "tvdb";
+  const otherLabel = otherProvider.toUpperCase();
+  const hasSecondary =
+    !!secondaryProvider && !!secondaryExternalId && secondaryProvider.toLowerCase() !== primaryProvider;
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [pasteId, setPasteId] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [matches, setMatches] = useState<any[]>([]);
+
+  const linkUrl = providerPageUrl(secondaryProvider, secondaryExternalId, kind);
+
+  const save = async (provider: "tvdb" | "tmdb" | null, externalId: string | null) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.match.setSecondary({
+        folder_path: path,
+        provider,
+        external_id: externalId,
+      });
+      setOpen(false);
+      setPasteId("");
+      setSearchQuery("");
+      setMatches([]);
+      onChanged();
+    } catch (e: any) {
+      setMsg(`Failed: ${e?.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const savePaste = async () => {
+    const id = pasteId.trim();
+    if (!id) {
+      setMsg(`Enter a ${otherLabel} id (numbers only).`);
+      return;
+    }
+    if (!/^\d+$/.test(id)) {
+      setMsg(`${otherLabel} id should be all numbers.`);
+      return;
+    }
+    await save(otherProvider, id);
+  };
+
+  const runSearch = async () => {
+    if (!searchQuery.trim()) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api.match.search(
+        searchQuery,
+        kind,
+        undefined,
+        undefined,
+        otherProvider,
+      );
+      setMatches(r.results || []);
+    } catch (e: any) {
+      setMsg(`Search failed: ${e?.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="bg-slate-900/40 border border-slate-800 rounded-md p-3 mb-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="font-semibold mr-1">Secondary source</h3>
+        {hasSecondary ? (
+          <>
+            <span className="text-xs px-2 py-0.5 rounded bg-slate-800 border border-slate-700 font-mono">
+              {(secondaryProvider ?? "").toLowerCase()}-{secondaryExternalId}
+            </span>
+            {linkUrl && (
+              <a
+                href={linkUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs px-2 py-0.5 rounded border border-indigo-700 text-indigo-300 hover:bg-indigo-700/30"
+                title={`Open on ${(secondaryProvider ?? "").toUpperCase()}`}
+              >
+                {(secondaryProvider ?? "").toUpperCase()} ↗
+              </a>
+            )}
+            <button
+              disabled={busy}
+              className="text-xs px-2 py-0.5 rounded border border-slate-700 hover:bg-slate-800 disabled:opacity-50"
+              onClick={() => setOpen((v) => !v)}
+            >
+              {open ? "Hide" : "Edit"}
+            </button>
+            <button
+              disabled={busy}
+              className="text-xs px-2 py-0.5 rounded border border-yellow-600/60 text-yellow-300 hover:bg-yellow-600/20 disabled:opacity-50"
+              onClick={() => save(null, null)}
+              title="Remove the manual secondary id"
+            >
+              Clear
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="text-xs text-slate-500">
+              No manual {otherLabel} id linked.
+            </span>
+            <button
+              disabled={busy}
+              className="text-xs px-2 py-0.5 rounded border border-slate-700 hover:bg-slate-800 disabled:opacity-50"
+              onClick={() => setOpen((v) => !v)}
+            >
+              {open ? "Hide" : `Add ${otherLabel} id`}
+            </button>
+          </>
+        )}
+      </div>
+      <p className="text-xs text-slate-500 mt-2">
+        Pin a {otherLabel} id when {primaryProvider.toUpperCase()}'s record doesn't cross-reference
+        {" "}{otherLabel}. Used for cross-provider artwork, fanart.tv lookups, and the NFO
+        {" "}<code className="text-slate-400">&lt;uniqueid&gt;</code> tag. Persists in the sidecar.
+      </p>
+
+      {open && (
+        <div className="mt-3 border-t border-slate-800 pt-3 space-y-3">
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
+              Paste {otherLabel} id
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <input
+                value={pasteId}
+                onChange={(e) => setPasteId(e.target.value)}
+                placeholder={`${otherLabel} id (e.g. ${otherProvider === "tmdb" ? "12345" : "81189"})`}
+                className="bg-slate-800 px-2 py-1 rounded text-sm flex-1 min-w-[12rem] border border-slate-700 font-mono"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") savePaste();
+                }}
+              />
+              <button
+                disabled={busy || !pasteId.trim()}
+                className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-sm disabled:opacity-50"
+                onClick={savePaste}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
+              Or search {otherLabel}
+            </div>
+            <div className="flex flex-wrap gap-2 mb-2">
+              <input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={`${otherLabel} title`}
+                className="bg-slate-800 px-2 py-1 rounded text-sm flex-1 min-w-[12rem] border border-slate-700"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") runSearch();
+                }}
+              />
+              <button
+                disabled={busy || !searchQuery.trim()}
+                className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm disabled:opacity-50"
+                onClick={runSearch}
+              >
+                Search
+              </button>
+            </div>
+            {matches.length > 0 && (
+              <div className="max-h-72 overflow-auto border border-slate-800 rounded">
+                {matches.map((m) => {
+                  const externalId = String(m.tvdb_id || m.id);
+                  return (
+                    <div
+                      key={`${otherProvider}-${externalId}`}
+                      className="p-2 flex items-center gap-3 border-b border-slate-800 last:border-0"
+                    >
+                      {m.image_url && (
+                        <img src={m.image_url} className="w-10 h-14 object-cover rounded" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm truncate">
+                          {m.name} {m.year ? `(${m.year})` : ""}
+                        </div>
+                        <div className="text-xs text-slate-500 truncate">
+                          <span
+                            className={`mr-1 px-1 rounded ${
+                              otherProvider === "tmdb"
+                                ? "bg-emerald-800/60 text-emerald-100"
+                                : "bg-blue-800/60 text-blue-100"
+                            }`}
+                          >
+                            {otherProvider}
+                          </span>
+                          {otherProvider}-{externalId}
+                        </div>
+                      </div>
+                      <button
+                        disabled={busy}
+                        className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs disabled:opacity-50"
+                        onClick={() => save(otherProvider, externalId)}
+                      >
+                        Link
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {msg && <div className="text-xs text-amber-400 mt-2">{msg}</div>}
     </div>
   );
 }

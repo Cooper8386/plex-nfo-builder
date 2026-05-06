@@ -297,6 +297,43 @@ export default function HelpView() {
         </p>
       </Section>
 
+      <Section title="Manual secondary TMDB / TVDB id">
+        <p>
+          Sometimes the primary provider's record doesn't list the other
+          source's id. A TVDB show that has no TMDB cross-link, or a TMDB
+          movie that has no TVDB id on file. The cross-provider artwork
+          resolver and fanart.tv lookup both rely on that cross-id, so
+          missing it means weaker artwork and an incomplete{" "}
+          <Code>&lt;uniqueid&gt;</Code> block in the NFO.
+        </p>
+        <p>
+          Open the show or movie, scroll to the{" "}
+          <b>Secondary source</b> panel on the Overview tab, and either:
+        </p>
+        <Bullets>
+          <li>
+            <b>Paste</b> the id directly if you already know it (e.g. you
+            looked the title up on themoviedb.org and grabbed the number
+            from the URL).
+          </li>
+          <li>
+            Or <b>search</b> the other provider in-place — same search box
+            you use for the main matcher, but pre-pointed at the other
+            source. Click <b>Link</b> on the right hit.
+          </li>
+        </Bullets>
+        <p>
+          Once linked you'll see a chip like <Code>tmdb-12345</Code> with an
+          external-link button to the source page, plus <b>Edit</b> and{" "}
+          <b>Clear</b>. The pinned id is used the next time you build NFOs
+          for that folder: cross-provider artwork lookups prefer it,
+          fanart.tv uses it, and the NFO emits a matching{" "}
+          <Code>&lt;uniqueid type="tmdb"&gt;</Code> (or{" "}
+          <Code>type="tvdb"</Code>) tag. The id is mirrored into
+          <Code>.plex-nfo-builder.json</Code> so it survives a DB wipe.
+        </p>
+      </Section>
+
       <Section title="Per-show overrides">
         <p>
           Open any show or movie, switch to the <Code>overrides</Code> tab,

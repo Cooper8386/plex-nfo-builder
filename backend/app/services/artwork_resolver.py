@@ -46,6 +46,7 @@ async def resolve_preferred_artwork_series(
     local_season_numbers: Optional[list[int]] = None,
     prefer_languages: Optional[list[str]] = None,
     force: bool = False,
+    manual_secondary_id: Optional[str] = None,
 ) -> dict[str, str]:
     """Return a slot→URL dict of artwork URLs that should win over the
     metadata provider's natural defaults.
@@ -72,8 +73,8 @@ async def resolve_preferred_artwork_series(
         # Need a TMDB id. From TVDB, look at remoteIds.
         if not effective_tmdb_credentials():
             return {}
-        tmdb_id: Optional[str] = None
-        if bound_provider == "tvdb" and isinstance(tvdb_data, dict):
+        tmdb_id: Optional[str] = manual_secondary_id or None
+        if not tmdb_id and bound_provider == "tvdb" and isinstance(tvdb_data, dict):
             for rm in (tvdb_data.get("remoteIds") or []):
                 if not isinstance(rm, dict):
                     continue
@@ -120,8 +121,8 @@ async def resolve_preferred_artwork_series(
         api_key, _pin = effective_tvdb_credentials()
         if not api_key:
             return {}
-        tvdb_id: Optional[str] = None
-        if bound_provider == "tmdb" and isinstance(tmdb_tv, dict):
+        tvdb_id: Optional[str] = manual_secondary_id or None
+        if not tvdb_id and bound_provider == "tmdb" and isinstance(tmdb_tv, dict):
             ext = tmdb_tv.get("external_ids") or {}
             tvdb_id = str(ext.get("tvdb_id") or "") or None
         if not tvdb_id:
@@ -167,6 +168,7 @@ async def resolve_preferred_artwork_movie(
     tmdb_mv: Optional[dict] = None,
     prefer_languages: Optional[list[str]] = None,
     force: bool = False,
+    manual_secondary_id: Optional[str] = None,
 ) -> dict[str, str]:
     pref = (settings.preferred_artwork_source or "auto").lower()
     if pref == "auto" or pref == bound_provider:
@@ -177,8 +179,8 @@ async def resolve_preferred_artwork_movie(
     if pref == "tmdb":
         if not effective_tmdb_credentials():
             return {}
-        tmdb_id: Optional[str] = None
-        if bound_provider == "tvdb" and isinstance(tvdb_data, dict):
+        tmdb_id: Optional[str] = manual_secondary_id or None
+        if not tmdb_id and bound_provider == "tvdb" and isinstance(tvdb_data, dict):
             for rm in (tvdb_data.get("remoteIds") or []):
                 if not isinstance(rm, dict):
                     continue
@@ -209,8 +211,8 @@ async def resolve_preferred_artwork_movie(
         api_key, _pin = effective_tvdb_credentials()
         if not api_key:
             return {}
-        tvdb_id: Optional[str] = None
-        if bound_provider == "tmdb" and isinstance(tmdb_mv, dict):
+        tvdb_id: Optional[str] = manual_secondary_id or None
+        if not tvdb_id and bound_provider == "tmdb" and isinstance(tmdb_mv, dict):
             ext = tmdb_mv.get("external_ids") or {}
             tvdb_id = str(ext.get("tvdb_id") or "") or None
         if not tvdb_id:

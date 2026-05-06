@@ -2,6 +2,39 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.3 — 2026-05-06
+
+Manual secondary provider id — the missing piece for shows whose TVDB
+record doesn't list a TMDB id (or vice versa).
+
+### Added
+
+- **Manual secondary TMDB / TVDB id per binding.** A new "Secondary
+  source" panel on the Detail view → Overview tab lets you pin a
+  cross-source id on top of your primary binding. Two ways to set it:
+  paste the id directly, or search the other provider in-place and link
+  the right hit. Once set, a chip shows the linked id (e.g.
+  `tmdb-12345`) with an external-link button straight to the source
+  page, plus Edit and Clear actions.
+- The manual secondary id is consumed in three places: the
+  cross-provider artwork resolver (so a TVDB-bound show can still pull
+  TMDB / fanart.tv artwork even when TVDB doesn't list a TMDB id),
+  the fanart.tv lookup, and the NFO `<uniqueid>` block (Plex / Kodi
+  see both ids on the same record).
+- **Sidecar persistence.** The new `secondary_provider` /
+  `secondary_external_id` fields are written to
+  `.plex-nfo-builder.json` and restored after a DB wipe alongside the
+  primary binding.
+- **API.** New `POST /api/match/secondary` endpoint; rejects a
+  secondary that matches the primary provider, accepts both fields
+  null to clear.
+
+### Changed
+
+- `bindings` table gains `secondary_provider` and
+  `secondary_external_id` columns. Migration is idempotent; existing
+  bindings are untouched until you set a secondary id.
+
 ## 0.11.2 — 2026-05-06
 
 Three quality-of-life fixes that came out of using v0.11.1 against a real

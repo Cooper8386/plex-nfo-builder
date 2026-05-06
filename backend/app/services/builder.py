@@ -46,6 +46,51 @@ from .tmdb import get_client as get_tmdb_client, image_url as tmdb_image_url
 from .tvdb import get_client
 
 
+def _manual_secondary_id(binding, want_provider: str) -> Optional[str]:
+    """Return the binding's manually-attached id for ``want_provider`` if any.
+
+    Used to feed the cross-provider artwork resolver when the user has
+    pinned a TMDB id on a TVDB-bound show (or vice versa) and the
+    metadata record itself doesn't cross-reference the other source.
+    """
+    if not binding:
+        return None
+    try:
+        keys = binding.keys() if hasattr(binding, "keys") else []
+    except Exception:
+        keys = []
+    if "secondary_provider" not in keys:
+        return None
+    sp = (binding["secondary_provider"] or "").lower()
+    if sp != want_provider.lower():
+        return None
+    sid = binding["secondary_external_id"] if "secondary_external_id" in keys else None
+    return str(sid) if sid else None
+
+
+def _manual_secondary_tuple(binding) -> Optional[tuple[str, str]]:
+    """Return ``(provider, id)`` for the manually-pinned secondary, if any.
+
+    Used to feed the NFO builders so they can emit a ``<uniqueid type=...>``
+    tag for the user-supplied cross-source id when the metadata record
+    itself doesn't already include it.
+    """
+    if not binding:
+        return None
+    try:
+        keys = binding.keys() if hasattr(binding, "keys") else []
+    except Exception:
+        keys = []
+    if "secondary_provider" not in keys or "secondary_external_id" not in keys:
+        return None
+    sp = (binding["secondary_provider"] or "").strip().lower()
+    sid = binding["secondary_external_id"]
+    sid = str(sid).strip() if sid is not None else ""
+    if not sp or not sid:
+        return None
+    return (sp, sid)
+
+
 _jobs: dict[str, dict] = {}
 
 
@@ -152,6 +197,7 @@ async def build_series(folder: Path, *, force: bool = False,
             local_season_numbers=local_season_nums,
             prefer_languages=[lang, *fallbacks],
             force=force,
+            manual_secondary_id=_manual_secondary_id(binding, "tmdb"),
         )
         if preferred_overrides:
             log.info("Preferred artwork source override applied for {} slot(s): {}",
@@ -162,6 +208,7 @@ async def build_series(folder: Path, *, force: bool = False,
             folder_path=str(folder),
             overrides=nfo_overrides,
             preferred_overrides=preferred_overrides,
+            manual_secondary=_manual_secondary_tuple(binding),
         )
         (folder / "tvshow.nfo").write_text(nfo_text, encoding="utf-8")
         job["progress"] += 1
@@ -394,6 +441,7 @@ async def build_movie(folder: Path, *, force: bool = False,
             tvdb_data=data,
             prefer_languages=[lang, *fallbacks],
             force=force,
+            manual_secondary_id=_manual_secondary_id(binding, "tmdb"),
         )
         if preferred_overrides:
             log.info("Preferred artwork source override applied for {} slot(s): {}",
@@ -404,6 +452,7 @@ async def build_movie(folder: Path, *, force: bool = False,
             folder_path=str(folder),
             overrides=nfo_overrides,
             preferred_overrides=preferred_overrides,
+            manual_secondary=_manual_secondary_tuple(binding),
         )
         main.with_suffix(".nfo").write_text(nfo_text, encoding="utf-8")
 
@@ -551,6 +600,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
             local_season_numbers=list(local_seasons.keys()),
             prefer_languages=[lang, *fallbacks],
             force=force,
+            manual_secondary_id=_manual_secondary_id(binding, "tvdb"),
         )
         if preferred_overrides:
             log.info("Preferred artwork source override applied for {} slot(s): {}",
@@ -563,7 +613,8 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
             "banner": _pick_art(folder, "banner", preferred_overrides, None),
             "clearlogo": _pick_art(folder, "clearlogo", preferred_overrides, None),
         },
-                                         overrides=nfo_overrides)
+                                         overrides=nfo_overrides,
+                                         manual_secondary=_manual_secondary_tuple(binding))
         (folder / "tvshow.nfo").write_text(nfo_text, encoding="utf-8")
         log.info("Wrote tvshow.nfo (TMDB tv_id={})", data.get("id"))
 
@@ -729,6 +780,7 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
             tmdb_mv=data,
             prefer_languages=[lang, *fallbacks],
             force=force,
+            manual_secondary_id=_manual_secondary_id(binding, "tvdb"),
         )
         if preferred_overrides:
             log.info("Preferred artwork source override applied for {} slot(s): {}",
@@ -740,7 +792,8 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
             "background": _pick_art(folder, "background", preferred_overrides, None),
             "banner": _pick_art(folder, "banner", preferred_overrides, None),
         },
-                                        overrides=nfo_overrides)
+                                        overrides=nfo_overrides,
+                                        manual_secondary=_manual_secondary_tuple(binding))
         main.with_suffix(".nfo").write_text(nfo_text, encoding="utf-8")
 
         poster = _pick_art(folder, "poster", preferred_overrides,

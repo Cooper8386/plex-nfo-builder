@@ -311,6 +311,18 @@ export const api = {
           body: JSON.stringify(body),
         })
       ),
+    setSecondary: (body: {
+      folder_path: string;
+      provider: "tvdb" | "tmdb" | null;
+      external_id: string | null;
+    }) =>
+      J<{ ok: true; secondary_provider: string | null; secondary_external_id: string | null }>(
+        fetch("/api/match/secondary", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      ),
   },
   build: (folder_path: string, kind?: "series" | "movie", force = false, language?: string) =>
     J<{ ok: true; job: string }>(
