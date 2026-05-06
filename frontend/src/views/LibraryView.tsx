@@ -157,6 +157,62 @@ export default function LibraryView(props: {
     }
   };
 
+  // v0.11.5 — prune folders that exist on disk but contain *zero* media
+  // files. Dry-run preview → single confirm → delete. The backend
+  // re-walks every candidate folder immediately before deletion so a
+  // download landing between the preview and the confirm cannot be
+  // pruned by accident; folders that gain a video in that window are
+  // reported back in `skipped`. Files on disk are never deleted by this
+  // path — we only forget the database row — so even if a freak race did
+  // slip through, no media could be lost. The user can re-scan to add the
+  // folder back.
+  const runPruneEmpty = async () => {
+    if (!props.library) return;
+    setBusy("Looking for folders with no media…");
+    try {
+      const dry = await api.items.pruneEmpty({
+        library: props.library,
+        dry_run: true,
+      });
+      if (dry.candidates === 0) {
+        flash(
+          `No empty folders — every tracked folder in "${props.library}" contains at least one media file.`
+        );
+        return;
+      }
+      const preview = dry.items
+        .slice(0, 12)
+        .map((i) => `• ${i.title ?? i.folder_path}`)
+        .join("\n");
+      const more =
+        dry.candidates > 12 ? `\n… and ${dry.candidates - 12} more` : "";
+      const ok = window.confirm(
+        `Found ${dry.candidates} folder(s) on disk that contain ZERO media files:\n\n` +
+          `${preview}${more}\n\n` +
+          `Forget all of them in the database?\n\n` +
+          `Each folder will be re-checked immediately before deletion. Any\n` +
+          `folder that contains media at that moment is skipped — video,\n` +
+          `audio, and subtitle files are NEVER touched by this action.`
+      );
+      if (!ok) return;
+      const res = await api.items.pruneEmpty({
+        library: props.library,
+        dry_run: false,
+        delete_files: false,
+      });
+      const skippedCount = res.skipped?.length ?? 0;
+      const skippedPart = skippedCount
+        ? ` — ${skippedCount} skipped (gained media before delete)`
+        : "";
+      flash(`Pruned ${res.removed ?? 0} empty folder(s)${skippedPart}`);
+      qc.invalidateQueries({ queryKey: ["items"] });
+    } catch (e: any) {
+      flash(`Prune empty failed: ${e?.message ?? e}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const runRemoveSelected = async () => {
     if (!someSelected) return;
     const ok = window.confirm(
@@ -324,6 +380,14 @@ export default function LibraryView(props: {
               title="Find folders tracked in the database that no longer exist on disk and remove them."
             >
               Prune missing
+            </button>
+            <button
+              disabled={!!busy}
+              onClick={runPruneEmpty}
+              className={btnHazardOutline}
+              title="Find folders that exist on disk but contain no video files (e.g. only NFOs + posters), preview them, and prune. Folders that contain media are never touched."
+            >
+              ⚠ Prune empty
             </button>
             <button
               className={btnGhost}

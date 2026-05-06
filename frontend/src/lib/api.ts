@@ -269,6 +269,42 @@ export const api = {
           body: JSON.stringify(body),
         })
       ),
+    /**
+     * v0.11.5 — forget tracked folders that exist on disk but contain no
+     * media files (e.g. show folder with NFOs + posters but no videos).
+     * The backend re-checks each candidate immediately before deletion so a
+     * download landing between the preview and the confirm cannot be
+     * accidentally pruned.
+     */
+    pruneEmpty: (body: {
+      library?: string;
+      dry_run?: boolean;
+      delete_files?: boolean;
+    }) =>
+      J<{
+        ok: true;
+        checked: number;
+        candidates: number;
+        removed?: number;
+        files_deleted?: number;
+        skipped?: {
+          folder_path: string;
+          title: string | null;
+          reason: string;
+        }[];
+        items: {
+          folder_path: string;
+          library: string | null;
+          title: string | null;
+          kind: string | null;
+        }[];
+      }>(
+        fetch("/api/items/prune-empty", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      ),
   },
   match: {
     search: (

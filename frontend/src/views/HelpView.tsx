@@ -88,6 +88,38 @@ export default function HelpView() {
         </Bullets>
       </Section>
 
+      <Section title="Pruning">
+        <p>
+          The library toolbar has two prune buttons for keeping the database
+          honest with what's actually on disk:
+        </p>
+        <Bullets>
+          <li>
+            <b>Prune missing</b> — forgets folders that the database tracks
+            but that no longer exist on disk. Useful after you delete a show
+            via your file manager.
+          </li>
+          <li>
+            <b>⚠ Prune empty</b> — forgets folders that exist on disk but
+            contain <i>zero</i> media files. The classic case is a show
+            you deleted whose folder still has <Code>tvshow.nfo</Code> +
+            posters because the builder kept regenerating them. Both
+            actions show a dry-run preview and require confirmation before
+            touching anything.
+          </li>
+        </Bullets>
+        <Callout>
+          <b>Safety guarantees for Prune empty:</b> every candidate folder
+          is re-walked on the live filesystem <i>immediately</i> before its
+          row is deleted — a download that lands between the preview and
+          your confirmation is detected and the folder is skipped. The
+          action <b>never deletes any files on disk</b>; it only forgets
+          the database row. Video, audio, and subtitle files cannot be
+          touched by this path. If a folder gains media before deletion,
+          the UI tells you how many were skipped.
+        </Callout>
+      </Section>
+
       <Section title="Scroll restoration">
         <p>
           Click into a show, then hit the back arrow (or your mouse-back

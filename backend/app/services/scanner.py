@@ -293,3 +293,72 @@ def _local_poster_for(folder: Path) -> Optional[Path]:
 
 def hash_text(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# v0.11.5: "empty folder" detection used by the Prune-empty button.
+#
+# A folder is considered empty when no descendant file matches our video
+# extension list. We walk the *entire* tree (not just season subdirs) so a
+# stray video sitting at the show root, or in any non-standard subdirectory,
+# is still treated as media. NFOs, posters, sidecars, and other generated
+# files are deliberately ignored — the whole point of this check is to
+# distinguish a folder that contains only generated metadata from one that
+# actually has media in it. The walker bails out the instant it sees a
+# video file, so it's cheap even on huge libraries.
+
+def folder_has_media(folder: Path) -> bool:
+    """True if *any* descendant file is a recognised video file.
+
+    Walks the directory tree depth-first and returns ``True`` on the first
+    video hit. Symlinks are followed only if they don't escape the folder
+    — ``os.walk`` with ``followlinks=False`` is safe enough; we'd rather
+    miss a symlinked video and refuse to prune than accidentally delete a
+    record for a folder whose media lives behind a link.
+
+    Permission errors and unreadable subtrees are treated as "might contain
+    media" — i.e. we return ``True`` to be safe. Better to leave a tracked
+    row in place than to forget a folder we couldn't fully inspect.
+    """
+    try:
+        if not folder.exists() or not folder.is_dir():
+            # Folder is gone — that's a different problem (handled by the
+            # ordinary ``/items/prune`` endpoint), and definitely not
+            # something Prune-empty should claim is "empty of media".
+            return False
+    except OSError:
+        return True
+    try:
+        # Iterative DFS so we can early-out on the first video.
+        stack: list[Path] = [folder]
+        while stack:
+            cur = stack.pop()
+            try:
+                entries = list(cur.iterdir())
+            except (PermissionError, OSError) as e:
+                logger.warning("folder_has_media: cannot read {} ({}); treating as \"has media\" for safety", cur, e)
+                return True
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        # Don't traverse symlinks to avoid loops, but if the
+                        # link points at a video file we still count it as
+                        # media so users keeping their videos behind a
+                        # symlink farm aren't surprised by a prune.
+                        if entry.suffix.lower() and is_video(entry):
+                            return True
+                        continue
+                    if entry.is_file():
+                        if is_video(entry):
+                            return True
+                    elif entry.is_dir():
+                        if entry.name.startswith("."):
+                            continue
+                        stack.append(entry)
+                except (PermissionError, OSError) as e:
+                    logger.warning("folder_has_media: stat failed for {} ({}); treating as \"has media\" for safety", entry, e)
+                    return True
+        return False
+    except Exception as e:  # pragma: no cover
+        logger.warning("folder_has_media: unexpected error in {} ({}); treating as \"has media\" for safety", folder, e)
+        return True
+

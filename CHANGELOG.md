@@ -2,6 +2,44 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.5 — 2026-05-06
+
+Adds a **Prune empty** action so you can clean up show / movie folders
+that contain only generated NFOs and artwork — the classic case of a
+show you deleted from disk but whose folder lingered behind because the
+builder kept regenerating `tvshow.nfo` + posters into it.
+
+### Added
+
+- **⚠ Prune empty** hazard-yellow button on every library toolbar
+  (next to *Prune missing*). Runs a dry-run preview that lists every
+  tracked folder under the current library which exists on disk but
+  contains zero recognised media files (mkv / mp4 / m4v / avi / mov /
+  ts / webm / wmv / flv at any depth), confirms before touching
+  anything, then forgets those rows in the database.
+- New `POST /api/items/prune-empty` endpoint backing the button.
+  Accepts `library`, `dry_run`, and `delete_files` (off by default —
+  the UI never sends it, only forgetting the DB row).
+- New `scanner.folder_has_media(folder)` helper — iterative DFS that
+  bails out on the first video file. Errors and permission problems
+  are treated as "has media" so unreadable subtrees can never be
+  pruned by accident.
+
+### Safety
+
+- Every candidate is **re-walked on the live filesystem immediately
+  before deletion**, not just at preview time. A download that lands
+  between the preview and the user's confirmation is detected and that
+  folder is skipped (and reported back to the UI).
+- Files on disk are **never** removed by Prune empty — only the
+  database row is forgotten. The folder stays on disk for the user to
+  delete manually with their file manager. Even the optional
+  `delete_files=True` mode (not exposed in the UI) defers to the
+  existing cleaner, which has always refused to touch anything that
+  matches the video / audio / subtitle extension list.
+- Folders missing on disk are skipped entirely — use the existing
+  *Prune missing* action for those.
+
 ## 0.11.4 — 2026-05-06
 
 Quality-of-life polish: know what version is actually running, find the

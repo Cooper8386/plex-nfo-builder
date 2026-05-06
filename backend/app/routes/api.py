@@ -425,6 +425,102 @@ async def items_prune(payload: ItemsPruneIn):
     }
 
 
+class ItemsPruneEmptyIn(BaseModel):
+    """Payload for /items/prune-empty.
+
+    ``library`` scopes the scan; ``dry_run=True`` returns the candidate list
+    without modifying anything; ``delete_files`` (off by default) wipes the
+    generated NFOs + artwork from disk in addition to forgetting the row,
+    leaving an empty folder behind for the user to remove.
+    """
+    library: Optional[str] = None
+    dry_run: bool = False
+    delete_files: bool = False
+
+
+@router.post("/items/prune-empty")
+async def items_prune_empty(payload: ItemsPruneEmptyIn):
+    """Forget tracked folders that exist on disk but contain no media files.
+
+    The classic case: a show folder with ``tvshow.nfo`` + posters but no
+    actual video files (Plex skips it, the user wants it gone). Movies
+    with the same shape are also caught.
+
+    Safety:
+      * Folders that are missing on disk are skipped entirely — use the
+        ordinary ``/items/prune`` endpoint for those.
+      * Every candidate is re-checked with :func:`folder_has_media`
+        immediately before deletion so a video that landed between the
+        dry-run preview and the user's confirmation cannot be pruned.
+      * Errors / permission problems treat the folder as "has media" and
+        leave it alone.
+      * Files on disk are only touched when ``delete_files=True``; even
+        then, the cleaner only removes recognised generated files (NFOs,
+        posters, season-poster JPGs, thumbs) and never touches anything
+        that looks like a video, audio, or subtitle file.
+    """
+    rows = db.list_item_state(library=payload.library)
+    candidates: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        fp = d.get("folder_path")
+        if not fp:
+            continue
+        p = Path(fp)
+        if not p.exists() or not p.is_dir():
+            continue  # /items/prune handles missing folders
+        if scanner.folder_has_media(p):
+            continue
+        candidates.append({
+            "folder_path": fp,
+            "library": d.get("library"),
+            "title": d.get("title"),
+            "kind": d.get("kind"),
+        })
+
+    if payload.dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "checked": len(rows),
+            "candidates": len(candidates),
+            "items": candidates,
+        }
+
+    removed = 0
+    files_deleted = 0
+    skipped: list[dict] = []
+    for c in candidates:
+        p = Path(c["folder_path"])
+        # Re-check on the live filesystem right before deletion. Belt and
+        # braces: a download could have landed between the dry-run preview
+        # and the user pressing OK.
+        if not p.exists() or not p.is_dir():
+            skipped.append({**c, "reason": "folder no longer exists"})
+            continue
+        if scanner.folder_has_media(p):
+            skipped.append({**c, "reason": "folder now contains media \u2014 not pruned"})
+            continue
+        if payload.delete_files:
+            try:
+                summary = cleaner_svc.clean_folder(p, keep_sidecar=False)
+                files_deleted += int(summary.get("nfo_deleted", 0)) + int(
+                    summary.get("artwork_deleted", 0)
+                ) + int(summary.get("sidecar_deleted", 0))
+            except Exception as e:
+                logger.warning("prune-empty: clean_folder failed for {}: {}", p, e)
+        removed += db.delete_item_state(c["folder_path"])
+    return {
+        "ok": True,
+        "checked": len(rows),
+        "candidates": len(candidates),
+        "removed": removed,
+        "files_deleted": files_deleted,
+        "skipped": skipped,
+        "items": candidates,
+    }
+
+
 # ---- Library-wide DANGER ZONE ----------------------------------------------
 #
 # These two endpoints power the "big yellow buttons" on the Library view.
