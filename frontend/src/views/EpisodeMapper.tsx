@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, RenamePlanItem, TvdbEpisode } from "../lib/api";
+import { useConfirm } from "../components/ConfirmDialog";
 
 /** Episode mapping & rename UI. v0.10.0:
  *
@@ -343,6 +344,7 @@ function RenameModal({
   onClose: () => void;
   onApplied: () => Promise<void>;
 }) {
+  const confirmDlg = useConfirm();
   const [items, setItems] = useState<RenamePlanItem[] | null>(null);
   const [template, setTemplate] = useState<string>("");
   const [seriesType, setSeriesType] = useState<
@@ -403,12 +405,14 @@ function RenameModal({
       setMsg("Nothing selected.");
       return;
     }
-    if (
-      !window.confirm(
-        `Rename ${only_src.length} file${only_src.length === 1 ? "" : "s"} on disk?\n\nThis cannot be undone automatically — but per-file overrides and bindings are carried along to the new names.`,
-      )
-    )
-      return;
+    const ok = await confirmDlg({
+      title: `Rename ${only_src.length} file${only_src.length === 1 ? "" : "s"} on disk?`,
+      message:
+        `This cannot be undone automatically — but per-file overrides and bindings are carried along to the new names.`,
+      confirmLabel: "Rename",
+      tone: "danger",
+    });
+    if (!ok) return;
     setBusy(true);
     setMsg(null);
     try {

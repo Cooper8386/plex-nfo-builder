@@ -197,7 +197,13 @@ export default function OverridesTab({
         </section>
       )}
 
-      {/* Episodes (series only) */}
+      {/* Episodes (series only).
+          v0.11.9 — each episode collapsible now also contains an inline
+          thumbnail picker (TMDB ships multiple stills per episode; the user
+          asked to be able to pick which one gets written as <stem>-thumb.jpg).
+          The flat "Episode thumbnails" gallery from v0.11.8 has been removed
+          because the per-episode picker covers the same provider-vs-on-disk
+          comparison while also letting the user act on it. */}
       {kind === "series" && (
         <section>
           <h3 className="font-semibold mb-2">Episodes</h3>
@@ -235,20 +241,18 @@ export default function OverridesTab({
                       }
                       compact
                     />
+                    <EpisodeThumbPicker
+                      path={path}
+                      season={s}
+                      episode={n}
+                      localThumbPath={e.local_thumb ?? null}
+                    />
                   </Collapsible>
                 );
               })}
             </div>
           )}
         </section>
-      )}
-
-      {/* v0.11.8 — Episode thumbnails gallery. Kept here (Overrides) rather
-          than the Artwork tab because per-episode stills would swamp the
-          cleaner series-level artwork picker, and this tab is already where
-          the user goes to verify per-episode correctness. */}
-      {kind === "series" && binding && matchedEpisodes.length > 0 && (
-        <EpisodeThumbnails episodes={matchedEpisodes} />
       )}
 
       <div className="text-[11px] text-slate-500">
@@ -261,164 +265,158 @@ export default function OverridesTab({
   );
 }
 
-function EpisodeThumbnails({
-  episodes,
-}: {
-  episodes: {
-    file_path: string;
-    file_name: string;
-    matched_title: string | null;
-    matched_season: number | null;
-    matched_number: number | null;
-    parsed_season: number;
-    parsed_episode: number;
-    matched_image?: string | null;
-    local_thumb?: string | null;
-  }[];
-}) {
-  // Group by effective season for a tidy, collapsible display. A show with
-  // 300 episodes would be overwhelming as one flat grid.
-  const bySeason: Record<number, typeof episodes> = {};
-  for (const e of episodes) {
-    const s = e.matched_season ?? e.parsed_season ?? 0;
-    (bySeason[s] ||= []).push(e);
-  }
-  const seasonNums = Object.keys(bySeason)
-    .map(Number)
-    .sort((a, b) => a - b);
-
-  return (
-    <section className="bg-slate-900 border border-slate-800 rounded p-4">
-      <h3 className="font-semibold mb-1">Episode thumbnails</h3>
-      <p className="text-xs text-slate-500 mb-3">
-        Quick preview of each matched episode: the still from the metadata
-        source on the left, and the generated{" "}
-        <code className="font-mono">-thumb.*</code> file already on disk on
-        the right. If the right column is empty, run Build (or Force rebuild)
-        to download the thumbnail.
-      </p>
-      <div className="space-y-4">
-        {seasonNums.map((s) => (
-          <ThumbSeason key={s} season={s} episodes={bySeason[s]} />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function ThumbSeason({
+/**
+ * v0.11.9 — inline per-episode thumbnail picker rendered inside each
+ * episode's collapsible. TMDB ships multiple stills per episode; the picker
+ * grids them out and lets the user select which one gets written as
+ * ``<stem>-thumb.jpg`` on the next build. TVDB only ships a single still per
+ * episode, so for TVDB-bound shows the picker degrades to a one-tile grid
+ * plus an explanatory note.
+ *
+ * Selections persist in the existing ``artwork_selections`` table under slot
+ * ``episode-thumb-{external_id}`` (no schema change), so:
+ *   - renames don't reset the choice (key is the provider id, not file path),
+ *   - the choice round-trips through ``.plex-nfo-builder.json``,
+ *   - a DB wipe is recoverable from disk.
+ */
+function EpisodeThumbPicker({
+  path,
   season,
-  episodes,
+  episode,
+  localThumbPath,
 }: {
+  path: string;
   season: number;
-  episodes: {
-    file_path: string;
-    file_name: string;
-    matched_title: string | null;
-    matched_season: number | null;
-    matched_number: number | null;
-    parsed_season: number;
-    parsed_episode: number;
-    matched_image?: string | null;
-    local_thumb?: string | null;
-  }[];
+  episode: number;
+  localThumbPath: string | null;
 }) {
-  const [open, setOpen] = useState(season !== 0 && season <= 1);
-  const label = season === 0 ? "Specials" : `Season ${season}`;
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ["thumb-candidates", path, season, episode],
+    queryFn: () => api.episodes.thumbCandidates(path, season, episode),
+  });
+
+  const localThumbUrl = localThumbPath ? api.artwork.fileUrl(localThumbPath) : null;
+
+  async function pick(url: string | null) {
+    const eid = q.data?.external_id;
+    if (!eid) return;
+    await api.episodes.thumbSelect({
+      folder_path: path,
+      external_id: eid,
+      url,
+    });
+    await qc.invalidateQueries({ queryKey: ["thumb-candidates", path, season, episode] });
+  }
+
   return (
-    <div className="border border-slate-800 rounded">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-800/60"
-      >
-        <span className="text-slate-500 text-xs">{open ? "▾" : "▸"}</span>
-        <span className="text-xs font-semibold flex-1">{label}</span>
-        <span className="text-[10px] text-slate-500">
-          {episodes.length} episode{episodes.length === 1 ? "" : "s"}
-        </span>
-      </button>
-      {open && (
-        <div className="p-3 border-t border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-3">
-          {episodes.map((e) => (
-            <ThumbRow key={e.file_path} ep={e} />
-          ))}
+    <div className="mt-3 pt-3 border-t border-slate-800">
+      <div className="flex items-baseline justify-between gap-3 mb-2">
+        <div className="text-xs font-semibold text-slate-300">Episode thumbnail</div>
+        <div className="text-[10px] text-slate-500">
+          Saved to <code className="font-mono">&lt;file&gt;-thumb.jpg</code> on next build
+        </div>
+      </div>
+      {q.isLoading && (
+        <div className="text-[11px] text-slate-500">Loading candidates…</div>
+      )}
+      {q.isError && (
+        <div className="text-[11px] text-amber-300">
+          Failed to load: {(q.error as any)?.message ?? String(q.error)}
         </div>
       )}
-    </div>
-  );
-}
-
-function ThumbRow({
-  ep,
-}: {
-  ep: {
-    file_path: string;
-    file_name: string;
-    matched_title: string | null;
-    matched_season: number | null;
-    matched_number: number | null;
-    parsed_season: number;
-    parsed_episode: number;
-    matched_image?: string | null;
-    local_thumb?: string | null;
-  };
-}) {
-  const s = ep.matched_season ?? ep.parsed_season ?? 0;
-  const n = ep.matched_number ?? ep.parsed_episode ?? 0;
-  const code = `S${String(s).padStart(2, "0")}E${String(n).padStart(2, "0")}`;
-  // No cache-bust here — the response uses standard browser caching by URL.
-  // After a Force rebuild the user can hard-refresh; we don't want a fresh
-  // network round-trip on every parent re-render.
-  const localThumb = ep.local_thumb ? api.artwork.fileUrl(ep.local_thumb) : null;
-
-  return (
-    <div className="bg-slate-950/40 border border-slate-800/70 rounded p-2">
-      <div className="text-[11px] text-slate-300 mb-1.5 truncate" title={ep.matched_title ?? ep.file_name}>
-        <span className="font-mono text-slate-500">{code}</span>{" "}
-        {ep.matched_title ?? <span className="italic text-slate-500">(no title)</span>}
-      </div>
-      <div className="grid grid-cols-2 gap-2">
-        <ThumbCell label="Provider" src={ep.matched_image ?? null} emptyText="no still" />
-        <ThumbCell
-          label="On disk"
-          src={localThumb}
-          emptyText="no -thumb file yet"
-        />
-      </div>
-      <div
-        className="text-[10px] text-slate-500 mt-1 truncate font-mono"
-        title={ep.file_name}
-      >
-        {ep.file_name}
-      </div>
-    </div>
-  );
-}
-
-function ThumbCell({
-  label,
-  src,
-  emptyText,
-}: {
-  label: string;
-  src: string | null;
-  emptyText: string;
-}) {
-  return (
-    <div>
-      <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1">{label}</div>
-      <div className="aspect-video bg-slate-800 rounded overflow-hidden flex items-center justify-center">
-        {src ? (
-          <img
-            src={src}
-            alt={label}
-            loading="lazy"
-            className="w-full h-full object-cover"
-          />
-        ) : (
-          <span className="text-[10px] text-slate-600">{emptyText}</span>
-        )}
-      </div>
+      {q.data && (
+        <>
+          {q.data.note && (
+            <div className="text-[11px] text-amber-300 mb-2">{q.data.note}</div>
+          )}
+          {/* Top row: "On disk" preview so the user can compare what Plex
+              currently sees against what they're about to pick. */}
+          {localThumbUrl && (
+            <div className="mb-3">
+              <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1">
+                Currently on disk
+              </div>
+              <div className="aspect-video w-48 bg-slate-800 rounded overflow-hidden">
+                <img
+                  src={localThumbUrl}
+                  alt="on-disk thumb"
+                  className="w-full h-full object-cover"
+                  loading="lazy"
+                />
+              </div>
+            </div>
+          )}
+          {q.data.candidates.length === 0 ? (
+            <div className="text-[11px] text-slate-500">
+              No thumbnail candidates available for this episode.
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+              {/* Auto / clear-override tile. "Auto" wins when the user has
+                  not picked anything explicitly — the builder uses the
+                  provider's default still. */}
+              <button
+                onClick={() => pick(null)}
+                disabled={q.data.current_selection === null}
+                title="Use the provider default"
+                className={`aspect-video rounded border flex flex-col items-center justify-center text-[11px] font-semibold ${
+                  q.data.current_selection === null
+                    ? "border-indigo-400 bg-indigo-900/30 text-indigo-200 ring-2 ring-indigo-500"
+                    : "border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                }`}
+              >
+                <span>Auto</span>
+                <span className="text-[9px] font-normal text-slate-400">
+                  use provider default
+                </span>
+              </button>
+              {q.data.candidates.map((c) => (
+                <button
+                  key={c.url}
+                  onClick={() => pick(c.url)}
+                  className={`relative aspect-video rounded overflow-hidden border ${
+                    c.selected
+                      ? "border-indigo-400 ring-2 ring-indigo-500"
+                      : "border-slate-700 hover:border-slate-500"
+                  }`}
+                  title={
+                    [
+                      c.width && c.height ? `${c.width}×${c.height}` : null,
+                      c.language ? `lang ${c.language}` : null,
+                      c.is_default ? "default still" : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ") || undefined
+                  }
+                >
+                  <img
+                    src={c.thumb ?? c.url}
+                    alt=""
+                    loading="lazy"
+                    className="w-full h-full object-cover"
+                  />
+                  {c.is_default && (
+                    <span className="absolute top-1 left-1 text-[9px] px-1 py-0.5 rounded bg-slate-900/80 text-slate-200 uppercase tracking-wide">
+                      default
+                    </span>
+                  )}
+                  {c.language && (
+                    <span className="absolute top-1 right-1 text-[9px] px-1 py-0.5 rounded bg-slate-900/80 text-slate-200 uppercase tracking-wide">
+                      {c.language}
+                    </span>
+                  )}
+                  {c.selected && (
+                    <span className="absolute bottom-1 right-1 text-[9px] px-1.5 py-0.5 rounded bg-indigo-600 text-white font-semibold uppercase tracking-wide">
+                      Selected
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

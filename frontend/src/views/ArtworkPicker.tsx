@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ArtworkCandidate, ArtworkProvider } from "../lib/api";
+import { useConfirm, usePrompt } from "../components/ConfirmDialog";
 
 const SLOT_LABELS: Record<string, string> = {
   poster: "Poster",
@@ -45,6 +46,8 @@ export default function ArtworkPicker({
   kind: "series" | "movie";
 }) {
   const qc = useQueryClient();
+  const confirmDlg = useConfirm();
+  const promptDlg = usePrompt();
   const candidates = useQuery({
     queryKey: ["artwork-candidates", path, kind],
     queryFn: () => api.artwork.candidates(path, kind),
@@ -142,7 +145,12 @@ export default function ArtworkPicker({
       setMsg("Pick a slot first so we know where to attach the URL.");
       return;
     }
-    const url = window.prompt("Image URL (http or https)");
+    const url = await promptDlg({
+      title: "Add custom image URL",
+      message: `Paste an http:// or https:// URL. The image will appear under Custom for the ${current} slot.`,
+      placeholder: "https://...",
+      confirmLabel: "Add",
+    });
     if (!url) return;
     setBusy(true);
     setMsg(null);
@@ -158,7 +166,13 @@ export default function ArtworkPicker({
   };
 
   const handleDeleteCustom = async (id: string) => {
-    if (!window.confirm("Remove this custom artwork?")) return;
+    const ok = await confirmDlg({
+      title: "Remove this custom artwork?",
+      message: "The uploaded file is deleted from disk and detached from any slot it was selected on.",
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
+    if (!ok) return;
     setBusy(true);
     setMsg(null);
     try {

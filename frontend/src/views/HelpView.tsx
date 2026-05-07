@@ -565,15 +565,18 @@ export default function HelpView() {
             Reset any field back to the source value with one click.
           </li>
           <li>
-            See an <b>Episode thumbnails</b> gallery (series only) that pairs
-            each matched episode's provider still with the{" "}
-            <Code>{"<stem>-thumb.{jpg,jpeg,png}"}</Code> file already on
-            disk. Grouped by season with collapsible headers. Lives here
-            (Overrides) on purpose — per-episode stills would clutter the
-            series-level Artwork picker. If the right column is empty for an
-            episode, run <Code>Build NFOs</Code> or{" "}
-            <Code>Force rebuild</Code> on the Overview tab to download the
-            thumbnail.
+            <b>Pick a per-episode thumbnail (TMDB only).</b> Expand any
+            episode row inside Overrides to see a thumbnail picker that
+            lazy-loads every still TMDB has on file for that exact
+            episode. Click any tile to pin it; click <b>Auto</b> to clear
+            the override and let the resolver pick the highest-rated
+            upload again. Selections are keyed to the provider's episode
+            id (not the file path) so renames and re-bindings preserve
+            them, and they're mirrored into{" "}
+            <Code>.plex-nfo-builder.json</Code> like every other override.
+            TVDB only ships one still per episode, so the picker shows a
+            single tile with a note suggesting a TMDB switch if you want
+            choices.
           </li>
         </Bullets>
         <p>
@@ -681,6 +684,33 @@ export default function HelpView() {
             bindings, overrides, and item-state rows. Files on disk (NFOs,
             artwork, sidecars) are not touched, so a re-detect will bring it
             back populated from the sidecars on disk.
+          </li>
+        </Bullets>
+      </Section>
+
+      <Section title="In-app confirm / prompt dialogs">
+        <p>
+          Destructive and input-driven actions no longer use the
+          browser's native <Code>window.confirm</Code> /{" "}
+          <Code>window.prompt</Code> popups. Every <b>Wipe</b>,{" "}
+          <b>Remove</b>, <b>Prune</b>, <b>Blast sidecars</b>,{" "}
+          <b>Delete schedule</b>, <b>Rename</b>, and <b>Add custom
+          artwork URL</b> action now opens an in-app modal styled to
+          match the rest of the UI.
+        </p>
+        <Bullets>
+          <li>
+            <b>The Confirm button is auto-focused</b>, so hitting{" "}
+            <Code>Enter</Code> immediately accepts — no mouse trip
+            required for the common case.
+          </li>
+          <li>
+            <Code>Esc</Code> or a backdrop click cancels.
+          </li>
+          <li>
+            Destructive actions render the confirm button in hazard
+            yellow (matching the library Danger Zone styling) so you
+            always know when an action is non-recoverable.
           </li>
         </Bullets>
       </Section>

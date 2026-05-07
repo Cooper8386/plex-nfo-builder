@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, Library, Schedule, ScheduleAction } from "../lib/api";
+import { useConfirm } from "../components/ConfirmDialog";
 
 type SectionKey =
   | "metadata"
@@ -921,6 +922,7 @@ function fmtTimestamp(ts: number | null): string {
 }
 
 function SchedulesSection() {
+  const confirmDlg = useConfirm();
   const [items, setItems] = useState<Schedule[] | null>(null);
   const [libs, setLibs] = useState<Library[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -979,7 +981,13 @@ function SchedulesSection() {
   };
 
   const remove = async (id: number) => {
-    if (!window.confirm("Delete this schedule?")) return;
+    const ok = await confirmDlg({
+      title: "Delete this schedule?",
+      message: "The recurring run is removed immediately. You can recreate it later from this same panel.",
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       await api.schedules.remove(id);

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { useConfirm } from "./ConfirmDialog";
 
 export default function Sidebar(props: {
   activeLibrary: string | null;
@@ -9,6 +10,7 @@ export default function Sidebar(props: {
   onToggle: () => void;
 }) {
   const qc = useQueryClient();
+  const confirmDlg = useConfirm();
   const { data, isLoading } = useQuery({
     queryKey: ["libraries"],
     queryFn: () => api.libraries.list(),
@@ -45,13 +47,16 @@ export default function Sidebar(props: {
   }
 
   async function removeLib(name: string) {
-    const ok = confirm(
-      `Remove "${name}" from the app?\n\n` +
+    const ok = await confirmDlg({
+      title: `Remove “${name}” from the app?`,
+      message:
         `This forgets every binding, override, and item-state row for the library. ` +
         `Files on disk (NFOs, artwork, .plex-nfo-builder.json sidecars) are NOT touched, ` +
         `so re-detecting will bring everything back from sidecars.\n\n` +
-        `If you want to keep it remembered but hidden, use Disable instead.`
-    );
+        `If you want to keep it remembered but hidden, use Disable instead.`,
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
     if (!ok) return;
     await api.libraries.remove(name);
     qc.invalidateQueries({ queryKey: ["libraries"] });

@@ -317,6 +317,32 @@ class TMDBClient:
             params=params, ttl=self._ttl(), force=force,
         )
 
+    async def tv_episode_images(
+        self,
+        tv_id: int | str,
+        season: int,
+        episode: int,
+        *,
+        languages: Optional[list[str]] = None,
+        include_all_languages: bool = True,
+        force: bool = False,
+    ) -> dict:
+        """Fetch every uploaded still for a single episode.
+
+        TMDB tags most stills with ``null`` (no language) but localized
+        promotional stills do exist. ``include_all_languages`` defaults
+        to True here because the picker is an explicit user choice — we
+        want every option visible.
+        """
+        params: dict[str, Any] = {}
+        lang = self._images_lang_param(languages, include_all=include_all_languages)
+        if lang is not None:
+            params["include_image_language"] = lang
+        return await self._get(
+            f"/tv/{tv_id}/season/{season}/episode/{episode}/images",
+            params=params, ttl=self._ttl(), force=force,
+        )
+
     async def movie_details(self, movie_id: int | str, *, language: Optional[str] = None,
                             force: bool = False) -> dict:
         params = {

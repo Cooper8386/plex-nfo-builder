@@ -680,12 +680,26 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
                 ep_text = build_episode_nfo_tmdb(ep, language=lang, fallbacks=fallbacks,
                                                   overrides=nfo_overrides)
                 parsed.path.with_suffix(".nfo").write_text(ep_text, encoding="utf-8")
-                # Episode thumbnail next to the file
+                # Episode thumbnail next to the file.
+                #
+                # v0.11.9: TMDB ships multiple stills per episode and the
+                # Overrides tab now lets the user pick which one. The chosen
+                # URL is stored as ``episode-thumb-<external_id>`` in the
+                # ``artwork_selections`` table; we fall back to the default
+                # ``still_path`` when no override exists.
+                ep_id = ep.get("id")
+                slot = f"episode-thumb-{ep_id}" if ep_id is not None else None
+                user_url: Optional[str] = None
+                if slot:
+                    sels = db.get_artwork_selections(str(folder))
+                    sel = sels.get(slot)
+                    if sel and sel.get("url"):
+                        user_url = sel["url"]
                 still = ep.get("still_path")
-                if still:
-                    url = tmdb_image_url(still, "original")
+                thumb_url = user_url or (tmdb_image_url(still, "original") if still else None)
+                if thumb_url:
                     dest = parsed.path.with_name(f"{parsed.path.stem}-thumb.jpg")
-                    await _download_url(url, dest, force=force)
+                    await _download_url(thumb_url, dest, force=force)
                 job["progress"] += 1
         if unmatched:
             log.warning("{} unmatched local episodes: {}", len(unmatched), unmatched[:5])

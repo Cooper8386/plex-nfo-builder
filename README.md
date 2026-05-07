@@ -1,8 +1,6 @@
 # Plex NFO Builder
 
-A self-hosted web app that pulls metadata from [TheTVDB v4 API](https://thetvdb.github.io/v4-api/) for your shows / movies and writes Plex-compatible NFO files plus full local artwork sets.
-
-Built around your Sonarr/Radarr-style filenames (e.g. `Severance (2022) - S02E08 - Sweet Vitriol [WEBDL-1080p][EAC3 Atmos 5.1][h264]-FLUX.mkv`) and folder layout (e.g. `Severance (2022) {tvdb-371980}/Season 02/...`). Reads the `{tvdb-…}` / `{tmdb-…}` tag in folder/file names so it doesn't have to guess. Anime/fansub-style filenames (`[Group] Title - 01 [1080p][WEB-DL].mkv`) are also parsed and can be renamed in-place to match the Sonarr scheme.
+A self-hosted web app that builds Plex-compatible NFO files and full local artwork sets for your TV shows and movies, sourced from TVDB and TMDB (with fanart.tv as an artwork supplement). Designed to slot into the folder layouts and filenames Sonarr and Radarr already produce, with a built-in renamer for anything that doesn't.
 
 ## Highlights
 
@@ -23,7 +21,7 @@ Built around your Sonarr/Radarr-style filenames (e.g. `Severance (2022) - S02E08
 - **Backend version chip** in the top bar shows the version that's actually running — so when you use the `:latest` Docker tag you can tell at a glance which release Compose pulled. `GET /api/version` and the `Settings → About` pane expose the same info.
 - **Scroll restoration** — hitting the back arrow (or your mouse-back button) on a detail page drops you back at the exact scroll position you came from, not the top of the library.
 - **Pruning** — toolbar **Prune missing** forgets tracked folders that no longer exist on disk. Toolbar **⚠ Prune empty** forgets folders that exist on disk but contain zero media files (e.g. a show whose videos were deleted but whose `tvshow.nfo` + posters lingered). Each candidate is re-walked on the live filesystem immediately before deletion so a download landing between preview and confirmation can never be pruned by accident; files on disk are never deleted by either action.
-- **Per-episode thumbnail check** — the Overrides tab has an *Episode thumbnails* gallery that shows each matched episode's provider still side-by-side with the `<stem>-thumb.*` file already on disk, grouped by season. Gives you a one-glance sanity check that the generated thumbnails line up with the matched episodes without cluttering the series-level Artwork picker.
+- **Per-episode thumbnail picker (TMDB)** — every episode in the Overrides tab has a built-in thumbnail picker. TMDB ships multiple stills per episode; the picker grids them out and lets you choose the one that gets saved as `<stem>-thumb.jpg` on the next build, with an *Auto* tile to clear the override. TVDB only ships a single still per episode, so the picker degrades gracefully there. Selections are stored by external episode id so renames preserve them, and they're mirrored into the sidecar so a database wipe is recoverable.
 - **Why partial?** — every status pill on a Detail page is clickable. The popover re-walks the folder live and shows per-season coverage (videos vs NFOs), the exact filenames that are missing or were written by another tool (foreign), orphan videos sitting in the show root, and a plain-English list of reasons the item isn't `complete`.
 - **Release-group rename override** — the Rename modal has a `Release group` field for anime fansub releases (e.g. `SubsPlease`, `Erai-raws`). When the parser can't pull the tag from the filename, type it once and every preview row re-renders with that group baked into the Sonarr `{Release Group}` token.
 - **In-app help** (Help in the top bar) — quick orientation, button reference, status badge legend.

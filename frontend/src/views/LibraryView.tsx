@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, Item } from "../lib/api";
 import { ViewMode } from "../App";
+import { useConfirm } from "../components/ConfirmDialog";
 
 // v0.11.4 — "Needs work / Complete / All" filter pill on the library toolbar.
 // `Needs work` is anything that isn't fully built. `Complete` is the inverse.
@@ -44,6 +45,7 @@ export default function LibraryView(props: {
   onItemsReady?: () => void;
 }) {
   const qc = useQueryClient();
+  const confirmDlg = useConfirm();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -143,9 +145,13 @@ export default function LibraryView(props: {
         .map((i) => `• ${i.title ?? i.folder_path}`)
         .join("\n");
       const more = dry.missing > 10 ? `\n… and ${dry.missing - 10} more` : "";
-      const ok = window.confirm(
-        `Found ${dry.missing} folder(s) tracked in the database but missing on disk:\n\n${preview}${more}\n\nForget all of them? (No files are deleted.)`
-      );
+      const ok = await confirmDlg({
+        title: `Forget ${dry.missing} missing folder(s)?`,
+        message:
+          `These folders are tracked in the database but no longer exist on disk:\n\n${preview}${more}\n\nForget all of them? (No files are deleted.)`,
+        confirmLabel: "Forget",
+        tone: "danger",
+      });
       if (!ok) return;
       const res = await api.items.prune({ library: props.library, dry_run: false });
       flash(`Pruned ${res.removed} missing folder(s)`);
@@ -186,14 +192,18 @@ export default function LibraryView(props: {
         .join("\n");
       const more =
         dry.candidates > 12 ? `\n… and ${dry.candidates - 12} more` : "";
-      const ok = window.confirm(
-        `Found ${dry.candidates} folder(s) on disk that contain ZERO media files:\n\n` +
+      const ok = await confirmDlg({
+        title: `Prune ${dry.candidates} empty folder(s)?`,
+        message:
+          `These folders exist on disk but contain ZERO media files:\n\n` +
           `${preview}${more}\n\n` +
           `Forget all of them in the database?\n\n` +
-          `Each folder will be re-checked immediately before deletion. Any\n` +
-          `folder that contains media at that moment is skipped — video,\n` +
-          `audio, and subtitle files are NEVER touched by this action.`
-      );
+          `Each folder will be re-checked immediately before deletion. Any folder ` +
+          `that contains media at that moment is skipped — video, audio, and ` +
+          `subtitle files are NEVER touched by this action.`,
+        confirmLabel: "Prune",
+        tone: "danger",
+      });
       if (!ok) return;
       const res = await api.items.pruneEmpty({
         library: props.library,
@@ -215,9 +225,13 @@ export default function LibraryView(props: {
 
   const runRemoveSelected = async () => {
     if (!someSelected) return;
-    const ok = window.confirm(
-      `Remove ${selected.size} item(s) from the library?\n\nThis only forgets them in the database — no files are deleted on disk.`
-    );
+    const ok = await confirmDlg({
+      title: `Remove ${selected.size} item(s) from the library?`,
+      message:
+        `This only forgets them in the database — no files are deleted on disk.`,
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
     if (!ok) return;
     setBusy(`Removing ${selected.size} item(s)…`);
     try {
@@ -456,6 +470,7 @@ function DangerZone(props: {
   btnHazardOutline: string;
 }) {
   const [open, setOpen] = useState(false);
+  const confirmDlg = useConfirm();
 
   const runWipeNfo = async () => {
     if (props.busy) return;
@@ -475,8 +490,9 @@ function DangerZone(props: {
       );
       return;
     }
-    const ok = window.confirm(
-      `WIPE NFO + ARTWORK across the entire "${props.library}" library?\n\n` +
+    const ok = await confirmDlg({
+      title: `Wipe NFOs + artwork across “${props.library}”?`,
+      message:
         `This will delete ${preview.file_count} file(s) across ` +
         `${preview.folder_count} folder(s):\n` +
         `  • Every tvshow.nfo / movie .nfo / episode .nfo / season.nfo\n` +
@@ -485,8 +501,10 @@ function DangerZone(props: {
         `  • Every <episode>-thumb.jpg next to a video file\n\n` +
         `Sidecars (.plex-nfo-builder.json) and your media files are NOT touched. ` +
         `Bindings + overrides survive — you can rebuild straight after.\n\n` +
-        `This cannot be undone. Continue?`
-    );
+        `This cannot be undone.`,
+      confirmLabel: "Wipe",
+      tone: "danger",
+    });
     if (!ok) return;
     props.setBusy(`Wiping NFOs + artwork from ${preview.folder_count} folder(s)…`);
     try {
@@ -520,15 +538,18 @@ function DangerZone(props: {
       props.flash(`No .plex-nfo-builder.json sidecars found in "${props.library}".`);
       return;
     }
-    const ok = window.confirm(
-      `BLAST EVERY .plex-nfo-builder.json sidecar in "${props.library}"?\n\n` +
-        `Found ${preview.sidecar_count} sidecar file(s) to delete.\n\n` +
+    const ok = await confirmDlg({
+      title: `Blast every sidecar in “${props.library}”?`,
+      message:
+        `Found ${preview.sidecar_count} .plex-nfo-builder.json sidecar file(s) to delete.\n\n` +
         `The sidecar is the only on-disk record of bindings + overrides for ` +
         `each folder. After wiping them, the database still remembers everything, ` +
         `but if you ever wipe the database too you'll have to re-bind from scratch.\n\n` +
         `NFOs and artwork are NOT touched.\n\n` +
-        `This cannot be undone. Continue?`
-    );
+        `This cannot be undone.`,
+      confirmLabel: "Blast sidecars",
+      tone: "danger",
+    });
     if (!ok) return;
     props.setBusy(`Deleting ${preview.sidecar_count} sidecar file(s)…`);
     try {

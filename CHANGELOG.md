@@ -2,6 +2,64 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.9 — 2026-05-06
+
+A UX-polish release with two big quality-of-life wins: a real
+per-episode thumbnail picker for TMDB-bound shows, and the death of
+every native browser confirm / prompt popup in the app.
+
+### Added
+
+- **Per-episode thumbnail picker (TMDB).** The flat "Episode
+  thumbnails" gallery introduced in v0.11.8 has been replaced with a
+  per-episode picker that lives directly inside each episode's
+  collapsible row on the Overrides tab. Expanding an episode
+  lazy-fetches every still TMDB has on file for that exact episode
+  via the new `/3/tv/{id}/season/{n}/episode/{e}/images` endpoint.
+  Click any tile to pin it; click `Auto` to clear the override and
+  let the resolver pick the highest-rated upload again. Selections
+  are keyed to the provider's episode id (`episode-thumb-{id}`), not
+  the file path, so renames preserve them; the existing
+  `artwork_selections` sidecar serializer carries them to disk
+  unchanged. TVDB-bound shows still ship a single still per episode,
+  so the picker degrades to a one-tile view with a note suggesting a
+  TMDB switch.
+- **In-app confirm / prompt dialogs.** Every destructive or
+  input-driven action that used to fire a native
+  `window.confirm` / `window.prompt` popup now opens an in-app
+  modal. Affected sites: library remove, prune missing / empty,
+  remove selected, library Danger Zone wipe + sidecar blast, per-show
+  wipe + remove, schedule delete, custom artwork URL add + delete,
+  and the rename modal apply step. The new `ConfirmDialog`
+  component (and its `useConfirm()` / `usePrompt()` hooks) auto-focus
+  the confirm button so hitting `Enter` immediately accepts — no
+  mouse trip required for the common case. `Esc` or a backdrop click
+  cancels. Destructive variants render the confirm button in hazard
+  yellow to match the Danger Zone styling.
+
+### API
+
+- `GET /api/episodes/thumb-candidates?path=&season=&episode=` —
+  returns every TMDB still candidate (or the lone TVDB image) for
+  the given episode, with each candidate marked `is_default` /
+  `selected` and a human-readable `note` field for the TVDB case.
+- `POST /api/episodes/thumb-select` — body
+  `{folder_path, external_id, url|null}`. Stores the selection in
+  the existing `artwork_selections` table under slot
+  `episode-thumb-{external_id}`; passing `url: null` clears it.
+
+### Internals
+
+- `tmdb.tv_episode_images()` calls
+  `/3/tv/{id}/season/{n}/episode/{e}/images` and returns the raw
+  `stills` list.
+- TMDB series builder reads `db.get_artwork_selections(folder)` and
+  honours an `episode-thumb-{id}` slot before falling back to the
+  default `still_path`. TVDB series builds are unaffected because
+  TVDB only ships one image per episode.
+- README intro trimmed to a single high-level sentence; the per-show
+  feature bullet now reads "Per-episode thumbnail picker (TMDB)".
+
 ## 0.11.8 — 2026-05-06
 
 A small TMDB-parity release that closes three rough edges between the

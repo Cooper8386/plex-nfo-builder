@@ -525,6 +525,43 @@ export const api = {
           body: JSON.stringify(body),
         })
       ),
+    /** v0.11.9 — per-episode thumbnail picker (TMDB ships multiple stills). */
+    thumbCandidates: (path: string, season: number, episode: number) =>
+      J<{
+        path: string;
+        provider: "tvdb" | "tmdb";
+        season: number;
+        episode: number;
+        external_id: string | null;
+        current_selection: string | null;
+        candidates: {
+          url: string;
+          thumb: string | null;
+          width: number | null;
+          height: number | null;
+          language: string | null;
+          vote_average: number | null;
+          is_default: boolean;
+          selected: boolean;
+        }[];
+        note: string | null;
+      }>(
+        fetch(
+          `/api/episodes/thumb-candidates?path=${encodeURIComponent(path)}&season=${season}&episode=${episode}`,
+        ),
+      ),
+    thumbSelect: (body: {
+      folder_path: string;
+      external_id: string;
+      url: string | null;
+    }) =>
+      J<{ ok: true }>(
+        fetch("/api/episodes/thumb-select", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      ),
     rename: {
       preview: (body: {
         folder_path: string;

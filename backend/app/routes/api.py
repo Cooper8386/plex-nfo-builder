@@ -2083,6 +2083,168 @@ async def episodes_override_file(payload: EpisodeFileOverrideIn):
     return {"ok": True}
 
 
+# ---- Per-episode thumbnail picker (v0.11.9) -------------------------------
+#
+# TMDB ships multiple stills per episode and the Overrides tab lets the user
+# pick which one. Selections are stored in the existing ``artwork_selections``
+# table under slot ``episode-thumb-{external_id}`` so they:
+#
+#   * survive a renamer pass (selection is keyed by provider id, not file path),
+#   * round-trip through the sidecar (sidecar serializes the whole table),
+#   * cost nothing in schema migrations.
+#
+# TVDB v4's episode record only exposes a single ``image`` per episode, so for
+# TVDB-bound series the picker degrades to a one-tile grid plus a hint.
+
+
+@router.get("/episodes/thumb-candidates")
+async def episodes_thumb_candidates(path: str, season: int, episode: int):
+    """Return every still candidate for a single episode.
+
+    For TMDB-bound shows this hits ``/tv/{id}/season/{n}/episode/{e}/images``
+    and returns a grid the user can pick from. For TVDB-bound shows it
+    returns the single ``image`` field as a one-element list with a hint
+    so the UI can show a friendly "only one available" message.
+    """
+    p = _safe_under_root(path)
+    binding = db.get_binding(str(p))
+    if not binding or binding["kind"] != "series":
+        raise HTTPException(status_code=400, detail="Folder is not bound to a series")
+    provider = (binding["provider"] or "tvdb").lower()
+    settings = get_user_settings()
+    lang = settings.preferred_language
+
+    candidates: list[dict] = []
+    external_id: Optional[str] = None
+    note: Optional[str] = None
+
+    if provider == "tmdb":
+        tmdb_c = get_tmdb_client()
+        try:
+            sdata = await tmdb_c.tv_season(
+                binding["external_id"], int(season), language=lang
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"TMDB tv_season failed: {e}")
+        ep_match = None
+        for ep in (sdata.get("episodes") or []):
+            if int(ep.get("episode_number") or -1) == int(episode):
+                ep_match = ep
+                break
+        if ep_match and ep_match.get("id") is not None:
+            external_id = str(ep_match["id"])
+        try:
+            data = await tmdb_c.tv_episode_images(
+                binding["external_id"], int(season), int(episode)
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=502, detail=f"TMDB tv_episode_images failed: {e}"
+            )
+        # Default still (when no images endpoint result, fall back to season list).
+        default_path = (ep_match or {}).get("still_path")
+        for s in (data.get("stills") or []):
+            full = tmdb_image_url(s.get("file_path"), "original")
+            thumb = tmdb_image_url(s.get("file_path"), "w300")
+            if not full:
+                continue
+            candidates.append({
+                "url": full,
+                "thumb": thumb,
+                "width": s.get("width"),
+                "height": s.get("height"),
+                "language": s.get("iso_639_1"),
+                "vote_average": s.get("vote_average"),
+                "is_default": (
+                    bool(default_path) and s.get("file_path") == default_path
+                ),
+            })
+        if not candidates and default_path:
+            # Fallback: at least show the default still.
+            full = tmdb_image_url(default_path, "original")
+            thumb = tmdb_image_url(default_path, "w300")
+            if full:
+                candidates.append({
+                    "url": full, "thumb": thumb,
+                    "width": None, "height": None,
+                    "language": None, "vote_average": None,
+                    "is_default": True,
+                })
+    else:
+        client = get_client()
+        try:
+            episodes = await client.series_episodes(
+                binding["external_id"], season_type="default", language=lang
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"TVDB series_episodes failed: {e}")
+        ep_match = None
+        for ep in episodes:
+            if (
+                int(ep.get("seasonNumber") or -1) == int(season)
+                and int(ep.get("number") or -1) == int(episode)
+            ):
+                ep_match = ep
+                break
+        if ep_match:
+            if ep_match.get("id") is not None:
+                external_id = str(ep_match["id"])
+            img = ep_match.get("image")
+            if img:
+                full = artwork_svc.absolutize_tvdb_url(img)
+                candidates.append({
+                    "url": full,
+                    "thumb": full,
+                    "width": None, "height": None,
+                    "language": None, "vote_average": None,
+                    "is_default": True,
+                })
+        note = "TVDB only ships one still per episode \u2014 switch the source to TMDB if you want to pick from multiple."
+
+    selection_url: Optional[str] = None
+    if external_id is not None:
+        sels = db.get_artwork_selections(str(p))
+        sel = sels.get(f"episode-thumb-{external_id}")
+        if sel and sel.get("url"):
+            selection_url = sel["url"]
+
+    # Annotate which candidate (if any) is currently selected.
+    for c in candidates:
+        c["selected"] = bool(selection_url and c["url"] == selection_url)
+
+    return {
+        "path": str(p),
+        "provider": provider,
+        "season": int(season),
+        "episode": int(episode),
+        "external_id": external_id,
+        "current_selection": selection_url,
+        "candidates": candidates,
+        "note": note,
+    }
+
+
+class EpisodeThumbSelectIn(BaseModel):
+    folder_path: str
+    external_id: str            # provider episode id
+    url: Optional[str] = None    # null clears the override
+
+
+@router.post("/episodes/thumb-select")
+async def episodes_thumb_select(payload: EpisodeThumbSelectIn):
+    p = _safe_under_root(payload.folder_path)
+    binding = db.get_binding(str(p))
+    if not binding or binding["kind"] != "series":
+        raise HTTPException(status_code=400, detail="Folder is not bound to a series")
+    slot = f"episode-thumb-{payload.external_id}"
+    if payload.url:
+        db.set_artwork_selection(str(p), slot, payload.url, language=None, score=None)
+    else:
+        db.clear_artwork_selection(str(p), slot)
+    sidecar_svc.sync_sidecar_from_db(p)
+    return {"ok": True}
+
+
 # ---- File rename (v0.10.0) -------------------------------------------------
 
 class RenamePreviewIn(BaseModel):

@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import ArtworkPicker from "./ArtworkPicker";
 import EpisodeMapper from "./EpisodeMapper";
 import OverridesTab from "./OverridesTab";
+import { useConfirm } from "../components/ConfirmDialog";
 
 type Tab = "overview" | "artwork" | "episodes" | "overrides";
 
@@ -35,6 +36,7 @@ function providerPageUrl(
 
 export default function DetailView({ path, onBack }: { path: string; onBack: () => void }) {
   const qc = useQueryClient();
+  const confirmDlg = useConfirm();
   const detail = useQuery({ queryKey: ["detail", path], queryFn: () => api.items.detail(path) });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -100,12 +102,15 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
       }
       const head = files.slice(0, 12).join("\n  • ");
       const more = files.length > 12 ? `\n  … and ${files.length - 12} more` : "";
-      const ok = window.confirm(
-        `Wipe NFOs & artwork for "${state?.title ?? path}"?\n\n` +
+      const ok = await confirmDlg({
+        title: `Wipe NFOs & artwork for “${state?.title ?? path}”?`,
+        message:
           `${files.length} file${files.length === 1 ? "" : "s"} will be deleted from disk:\n  • ${head}${more}\n\n` +
           `Season folders and media files (.mkv/.mp4/etc.) are NOT touched. ` +
-          `The .plex-nfo-builder.json sidecar is preserved so your binding and overrides stay intact.`
-      );
+          `The .plex-nfo-builder.json sidecar is preserved so your binding and overrides stay intact.`,
+        confirmLabel: "Wipe",
+        tone: "danger",
+      });
       if (!ok) {
         setMsg("Cancelled.");
         setBusy(false);
@@ -150,9 +155,13 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
   };
 
   const doRemove = async () => {
-    const ok = window.confirm(
-      `Remove "${state?.title ?? path}" from the library?\n\nThis only forgets it in the database — no files are deleted. Use this when you've already deleted the folder on disk.`
-    );
+    const ok = await confirmDlg({
+      title: `Remove “${state?.title ?? path}” from the library?`,
+      message:
+        `This only forgets it in the database — no files are deleted. Use this when you've already deleted the folder on disk.`,
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
     if (!ok) return;
     setBusy(true);
     setMsg("Removing from library…");
