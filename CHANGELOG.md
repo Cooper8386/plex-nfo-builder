@@ -2,6 +2,109 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.11 — 2026-05-09
+
+A performance pass. After v0.11.10 shipped the orphan companion sweeper,
+the app started to feel sluggish on large NAS-backed libraries — the
+first page load took close to 90 seconds, switching pages stalled, and
+the library-wide *Sweep orphaned sidecars* button took several minutes
+on a TV library that fundamentally has nothing to sweep. Every slow
+path had the same root cause: the app was re-walking every season
+directory on every navigation and serializing those walks on the event
+loop.
+
+This release adds a small caching layer to `item_state` and rewires
+every hot path to read from it.
+
+### Added
+
+- **Cached orphan count on `item_state`.** New `orphan_count` integer
+  column, populated by every `scan_series_folder` / `scan_movie_folder`
+  call from a single-pass directory walk. The detail page consults the
+  cache before issuing the orphans preview request and the library-wide
+  sweep skips folders whose count is proven-zero. NULL is treated as
+  *unknown*, so the first sweep after upgrading still walks every folder
+  once and primes the cache.
+- **Single-pass series scanner** (`_scan_series_state` in
+  `services/scanner.py`). The old code path iterated each season
+  directory twice: once to count NFO files for status bucketing and
+  once (via `services/orphans.py`) to count orphans. On the user's
+  Unraid share each `iterdir()` is a full network round-trip, so the
+  redundant pass dominated scan latency. The unified walk now produces
+  status, provenance flag, NFO episode count, and orphan count in one
+  enumeration.
+- **`db.get_item_state(folder_path)`** — O(1) single-row lookup.
+  Replaces three call-sites (`item_detail`, `items_clean`,
+  `items_orphans_sweep`) that previously fetched every row in the table
+  and filtered in Python — that meant detail-page navigation latency
+  scaled linearly with library size.
+- **Composite index `idx_item_state_lib_status (library, nfo_status)`**
+  so the *All / Needs work / Complete* filter pill on the library
+  toolbar is a single index range scan instead of a full-table scan.
+
+### Changed
+
+- **Library detection moved off the synchronous startup hook.**
+  `detect_libraries()` now runs as an `asyncio.create_task` in the
+  background. The API begins serving requests immediately on container
+  start instead of after the share has been fully enumerated.
+- **All orphan walks run in worker threads.** Every disk-touching
+  branch in `/api/items/orphans`, `/api/items/orphans/sweep`, and
+  `/api/libraries/{name}/orphans/sweep` now dispatches via
+  `asyncio.to_thread` so a slow share can't stall every other request.
+- **Library-wide sweep filters candidates in SQL.** The route fetches
+  rows where `orphan_count > 0 OR orphan_count IS NULL` and walks only
+  those. After the first run the cache stabilises and subsequent sweeps
+  on a clean library complete in well under a second instead of
+  walking the entire share.
+- **`/api/items/orphans` fast-paths to a cached zero.** When the cached
+  count is `0`, the endpoint returns `{nfo_removed: 0, thumb_removed:
+  0, files: [], cached: true}` without touching disk. The freshly
+  computed count is persisted on every cold call so subsequent calls
+  short-circuit.
+- **`hide_organized` on `/api/items` is now a SQL filter** instead of a
+  post-query Python filter — saves materialising and discarding every
+  `complete` row on libraries that hide them by default.
+
+### Frontend
+
+- **`OrphansPanel` skips its query entirely when the cached count is 0.**
+  No request, no spinner, no flash on every detail-page navigation —
+  the panel returns `null` immediately for clean folders.
+- **Library items query: `staleTime: 60_000` + `keepPreviousData`.**
+  Navigating into a show and back no longer refetches the grid, and
+  typing in the search box / toggling the filter pill keeps the
+  previous list visible during the refetch instead of flashing empty.
+  Detail-view orphan preview `staleTime` bumped from 15s to 60s.
+
+### Files touched
+
+- `backend/app/db.py` — `orphan_count` column migration, composite
+  index, `get_item_state()`.
+- `backend/app/services/scanner.py` — `_scan_series_state()` single
+  pass, `_count_movie_orphans_inline()`, `orphan_count` upsert in both
+  scan_series_folder and scan_movie_folder. Legacy `_scan_nfo_state()`
+  delegates to the new path.
+- `backend/app/services/orphans.py` — `count_series_orphans` /
+  `count_movie_orphans` helpers (used by callers that don't already do
+  a full scan).
+- `backend/app/routes/api.py` — every orphan / item route rewired to
+  use cached counts, `get_item_state`, and `asyncio.to_thread`.
+- `backend/app/main.py` — startup hook backgrounds
+  `detect_libraries()`.
+- `frontend/src/views/DetailView.tsx` — `OrphansPanel` accepts
+  `cachedOrphanCount` and skips fetch on zero.
+- `frontend/src/views/LibraryView.tsx` — items query gets `staleTime`
+  and `keepPreviousData`.
+
+### Migration
+
+None required. The new `orphan_count` column is added by the existing
+migration framework and starts at NULL; the first scan / sweep / orphan
+preview on each folder populates it. No re-scan is required after
+upgrade — the cache primes itself the first time you visit a detail
+page or run a sweep.
+
 ## 0.11.10 — 2026-05-09
 
 A targeted-fix release. Plugs the “my show appears twice in Plex even

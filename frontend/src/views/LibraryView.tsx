@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, Item } from "../lib/api";
 import { ViewMode } from "../App";
 import { useConfirm } from "../components/ConfirmDialog";
@@ -74,6 +74,12 @@ export default function LibraryView(props: {
         ...filterToParams(filter),
       }),
     enabled: !!props.library,
+    // v0.11.11: cache the items list for 60s so navigating into a show and
+    // back doesn't refetch. Keep the previous list while a refetch is in
+    // flight so toggling the filter pill or typing in the search box doesn't
+    // flash an empty grid every keystroke.
+    staleTime: 60_000,
+    placeholderData: keepPreviousData,
   });
 
   // Notify App.tsx as soon as items have rendered so it can restore scroll

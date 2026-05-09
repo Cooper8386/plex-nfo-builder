@@ -1,6 +1,7 @@
 """FastAPI entrypoint."""
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -35,11 +36,19 @@ app.include_router(api_router)
 async def startup():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     logger.info("plex-nfo-builder starting (media={}, config={})", MEDIA_ROOT, CONFIG_DIR)
-    try:
-        libs = scanner.detect_libraries()
-        logger.info("Detected libraries: {}", [l["name"] for l in libs])
-    except Exception as e:
-        logger.warning("Initial library detection failed: {}", e)
+    # v0.11.11: detect_libraries() can take several seconds when MEDIA_ROOT
+    # lives on a network share — it iterdir()s the root and probes 16
+    # children of every library to infer kind. Running it in the startup
+    # hook used to delay the very first request by exactly that long. Move
+    # it onto a background task so the API begins serving immediately.
+    async def _detect_libraries_bg() -> None:
+        try:
+            libs = await asyncio.to_thread(scanner.detect_libraries)
+            logger.info("Detected libraries: {}", [l["name"] for l in libs])
+        except Exception as e:
+            logger.warning("Initial library detection failed: {}", e)
+
+    asyncio.create_task(_detect_libraries_bg())
     try:
         scheduler.start()
     except Exception as e:

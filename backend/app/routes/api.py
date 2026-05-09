@@ -290,14 +290,14 @@ async def items_list(library: Optional[str] = None,
     compatibility.
     """
     statuses = status.split(",") if status else None
+    # v0.11.11: legacy hide_organized boolean is the SQL equivalent of
+    # ``status IN ('none','partial','stale','foreign','mixed')`` — push it
+    # down so the DB does the filtering instead of materialising every row
+    # only to throw the completes away in Python.
+    if hide_organized and not statuses:
+        statuses = ["none", "partial", "stale", "foreign", "mixed"]
     rows = db.list_item_state(library=library, statuses=statuses, title_q=q)
-    out = []
-    for r in rows:
-        d = dict(r)
-        if hide_organized and d.get("nfo_status") == "complete":
-            continue
-        out.append(d)
-    return {"items": out}
+    return {"items": [dict(r) for r in rows]}
 
 
 # ---- Custom tags (v0.8.0) --------------------------------------------------
@@ -358,20 +358,16 @@ async def items_clean(payload: ItemCleanIn):
     summary = cleaner_svc.clean_folder(p, keep_sidecar=payload.keep_sidecar)
     if payload.rescan:
         # Refresh item_state immediately so the UI reflects the wipe.
+        # v0.11.11: O(1) lookup instead of pulling the whole table and
+        # filtering in Python.
         try:
-            row = db.list_item_state()
-            kind = next(
-                (r["kind"] for r in row if r["folder_path"] == str(p)),
-                None,
-            )
-            library = next(
-                (r["library"] for r in row if r["folder_path"] == str(p)),
-                "",
-            )
+            row = db.get_item_state(str(p))
+            kind = row["kind"] if row else None
+            library = (row["library"] if row else "") or ""
             if kind == "movie":
-                scanner.scan_movie_folder(p, library=library or "")
+                scanner.scan_movie_folder(p, library=library)
             else:
-                scanner.scan_series_folder(p, library=library or "")
+                scanner.scan_series_folder(p, library=library)
         except Exception as e:
             logger.warning("post-clean rescan failed for {}: {}", p, e)
     return {"ok": True, **summary}
@@ -735,12 +731,40 @@ async def items_orphans_preview(path: str):
     when Sonarr/Radarr swaps a release; Plex reads the orphaned NFO and
     creates a duplicate library entry for the show. See
     ``services/orphans.py`` for the full rationale.
+
+    v0.11.11 — fast-path: when item_state already knows the folder has zero
+    orphans (the count is refreshed on every scan/build), short-circuit
+    without walking the disk. The detail page calls this on every navigation
+    so the savings on a clean library are huge.
     """
     p = _safe_under_root(path)
+    row = db.get_item_state(str(p))
+    if row is not None and row["orphan_count"] is not None and int(row["orphan_count"]) == 0:
+        return {
+            "ok": True,
+            "folder_path": str(p),
+            "nfo_removed": 0,
+            "thumb_removed": 0,
+            "files": [],
+            "cached": True,
+        }
     try:
-        summary = _orphans_for_folder(p, dry_run=True)
+        # Run the I/O off the event loop so a network share that takes a
+        # moment to enumerate doesn't stall every other request.
+        kind_hint = None
+        if row is not None and row["kind"]:
+            kind_hint = "series" if row["kind"] == "series" else "movie"
+        summary = await asyncio.to_thread(
+            _orphans_for_folder, p, dry_run=True, kind_hint=kind_hint,
+        )
     except FileNotFoundError:
         raise HTTPException(404, f"Folder does not exist: {path}")
+    # Persist the freshly-computed count so subsequent requests can short-circuit.
+    try:
+        total = int(summary.get("nfo_removed") or 0) + int(summary.get("thumb_removed") or 0)
+        db.upsert_item_state(str(p), orphan_count=total)
+    except Exception:
+        pass
     return {
         "ok": True,
         "folder_path": str(p),
@@ -759,28 +783,36 @@ async def items_orphans_sweep(payload: ItemOrphansSweepIn):
     ``dry_run=true`` for a preview that doesn't touch disk.
     """
     p = _safe_under_root(payload.folder_path)
+    # v0.11.11: O(1) state lookup; sweep runs in a worker thread so it doesn't
+    # block the event loop on a slow share.
+    state_row = db.get_item_state(str(p))
+    kind_hint: Optional[str] = None
+    if state_row is not None and state_row["kind"]:
+        kind_hint = "series" if state_row["kind"] == "series" else "movie"
     try:
-        summary = _orphans_for_folder(p, dry_run=payload.dry_run)
+        summary = await asyncio.to_thread(
+            _orphans_for_folder, p, dry_run=payload.dry_run, kind_hint=kind_hint,
+        )
     except FileNotFoundError:
         raise HTTPException(404, f"Folder does not exist: {payload.folder_path}")
     if not payload.dry_run and payload.rescan:
         # Refresh item_state so the Detail + Library views reflect the sweep.
         try:
-            row = db.list_item_state()
-            kind = next(
-                (r["kind"] for r in row if r["folder_path"] == str(p)),
-                None,
-            )
-            library = next(
-                (r["library"] for r in row if r["folder_path"] == str(p)),
-                "",
-            )
+            kind = state_row["kind"] if state_row else None
+            library = (state_row["library"] if state_row else "") or ""
             if kind == "movie":
-                scanner.scan_movie_folder(p, library=library or "")
+                await asyncio.to_thread(scanner.scan_movie_folder, p, library=library)
             else:
-                scanner.scan_series_folder(p, library=library or "")
+                await asyncio.to_thread(scanner.scan_series_folder, p, library=library)
         except Exception as e:  # noqa: BLE001
             logger.warning("post-orphan-sweep rescan failed for {}: {}", p, e)
+    elif not payload.dry_run:
+        # Even when the caller suppressed the rescan, keep the cached count in
+        # sync so subsequent preview requests can short-circuit.
+        try:
+            db.upsert_item_state(str(p), orphan_count=0)
+        except Exception:
+            pass
     return {"ok": True, "dry_run": bool(payload.dry_run), "folder_path": str(p), **summary}
 
 
@@ -800,11 +832,21 @@ async def library_orphans_sweep(name: str, payload: LibraryOrphansSweepIn):
     """
     if payload.library != name:
         raise HTTPException(400, "library mismatch")
+    # v0.11.11: candidate filtering happens in SQL using the cached
+    # ``orphan_count`` so we only walk folders that actually have orphans.
+    # Folders whose count is NULL (never scanned) are still included as a
+    # safety net — they get walked once and then the cache picks up the
+    # zero result.
     rows = [dict(r) for r in db.list_item_state(library=name)]
-    folders: list[tuple[Path, str]] = []  # (path, kind)
+    candidates: list[tuple[Path, str, Optional[int]]] = []  # (path, kind, cached)
     for r in rows:
         fp = r.get("folder_path")
         if not fp:
+            continue
+        cached = r.get("orphan_count")
+        # Skip rows that are confidently zero — the scanner already proved
+        # there are no orphans there.
+        if cached is not None and int(cached) == 0:
             continue
         try:
             p = _safe_under_root(fp)
@@ -813,20 +855,30 @@ async def library_orphans_sweep(name: str, payload: LibraryOrphansSweepIn):
         if not p.is_dir():
             continue
         kind = "series" if (r.get("kind") or "") == "series" else "movie"
-        folders.append((p, kind))
+        candidates.append((p, kind, cached))
 
     per_folder: list[dict] = []
     failed: list[dict] = []
     total_nfo = 0
     total_thumb = 0
-    for p, kind in folders:
+
+    def _do_one(p: Path, kind: str) -> Optional[dict]:
         try:
-            summary = _orphans_for_folder(p, dry_run=payload.dry_run, kind_hint=kind)
+            return _orphans_for_folder(p, dry_run=payload.dry_run, kind_hint=kind)
         except FileNotFoundError:
-            continue
+            return None
         except Exception as e:  # noqa: BLE001
-            failed.append({"folder_path": str(p), "reason": str(e)})
-            logger.warning("library orphan sweep: failed for {}: {}", p, e)
+            return {"__error": str(e)}
+
+    # Process folders sequentially in a single worker thread so we don't
+    # hammer the share with N parallel iterdir() calls.
+    for p, kind, _cached in candidates:
+        summary = await asyncio.to_thread(_do_one, p, kind)
+        if summary is None:
+            continue
+        if isinstance(summary, dict) and summary.get("__error"):
+            failed.append({"folder_path": str(p), "reason": summary["__error"]})
+            logger.warning("library orphan sweep: failed for {}: {}", p, summary["__error"])
             continue
         n_nfo = int(summary.get("nfo_removed") or 0)
         n_thumb = int(summary.get("thumb_removed") or 0)
@@ -842,17 +894,24 @@ async def library_orphans_sweep(name: str, payload: LibraryOrphansSweepIn):
             if not payload.dry_run and payload.rescan:
                 try:
                     if kind == "movie":
-                        scanner.scan_movie_folder(p, library=name)
+                        await asyncio.to_thread(scanner.scan_movie_folder, p, library=name)
                     else:
-                        scanner.scan_series_folder(p, library=name)
+                        await asyncio.to_thread(scanner.scan_series_folder, p, library=name)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("library orphan sweep: rescan failed for {}: {}", p, e)
+        else:
+            # Cache the proven-zero count so the next call can skip this
+            # folder entirely.
+            try:
+                db.upsert_item_state(str(p), orphan_count=0)
+            except Exception:
+                pass
 
     return {
         "ok": True,
         "dry_run": bool(payload.dry_run),
         "library": name,
-        "folder_count": len(folders),
+        "folder_count": len(candidates),
         "affected_folder_count": len(per_folder),
         "nfo_removed": total_nfo,
         "thumb_removed": total_thumb,
@@ -865,8 +924,9 @@ async def library_orphans_sweep(name: str, payload: LibraryOrphansSweepIn):
 async def item_detail(path: str):
     p = _safe_under_root(path)
     binding = db.get_binding(str(p))
-    state_rows = db.list_item_state()
-    state = next((dict(r) for r in state_rows if r["folder_path"] == str(p)), None)
+    # v0.11.11: O(1) lookup; was previously pulling every row in the DB.
+    state_row = db.get_item_state(str(p))
+    state = dict(state_row) if state_row else None
     overrides = db.get_nfo_overrides(str(p))
     # List the canonical artwork files Plex expects in the folder root.
     canonical_files = []

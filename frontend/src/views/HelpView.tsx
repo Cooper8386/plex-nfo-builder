@@ -164,6 +164,52 @@ export default function HelpView() {
         </p>
       </Section>
 
+      <Section title="Performance & caching (v0.11.11)">
+        <p>
+          Every folder scan computes status, NFO coverage, and orphan
+          companion count from a single directory walk and caches the
+          result on the <Code>item_state</Code> row in the database.
+          The detail page, library list, and library-wide{" "}
+          <Code>Sweep orphaned sidecars</Code> all consult the cache
+          before touching disk.
+        </p>
+        <Bullets>
+          <li>
+            On a clean library, the detail page's orphan panel doesn't
+            even hit the backend — it returns immediately when the
+            cached count is zero.
+          </li>
+          <li>
+            The library-wide orphan sweep filters candidates in SQL by
+            the cached <Code>orphan_count</Code> and only walks the
+            folders that actually have orphans (or have never been
+            scanned). Once the cache primes, subsequent sweeps on a
+            clean library finish in well under a second.
+          </li>
+          <li>
+            Library detection at startup runs in the background, so
+            the UI is responsive the moment the container is ready —
+            you don't wait for the share to be enumerated before the
+            first request.
+          </li>
+          <li>
+            Disk-touching orphan walks all run in worker threads so a
+            slow NFS / SMB share never stalls every other request.
+          </li>
+          <li>
+            The frontend caches the items list for 60s and keeps the
+            previous list visible during refetch, so toggling the
+            filter pill or typing in the search box no longer flashes
+            an empty grid.
+          </li>
+        </Bullets>
+        <p>
+          No migration steps are required. The cache primes itself the
+          first time you visit a detail page or run a sweep on each
+          folder.
+        </p>
+      </Section>
+
       <Section title="The 60-second tour">
         <Ol>
           <li>

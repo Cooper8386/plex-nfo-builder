@@ -135,9 +135,11 @@ def scan_series_folder(folder: Path, library: str) -> SeriesFolderScan:
     pf = parse_folder_name(folder.name)
     seasons: dict[int, list] = {}
     total_eps = 0
+    season_dirs_resolved: list[tuple[Path, list]] = []  # (dir, episodes)
     for sd in detect_season_dirs(folder):
         snum = season_number_from_dir(sd.name)
         eps = list_season_episodes(sd)
+        season_dirs_resolved.append((sd, eps))
         if eps:
             seasons[snum] = eps
             total_eps += len(eps)
@@ -150,7 +152,11 @@ def scan_series_folder(folder: Path, library: str) -> SeriesFolderScan:
         seasons.setdefault(0, []).extend(root_eps)
         total_eps += len(root_eps)
 
-    nfo_state, has_prov, nfo_count = _scan_nfo_state(folder, total_eps, kind="series")
+    # v0.11.11: compute nfo state + orphan count from the same single walk
+    # over each season directory so we don't iterdir() each season twice.
+    nfo_state, has_prov, nfo_count, orphan_count = _scan_series_state(
+        folder, season_dirs_resolved, root_eps, total_eps,
+    )
     poster = _local_poster_for(folder)
     binding = db.get_binding(str(folder))
     provider = pf.provider or (binding["provider"] if binding else None)
@@ -176,6 +182,7 @@ def scan_series_folder(folder: Path, library: str) -> SeriesFolderScan:
         episode_count_tvdb=None,
         last_scanned=int(__import__("time").time()),
         poster_path=str(poster) if poster else None,
+        orphan_count=int(orphan_count),
     )
     return SeriesFolderScan(folder=pf, seasons=seasons, nfo_state=nfo_state,
                             has_provenance=has_prov, nfo_episode_count=nfo_count,
@@ -203,6 +210,9 @@ def scan_movie_folder(folder: Path, library: str) -> dict:
             has_prov = PROVENANCE_TAG in head
         except Exception:
             pass
+    # v0.11.11: compute the orphan count for the movie folder from the same
+    # iterdir() we just did above (cheap — small directory).
+    orphan_count = _count_movie_orphans_inline(folder, videos)
     folder_pf = parse_folder_name(folder.name)
     binding = db.get_binding(str(folder))
     pm_provider = pm.provider if pm else None
@@ -230,12 +240,33 @@ def scan_movie_folder(folder: Path, library: str) -> dict:
         episode_count_tvdb=None,
         last_scanned=int(__import__("time").time()),
         poster_path=str(poster) if poster else None,
+        orphan_count=int(orphan_count),
     )
     return {"title": pm_title or folder_pf.title, "state": state}
 
 
-def _scan_nfo_state(folder: Path, expected_episodes: int, kind: str) -> tuple[str, bool, int]:
-    """Return (status, has_provenance_anywhere, nfo_episode_count)."""
+_THUMB_SUFFIXES_LOWER: tuple[str, ...] = ("-thumb.jpg", "-thumb.jpeg", "-thumb.png")
+
+
+def _scan_series_state(folder: Path,
+                       season_dirs_resolved: list[tuple[Path, list]],
+                       root_eps: list,
+                       expected_episodes: int) -> tuple[str, bool, int, int]:
+    """Single-pass series scan.
+
+    v0.11.11 — walks every season directory exactly once and computes:
+      * nfo bucketed status (none/partial/complete/stale/foreign/mixed),
+      * has-provenance-anywhere flag,
+      * nfo episode count,
+      * orphan-companion count (NFOs + thumbnails with no live video stem).
+
+    Previously this required two separate iterdir() walks per season — one
+    in ``_scan_nfo_state`` and another in ``orphans.count_series_orphans`` —
+    plus another walk in the scanner itself for episode parsing. On a TV
+    library with ~80 shows averaging 3 seasons each that adds up to several
+    hundred extra disk syscalls per library scan, which on a network share
+    (NFS / SMB / NAS like the user's Unraid) is the dominant cost.
+    """
     show_nfo = folder / "tvshow.nfo"
     has_show = show_nfo.exists()
     show_prov = False
@@ -247,35 +278,104 @@ def _scan_nfo_state(folder: Path, expected_episodes: int, kind: str) -> tuple[st
 
     nfo_eps = 0
     foreign_eps = 0
-    for sd in detect_season_dirs(folder):
-        for f in sd.iterdir():
-            if not (f.is_file() and f.suffix.lower() == ".nfo"):
+    orphan_count = 0
+
+    def _scan_one(season_dir: Path, eps: list) -> None:
+        nonlocal nfo_eps, foreign_eps, orphan_count
+        try:
+            entries = list(season_dir.iterdir())
+        except (PermissionError, OSError):
+            return
+        video_stems = {ep.path.stem for ep in eps}
+        for f in entries:
+            if not f.is_file():
                 continue
-            # season.nfo lives next to episode .nfo files but is a season-level
-            # sidecar, not an episode. Don't count it toward episode coverage.
-            if f.name.lower() == "season.nfo":
+            name = f.name
+            low = name.lower()
+            if low.endswith(".nfo"):
+                if low == "season.nfo":
+                    continue
+                nfo_eps += 1
+                try:
+                    head = f.read_text(errors="ignore")[:2000]
+                    if PROVENANCE_TAG not in head:
+                        foreign_eps += 1
+                except Exception:
+                    pass
+                if f.stem not in video_stems:
+                    orphan_count += 1
                 continue
-            nfo_eps += 1
-            try:
-                head = f.read_text(errors="ignore")[:2000]
-                if PROVENANCE_TAG not in head:
-                    foreign_eps += 1
-            except Exception:
-                pass
+            for sfx in _THUMB_SUFFIXES_LOWER:
+                if low.endswith(sfx):
+                    stem = name[: -len(sfx)]
+                    if stem not in video_stems:
+                        orphan_count += 1
+                    break
+
+    for sd, eps in season_dirs_resolved:
+        _scan_one(sd, eps)
+    # Anime/OVA layouts where videos sit at the show root.
+    if root_eps:
+        _scan_one(folder, list(root_eps))
 
     has_prov_anywhere = show_prov or (nfo_eps > foreign_eps and nfo_eps > 0)
 
     if not has_show and nfo_eps == 0:
-        return "none", False, 0
+        return "none", False, 0, orphan_count
     if has_show and nfo_eps == expected_episodes and expected_episodes > 0 and (show_prov or foreign_eps == 0):
-        return "complete", has_prov_anywhere, nfo_eps
+        return "complete", has_prov_anywhere, nfo_eps, orphan_count
     if not show_prov and nfo_eps > 0 and foreign_eps == nfo_eps:
-        return "foreign", False, nfo_eps
+        return "foreign", False, nfo_eps, orphan_count
     if has_show and nfo_eps < expected_episodes:
-        return "partial", has_prov_anywhere, nfo_eps
+        return "partial", has_prov_anywhere, nfo_eps, orphan_count
     if has_show and nfo_eps > 0:
-        return "mixed", has_prov_anywhere, nfo_eps
-    return "partial", has_prov_anywhere, nfo_eps
+        return "mixed", has_prov_anywhere, nfo_eps, orphan_count
+    return "partial", has_prov_anywhere, nfo_eps, orphan_count
+
+
+def _count_movie_orphans_inline(folder: Path, videos: list[Path]) -> int:
+    if not videos:
+        return 0
+    stems = {v.stem for v in videos}
+    try:
+        entries = list(folder.iterdir())
+    except (PermissionError, OSError):
+        return 0
+    count = 0
+    for f in entries:
+        if not f.is_file():
+            continue
+        name = f.name
+        low = name.lower()
+        if low.endswith(".nfo"):
+            if low == "season.nfo":
+                continue
+            if f.stem in stems:
+                continue
+            count += 1
+            continue
+        for sfx in _THUMB_SUFFIXES_LOWER:
+            if low.endswith(sfx):
+                stem = name[: -len(sfx)]
+                if stem not in stems:
+                    count += 1
+                break
+    return count
+
+
+# Kept for backwards compatibility — a couple of callers (and tests) still
+# import this. It now delegates to the unified single-walk path above.
+def _scan_nfo_state(folder: Path, expected_episodes: int, kind: str) -> tuple[str, bool, int]:
+    """Return (status, has_provenance_anywhere, nfo_episode_count)."""
+    season_dirs_resolved: list[tuple[Path, list]] = []
+    for sd in detect_season_dirs(folder):
+        eps = list_season_episodes(sd)
+        season_dirs_resolved.append((sd, eps))
+    root_eps = list_season_episodes(folder)
+    status, has_prov, nfo_count, _orphans = _scan_series_state(
+        folder, season_dirs_resolved, root_eps, expected_episodes,
+    )
+    return status, has_prov, nfo_count
 
 
 # Local poster lookup ---------------------------------------------------------

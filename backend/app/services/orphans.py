@@ -219,9 +219,73 @@ def preview_movie_orphans(folder: Path) -> dict:
     return sweep_movie_orphans(folder, dry_run=True)
 
 
+# v0.11.11 ---------------------------------------------------------------
+# Cheap orphan probe used by the scanner to populate item_state.orphan_count.
+# Returns just the integer count (nfo + thumb) so we don't carry around a
+# files list we'll never look at. Functionally equivalent to running the
+# preview and reading ``nfo_removed + thumb_removed`` but skips list
+# bookkeeping per file.
+
+
+def _count_directory_orphans(season_dir: Path, video_stems: set[str]) -> int:
+    try:
+        entries = list(season_dir.iterdir())
+    except (PermissionError, OSError):
+        return 0
+    count = 0
+    for f in entries:
+        if not f.is_file():
+            continue
+        name = f.name
+        low = name.lower()
+        if low.endswith(".nfo"):
+            if low == "season.nfo":
+                continue
+            if f.stem in video_stems:
+                continue
+            count += 1
+            continue
+        thumb_stem = _strip_thumb_suffix(name)
+        if thumb_stem is not None and thumb_stem not in video_stems:
+            count += 1
+    return count
+
+
+def count_series_orphans(folder: Path) -> int:
+    if not folder.is_dir():
+        return 0
+    season_dirs = detect_season_dirs(folder)
+    if not season_dirs:
+        roots = folder_root_videos(folder)
+        if not roots:
+            return 0
+        stems = {p.stem for p in roots}
+        return _count_directory_orphans(folder, stems)
+    total = 0
+    for sd in season_dirs:
+        eps = list_season_episodes(sd)
+        stems = {ep.path.stem for ep in eps}
+        total += _count_directory_orphans(sd, stems)
+    return total
+
+
+def count_movie_orphans(folder: Path) -> int:
+    if not folder.is_dir():
+        return 0
+    videos = folder_root_videos(folder)
+    if not videos:
+        # Refuse to count anything when no live video is present — we never
+        # sweep these folders either.
+        return 0
+    stems = {v.stem for v in videos}
+    return _count_directory_orphans(folder, stems)
+
+
 __all__: Iterable[str] = (
     "sweep_series_orphans",
     "sweep_movie_orphans",
     "preview_series_orphans",
     "preview_movie_orphans",
+    "count_series_orphans",
+    "count_movie_orphans",
 )

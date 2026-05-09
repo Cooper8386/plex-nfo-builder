@@ -273,6 +273,30 @@ def _migrate(c: sqlite3.Connection) -> None:
             except Exception:
                 pass
 
+        # v0.11.11: cache the orphan-companion count on each item_state row so
+        # the detail page can decide whether to render the orphans panel
+        # without re-walking the season folders on every navigation, and so the
+        # library-wide sweep can skip folders that have no orphans without
+        # touching disk. The value is refreshed by every scan_series_folder /
+        # scan_movie_folder call (see services/scanner.py). NULL is treated as
+        # "unknown — show panel only after a fetch confirms it".
+        item_cols = {r[1] for r in c.execute("PRAGMA table_info(item_state)").fetchall()}
+        if item_cols and "orphan_count" not in item_cols:
+            try:
+                c.execute("ALTER TABLE item_state ADD COLUMN orphan_count INTEGER")
+            except Exception:
+                pass
+        # Composite index for the library list pill (`status=needs|complete`).
+        # The existing single-column indexes don't help when both filters are
+        # present together because SQLite still has to merge per row.
+        try:
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_item_state_lib_status "
+                "ON item_state(library, nfo_status)"
+            )
+        except Exception:
+            pass
+
 
 # ---- TVDB cache -------------------------------------------------------------
 
@@ -478,6 +502,20 @@ def delete_item_state(folder_path: str) -> int:
         c.execute("DELETE FROM nfo_overrides WHERE folder_path = ?", (folder_path,))
         cur = c.execute("DELETE FROM item_state WHERE folder_path = ?", (folder_path,))
         return cur.rowcount
+
+
+def get_item_state(folder_path: str) -> Optional[sqlite3.Row]:
+    """Single-row lookup by folder_path. v0.11.11.
+
+    Replaces the legacy pattern of calling list_item_state() and filtering in
+    Python — that pulled every library row across the wire on each detail /
+    sweep / clean request which dominated request latency on large servers.
+    """
+    c = conn()
+    with _lock:
+        return c.execute(
+            "SELECT * FROM item_state WHERE folder_path = ?", (folder_path,)
+        ).fetchone()
 
 
 def list_item_state(library: Optional[str] = None,

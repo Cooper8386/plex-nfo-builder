@@ -237,7 +237,11 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
         <WhyStatusPanel path={path} onClose={() => setShowExplain(false)} />
       )}
 
-      <OrphansPanel path={path} title={state?.title ?? path} />
+      <OrphansPanel
+        path={path}
+        title={state?.title ?? path}
+        cachedOrphanCount={state?.orphan_count ?? null}
+      />
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
         <Stat label="Episodes (local)" value={state?.episode_count_local ?? "—"} />
@@ -908,16 +912,33 @@ function SecondarySourcePanel({
 // v0.11.10 — Orphan companion sweeper. Renders inline only when the folder
 // has at least one orphaned `<stem>.nfo` or `<stem>-thumb.*` left behind by
 // a Sonarr/Radarr release upgrade. The hazard-yellow button removes them.
-function OrphansPanel({ path, title }: { path: string; title: string }) {
+function OrphansPanel({
+  path,
+  title,
+  cachedOrphanCount,
+}: {
+  path: string;
+  title: string;
+  /**
+   * v0.11.11 — the scanner caches the orphan count on item_state so we can
+   * skip the per-folder disk walk on the detail page when there's nothing
+   * to show. ``null`` means "unknown — fetch to confirm". ``0`` is the
+   * fast path: don't render the panel and don't hit the backend at all.
+   */
+  cachedOrphanCount: number | null;
+}) {
   const qc = useQueryClient();
   const confirmDlg = useConfirm();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const skipFetch = cachedOrphanCount === 0;
   const q = useQuery({
     queryKey: ["orphans", path],
     queryFn: () => api.items.orphansPreview(path),
-    staleTime: 15_000,
+    staleTime: 60_000,
+    enabled: !skipFetch,
   });
+  if (skipFetch) return null;
   const total = (q.data?.nfo_removed ?? 0) + (q.data?.thumb_removed ?? 0);
   if (q.isLoading) return null;
   if (!q.data || total === 0) return null;

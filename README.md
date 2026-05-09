@@ -28,6 +28,7 @@ A self-hosted web app that builds Plex-compatible NFO files and full local artwo
 - **In-app help** (Help in the top bar) — quick orientation, button reference, status badge legend.
 - **Language preference** with fallback chain (e.g. `eng` → `jpn` → first available). The preferred language is the language for *all* fetched information — episode titles, overviews, *and* the series/movie title plugged into the rename template, so non-English originals (anime, foreign films) don't leak their original-language title into renamed files.
 - **Logging** with rotating `app.log`, plus per-job logs under `/config/logs/jobs/<job_id>.log`.
+- **NAS-friendly performance** — every scan computes folder status, NFO coverage, and orphan-companion count from a single directory walk and caches the result on `item_state`. The detail page, library list, and library-wide orphan sweep all consult the cache before touching disk, so navigating between shows on a network share is instant and the *Sweep orphaned sidecars* button completes in well under a second once the cache is primed. Library detection at startup runs in the background so the UI is responsive immediately on container start, and every disk-touching orphan walk is dispatched to a worker thread so a slow share never stalls the API event loop.
 - **Multi-arch container** (`linux/amd64`, `linux/arm64`) published to GHCR on every release.
 
 ## Documentation
