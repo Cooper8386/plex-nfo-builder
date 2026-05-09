@@ -264,6 +264,14 @@ export default function HelpView() {
             rebuild straight after.
           </li>
           <li>
+            <b>Sweep orphaned sidecars</b> — deletes orphaned{" "}
+            <Code>&lt;stem&gt;.nfo</Code> and{" "}
+            <Code>&lt;stem&gt;-thumb.*</Code> files left behind by
+            Sonarr/Radarr release upgrades. See{" "}
+            <i>“Why does my show appear twice in Plex?”</i> below for the
+            full mechanism.
+          </li>
+          <li>
             <b>Blast every sidecar</b> — deletes every{" "}
             <Code>.plex-nfo-builder.json</Code> file in the library. The
             database is untouched, so the app keeps working; but the only
@@ -278,6 +286,70 @@ export default function HelpView() {
           red — they're powerful but recoverable: the wipe is reversible by
           rebuilding, and the sidecar blast is reversible by re-saving any
           binding/override (which writes a fresh sidecar).
+        </Callout>
+      </Section>
+
+      <Section title="Why does my show appear twice in Plex? (orphan sidecar sweeper)">
+        <p>
+          Sonarr and Radarr only manage <i>video files</i>. When they swap a
+          release for an upgrade (e.g. a different release group, a higher
+          quality, a different codec), they delete the old{" "}
+          <Code>.mkv</Code> and drop the new one in place — but they don't
+          touch the companion files this app wrote next to the old video.
+          Those companion files are{" "}
+          <Code>&lt;old-stem&gt;.nfo</Code> and{" "}
+          <Code>&lt;old-stem&gt;-thumb.&#123;jpg,jpeg,png&#125;</Code>.
+        </p>
+        <p>
+          Plex's NFO agent reads <i>every</i> <Code>.nfo</Code> in the season
+          folder, regardless of whether a paired video is still there. The
+          orphaned NFO carries its own{" "}
+          <Code>&lt;uniqueid&gt;</Code> block and Plex faithfully indexes it,
+          which forces Plex to create a <b>second library entry</b> for the
+          same show in order to host the orphaned-but-claimed episode. After
+          two upgrade rounds you end up with three library entries pointing
+          at one folder on disk — the symptom most people describe as{" "}
+          <i>“my show appears twice in Plex even though there's only one
+          folder”</i>.
+        </p>
+        <Bullets>
+          <li>
+            <b>Auto-sweep (default on).</b> After every successful build,
+            the app deletes orphaned <Code>.nfo</Code> and{" "}
+            <Code>-thumb.*</Code> files in the same folder whose stem doesn't
+            pair with a live video. Toggle this in{" "}
+            <b>Settings → General → Auto-sweep orphaned sidecars</b>.
+          </li>
+          <li>
+            <b>Per-show sweep.</b> When a Detail page detects orphans, a
+            hazard-yellow <b>Orphaned sidecars detected</b> panel appears
+            near the top with the file list and a{" "}
+            <Code>⚠ Remove orphaned sidecars</Code> button.
+          </li>
+          <li>
+            <b>Library-wide sweep.</b> The library Danger zone has{" "}
+            <Code>⚠ Sweep orphaned sidecars</Code> for the one-shot fix on
+            an existing library that's already accumulated duplicates.
+          </li>
+          <li>
+            <b>What gets touched.</b> Only{" "}
+            <Code>&lt;stem&gt;.nfo</Code> and{" "}
+            <Code>&lt;stem&gt;-thumb.&#123;jpg,jpeg,png&#125;</Code> files
+            whose stem is <i>not</i> in the live video set.{" "}
+            <Code>tvshow.nfo</Code>, <Code>season.nfo</Code>, every show /
+            season-level artwork file, and every video / subtitle / audio
+            file are <b>always</b> preserved. Movie folders with no live
+            video are skipped (so an in-flight download can't get nuked).
+          </li>
+        </Bullets>
+        <Callout>
+          After running the library-wide sweep on an existing library: in
+          Plex, open <b>Manage Libraries → affected show → Empty Trash + Clean
+          Bundles</b>, then right-click each ghost duplicate and{" "}
+          <b>Merge</b> it into the canonical entry (Plex preserves watch
+          state on the merge target). A{" "}
+          <b>Refresh All Metadata</b> on the library afterwards will
+          finalise things.
         </Callout>
       </Section>
 

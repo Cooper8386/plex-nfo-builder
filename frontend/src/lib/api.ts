@@ -217,6 +217,36 @@ export const api = {
           body: JSON.stringify({ library: name, ...body }),
         })
       ),
+    /**
+     * v0.11.10 — sweep orphaned NFO + thumb sidecars left behind by a
+     * Sonarr/Radarr file upgrade across every folder in the library.
+     */
+    sweepOrphans: (
+      name: string,
+      body: { dry_run?: boolean; rescan?: boolean } = {}
+    ) =>
+      J<{
+        ok: true;
+        dry_run: boolean;
+        library: string;
+        folder_count: number;
+        affected_folder_count: number;
+        nfo_removed: number;
+        thumb_removed: number;
+        folders: {
+          folder_path: string;
+          nfo_removed: number;
+          thumb_removed: number;
+          files: string[];
+        }[];
+        failed: { folder_path: string; reason: string }[];
+      }>(
+        fetch(`/api/libraries/${encodeURIComponent(name)}/orphans/sweep`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ library: name, ...body }),
+        })
+      ),
   },
   items: {
     list: (params: {
@@ -313,6 +343,41 @@ export const api = {
      * download landing between the preview and the confirm cannot be
      * accidentally pruned.
      */
+    /**
+     * v0.11.10 — preview the orphaned `.nfo` and `*-thumb.*` sidecars left
+     * behind by a Sonarr/Radarr file upgrade for a single show/movie folder.
+     */
+    orphansPreview: (path: string) =>
+      J<{
+        ok: true;
+        folder_path: string;
+        nfo_removed: number;
+        thumb_removed: number;
+        files: string[];
+      }>(fetch(`/api/items/orphans?path=${encodeURIComponent(path)}`)),
+    /**
+     * v0.11.10 — actually delete the orphaned sidecars for a single folder.
+     * Pass `dry_run: true` to preview without deleting.
+     */
+    orphansSweep: (body: {
+      folder_path: string;
+      dry_run?: boolean;
+      rescan?: boolean;
+    }) =>
+      J<{
+        ok: true;
+        dry_run: boolean;
+        folder_path: string;
+        nfo_removed: number;
+        thumb_removed: number;
+        files: string[];
+      }>(
+        fetch("/api/items/orphans/sweep", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      ),
     pruneEmpty: (body: {
       library?: string;
       dry_run?: boolean;

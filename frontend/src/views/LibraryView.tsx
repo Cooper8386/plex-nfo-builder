@@ -522,6 +522,78 @@ function DangerZone(props: {
     }
   };
 
+  const runSweepOrphans = async () => {
+    if (props.busy) return;
+    props.setBusy("Scanning library for orphaned NFO + thumbnail sidecars…");
+    let preview: {
+      folder_count: number;
+      affected_folder_count: number;
+      nfo_removed: number;
+      thumb_removed: number;
+      folders: { folder_path: string; nfo_removed: number; thumb_removed: number }[];
+    };
+    try {
+      preview = await api.libraries.sweepOrphans(props.library, { dry_run: true });
+    } catch (e: any) {
+      props.flash(`Orphan scan failed: ${e?.message ?? e}`);
+      props.setBusy(null);
+      return;
+    }
+    props.setBusy(null);
+    const total = preview.nfo_removed + preview.thumb_removed;
+    if (!total) {
+      props.flash(
+        `No orphaned sidecars found in "${props.library}" — checked ${preview.folder_count} folder(s).`
+      );
+      return;
+    }
+    const sample = preview.folders
+      .slice(0, 6)
+      .map((f) => `  • ${f.folder_path.split("/").pop()} (${f.nfo_removed + f.thumb_removed})`)
+      .join("\n");
+    const more =
+      preview.affected_folder_count > 6
+        ? `\n  … and ${preview.affected_folder_count - 6} more folder(s)`
+        : "";
+    const ok = await confirmDlg({
+      title: `Sweep orphaned sidecars across “${props.library}”?`,
+      message:
+        `Found ${preview.nfo_removed} orphaned NFO(s) and ${preview.thumb_removed} ` +
+        `orphaned thumbnail(s) across ${preview.affected_folder_count} folder(s):\n` +
+        `${sample}${more}\n\n` +
+        `These are companion files left behind when Sonarr/Radarr swapped a release — ` +
+        `Plex reads the orphaned NFO's <uniqueid> and creates a duplicate library entry, ` +
+        `which is the “my show appears twice” symptom.\n\n` +
+        `Only ${'`<stem>.nfo`'} and ${'`<stem>-thumb.{jpg,jpeg,png}`'} files whose stem ` +
+        `does not pair with a live video file will be deleted. tvshow.nfo, season.nfo, ` +
+        `every show/season-level artwork file, and every video / subtitle / audio file ` +
+        `are preserved.\n\n` +
+        `This cannot be undone.`,
+      confirmLabel: "Sweep orphans",
+      tone: "danger",
+    });
+    if (!ok) return;
+    props.setBusy(`Sweeping orphans across ${preview.affected_folder_count} folder(s)…`);
+    try {
+      const res = await api.libraries.sweepOrphans(props.library, {
+        dry_run: false,
+        rescan: true,
+      });
+      props.flash(
+        `Removed ${res.nfo_removed} orphaned NFO(s) and ${res.thumb_removed} orphaned ` +
+          `thumb(s) across ${res.affected_folder_count} folder(s)` +
+          (res.failed && res.failed.length
+            ? ` — ${res.failed.length} folder(s) failed`
+            : "")
+      );
+      props.invalidateItems();
+    } catch (e: any) {
+      props.flash(`Orphan sweep failed: ${e?.message ?? e}`);
+    } finally {
+      props.setBusy(null);
+    }
+  };
+
   const runWipeSidecars = async () => {
     if (props.busy) return;
     props.setBusy("Scanning library for sidecar files…");
@@ -597,6 +669,14 @@ function DangerZone(props: {
             before touching disk. Don't press unless you're sure.
           </p>
           <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={runSweepOrphans}
+              disabled={!!props.busy}
+              className={props.btnHazard}
+              title="Delete orphaned <stem>.nfo and <stem>-thumb.* sidecars left behind by Sonarr/Radarr release upgrades. Live videos, tvshow.nfo, season.nfo, and show/season artwork are preserved."
+            >
+              ⚠ Sweep orphaned sidecars
+            </button>
             <button
               onClick={runWipeNfo}
               disabled={!!props.busy}

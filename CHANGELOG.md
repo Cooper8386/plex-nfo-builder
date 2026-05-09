@@ -2,6 +2,103 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.10 — 2026-05-09
+
+A targeted-fix release. Plugs the “my show appears twice in Plex even
+though there's only one folder on disk” duplication bug introduced by
+Sonarr/Radarr release upgrades.
+
+### Diagnosis
+
+Sonarr and Radarr only manage video files. When they swap a release for
+an upgrade (different release group, higher quality, different codec)
+the new `<new-stem>.mkv` arrives and the old video is deleted, but the
+companion `<old-stem>.nfo` and `<old-stem>-thumb.{jpg,jpeg,png}` files
+this app wrote next to the old video are left orphaned in the season
+folder with no matching video. Plex's “Plex TV Series” agent reads
+*every* `.nfo` regardless of whether it has a paired video; the
+orphaned NFO carries its own `<uniqueid type="tvdb" default="true">`
+block, Plex faithfully indexes it, and — because the orphaned uniqueid
+doesn't match the new release sitting next to it — Plex creates a
+second library entry for the same show in order to host the
+orphaned-but-claimed episode. Two upgrade rounds = three Plex entries
+for one folder, etc.
+
+This release introduces a surgical, video-driven sweeper that deletes
+those orphan companions whenever they are detected.
+
+### Added
+
+- **Orphan companion sweeper service** (`backend/app/services/orphans.py`).
+  Enumerates the live video files in each season directory (or the
+  show root for flat-layout series, or the movie folder for movies)
+  via the same parser the builder uses, then deletes any `<stem>.nfo`
+  or `<stem>-thumb.{jpg,jpeg,png}` whose stem isn't in the live video
+  set. `tvshow.nfo`, every `season.nfo`, every show / season-level
+  artwork file, and every video / subtitle / audio / unknown file is
+  always preserved. Movie folders that currently contain no video are
+  skipped entirely so an in-flight download can't get nuked.
+- **Auto-sweep after every build (default on).** The four build
+  end-paths (TVDB series, TVDB movie, TMDB series, TMDB movie) call
+  the orphan sweeper immediately before the post-build Plex rescan.
+  Failures are swallowed and logged — a sweep error never fails a
+  build. The job log records `Removed N orphaned NFO(s) and M
+  orphaned thumbnail(s) left behind by a Sonarr/Radarr file upgrade.`
+  Toggle in **Settings → General → Auto-sweep orphaned sidecars**
+  (new `auto_sweep_orphans` setting, default `True`).
+- **Per-show orphan panel on the Detail view.** Hazard-yellow
+  *Orphaned sidecars detected* card with the file list, an
+  expandable details listing, and a `⚠ Remove orphaned sidecars`
+  button. Renders only when at least one orphan exists. The button
+  uses the in-app confirm dialog (`tone: "danger"`, Enter accepts)
+  introduced in v0.11.9.
+- **Library-wide orphan sweep in the Danger Zone.** New
+  `⚠ Sweep orphaned sidecars` hazard-yellow button in every Library's
+  Danger Zone, sitting alongside the existing wipe-NFOs and
+  blast-sidecars buttons. Runs a dry-run preview first, lists the
+  affected folders, and requires explicit confirmation before
+  touching disk. The one-shot fix for libraries that have already
+  accumulated duplicate Plex entries from prior Sonarr/Radarr file
+  upgrades.
+- **“Why does my show appear twice in Plex?” Help section** with the
+  full root-cause writeup and post-sweep cleanup steps for Plex
+  itself (Empty Trash + Clean Bundles, Merge ghost duplicates into
+  the canonical entry).
+
+### API
+
+- `GET /api/items/orphans?path=…` — preview the orphans for a single
+  folder. Returns
+  `{ok, folder_path, nfo_removed, thumb_removed, files: ["Season 01/foo.nfo", …]}`.
+  Detects series vs movie via a cheap filesystem probe.
+- `POST /api/items/orphans/sweep` — body
+  `{folder_path, dry_run?, rescan?}`. Deletes the orphans (or, with
+  `dry_run: true`, just lists them). When `rescan` is true (default)
+  re-runs the appropriate `scan_*_folder` so item state reflects
+  the sweep.
+- `POST /api/libraries/{name}/orphans/sweep` — body
+  `{library, dry_run?, rescan?}`. Walks every tracked folder in the
+  library, sweeps each, and returns
+  `{ok, dry_run, library, folder_count, affected_folder_count, nfo_removed, thumb_removed, folders: […], failed: […]}`.
+  Per-folder scan failures are isolated — the rest of the library
+  still gets swept.
+
+### Changed
+
+- The Library page Danger Zone now has three buttons instead of two
+  (Sweep orphaned sidecars + the existing wipe pair). README
+  description updated to match.
+
+### Notes
+
+After pulling the update, run **Library → Danger Zone → Sweep orphaned
+sidecars** once on each existing library. Then in Plex itself:
+*Manage Libraries → affected show → Empty Trash + Clean Bundles*,
+right-click each ghost duplicate and **Merge** it into the canonical
+entry (Plex preserves watch state on the merge target), and
+optionally **Refresh All Metadata** on the library afterwards. From
+that point on the auto-sweep keeps duplicates from coming back.
+
 ## 0.11.9 — 2026-05-06
 
 A UX-polish release with two big quality-of-life wins: a real

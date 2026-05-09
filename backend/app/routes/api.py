@@ -33,6 +33,7 @@ from ..services import artwork as artwork_svc
 from ..services import builder as build_svc
 from ..services import cleaner as cleaner_svc
 from ..services import fanart as fanart_svc
+from ..services import orphans as orphans_svc
 from ..services import matcher
 from ..services import plex as plex_svc
 from ..services import scanner
@@ -129,6 +130,8 @@ class SettingsIn(BaseModel):
     rename_series_folder_template: Optional[str] = None
     rename_season_folder_template: Optional[str] = None
     rename_movie_folder_template: Optional[str] = None
+    # v0.11.10 orphan-companion sweeper
+    auto_sweep_orphans: Optional[bool] = None
 
 
 @router.post("/settings")
@@ -680,6 +683,180 @@ async def library_wipe_sidecars(name: str, payload: LibraryWipeIn):
         "library": name,
         "sidecar_count": len(targets),
         "deleted": deleted,
+        "failed": failed,
+    }
+
+
+# ---- Orphan-companion sweeper (v0.11.10) ----------------------------------
+#
+# When Sonarr/Radarr replaces a video with a different release (e.g. a new
+# release group), it manages the .mkv but leaves the old ``<stem>.nfo`` and
+# ``<stem>-thumb.{jpg,jpeg,png}`` sidecars orphaned next to the new video.
+# Plex's NFO agent then reads the orphan, sees a ``<uniqueid>`` it can't
+# match to the new video, and creates a duplicate library entry for the
+# show — exactly the "show appears twice" symptom users report.
+#
+# These endpoints expose the fix:
+#   * GET  /api/items/orphans?path=…               — preview per folder
+#   * POST /api/items/orphans/sweep                — sweep per folder
+#   * POST /api/libraries/{name}/orphans/sweep     — library-wide sweep
+
+
+def _orphans_for_folder(p: Path, *, dry_run: bool, kind_hint: Optional[str] = None) -> dict:
+    """Run the correct sweeper variant for ``p``, returning the summary.
+
+    The kind is determined by a cheap filesystem probe (season subdirs =>
+    series, else look for root-level videos => movie) so the call sites
+    don't have to pre-classify. ``kind_hint`` short-circuits the probe when
+    the caller already knows (e.g. the library-wide loop walks item_state).
+    """
+    if kind_hint is None:
+        if detect_season_dirs(p):
+            kind_hint = "series"
+        else:
+            kind_hint = "movie"
+    if kind_hint == "series":
+        return orphans_svc.sweep_series_orphans(p, dry_run=dry_run)
+    return orphans_svc.sweep_movie_orphans(p, dry_run=dry_run)
+
+
+class ItemOrphansSweepIn(BaseModel):
+    folder_path: str
+    dry_run: bool = False
+    rescan: bool = True
+
+
+@router.get("/items/orphans")
+async def items_orphans_preview(path: str):
+    """Return the list of orphaned NFO/thumb companion files under ``path``.
+
+    Identifies files whose stem does not pair with any live video file in
+    the same season/movie directory. These are the sidecars left behind
+    when Sonarr/Radarr swaps a release; Plex reads the orphaned NFO and
+    creates a duplicate library entry for the show. See
+    ``services/orphans.py`` for the full rationale.
+    """
+    p = _safe_under_root(path)
+    try:
+        summary = _orphans_for_folder(p, dry_run=True)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Folder does not exist: {path}")
+    return {
+        "ok": True,
+        "folder_path": str(p),
+        **summary,
+    }
+
+
+@router.post("/items/orphans/sweep")
+async def items_orphans_sweep(payload: ItemOrphansSweepIn):
+    """Delete orphaned NFO/thumb companions from a single folder.
+
+    Only removes ``<stem>.nfo`` and ``<stem>-thumb.{jpg,jpeg,png}`` files
+    whose stem doesn't match any live video file in the same directory.
+    ``tvshow.nfo``, ``season.nfo``, every show/season-level artwork file,
+    and every video/subtitle/audio file are always preserved. Pass
+    ``dry_run=true`` for a preview that doesn't touch disk.
+    """
+    p = _safe_under_root(payload.folder_path)
+    try:
+        summary = _orphans_for_folder(p, dry_run=payload.dry_run)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Folder does not exist: {payload.folder_path}")
+    if not payload.dry_run and payload.rescan:
+        # Refresh item_state so the Detail + Library views reflect the sweep.
+        try:
+            row = db.list_item_state()
+            kind = next(
+                (r["kind"] for r in row if r["folder_path"] == str(p)),
+                None,
+            )
+            library = next(
+                (r["library"] for r in row if r["folder_path"] == str(p)),
+                "",
+            )
+            if kind == "movie":
+                scanner.scan_movie_folder(p, library=library or "")
+            else:
+                scanner.scan_series_folder(p, library=library or "")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("post-orphan-sweep rescan failed for {}: {}", p, e)
+    return {"ok": True, "dry_run": bool(payload.dry_run), "folder_path": str(p), **summary}
+
+
+class LibraryOrphansSweepIn(BaseModel):
+    library: str
+    dry_run: bool = False
+    rescan: bool = True
+
+
+@router.post("/libraries/{name}/orphans/sweep")
+async def library_orphans_sweep(name: str, payload: LibraryOrphansSweepIn):
+    """Sweep orphaned NFO/thumb companions from every tracked folder in
+    ``name``. This is the one-shot fix for libraries that have accumulated
+    duplicate Plex entries from prior Sonarr/Radarr file upgrades.
+
+    Pass ``dry_run=true`` for a preview.
+    """
+    if payload.library != name:
+        raise HTTPException(400, "library mismatch")
+    rows = [dict(r) for r in db.list_item_state(library=name)]
+    folders: list[tuple[Path, str]] = []  # (path, kind)
+    for r in rows:
+        fp = r.get("folder_path")
+        if not fp:
+            continue
+        try:
+            p = _safe_under_root(fp)
+        except Exception:
+            continue
+        if not p.is_dir():
+            continue
+        kind = "series" if (r.get("kind") or "") == "series" else "movie"
+        folders.append((p, kind))
+
+    per_folder: list[dict] = []
+    failed: list[dict] = []
+    total_nfo = 0
+    total_thumb = 0
+    for p, kind in folders:
+        try:
+            summary = _orphans_for_folder(p, dry_run=payload.dry_run, kind_hint=kind)
+        except FileNotFoundError:
+            continue
+        except Exception as e:  # noqa: BLE001
+            failed.append({"folder_path": str(p), "reason": str(e)})
+            logger.warning("library orphan sweep: failed for {}: {}", p, e)
+            continue
+        n_nfo = int(summary.get("nfo_removed") or 0)
+        n_thumb = int(summary.get("thumb_removed") or 0)
+        total_nfo += n_nfo
+        total_thumb += n_thumb
+        if n_nfo or n_thumb:
+            per_folder.append({
+                "folder_path": str(p),
+                "nfo_removed": n_nfo,
+                "thumb_removed": n_thumb,
+                "files": summary.get("files") or [],
+            })
+            if not payload.dry_run and payload.rescan:
+                try:
+                    if kind == "movie":
+                        scanner.scan_movie_folder(p, library=name)
+                    else:
+                        scanner.scan_series_folder(p, library=name)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("library orphan sweep: rescan failed for {}: {}", p, e)
+
+    return {
+        "ok": True,
+        "dry_run": bool(payload.dry_run),
+        "library": name,
+        "folder_count": len(folders),
+        "affected_folder_count": len(per_folder),
+        "nfo_removed": total_nfo,
+        "thumb_removed": total_thumb,
+        "folders": per_folder,
         "failed": failed,
     }
 

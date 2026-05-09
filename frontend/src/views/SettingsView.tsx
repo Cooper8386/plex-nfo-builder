@@ -262,6 +262,24 @@ function MetadataPane({ s, update }: { s: any; update: (k: string, v: any) => vo
           onChange={(e) => update("overwrite_foreign_nfo", e.target.checked)}
         />
       </Field>
+      <Field label="Auto-sweep orphaned sidecars">
+        <div className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            checked={s.auto_sweep_orphans !== false}
+            onChange={(e) => update("auto_sweep_orphans", e.target.checked)}
+            className="mt-1"
+          />
+          <span className="text-[11px] text-slate-500 max-w-xl leading-relaxed">
+            After every build, automatically delete orphaned{" "}
+            <code className="text-slate-300">&lt;stem&gt;.nfo</code> and{" "}
+            <code className="text-slate-300">&lt;stem&gt;-thumb.*</code> files
+            left behind when Sonarr/Radarr swapped a release. Stops Plex from
+            creating duplicate library entries for the same show. Live videos
+            and show/season-level artwork are always preserved.
+          </span>
+        </div>
+      </Field>
     </>
   );
 }

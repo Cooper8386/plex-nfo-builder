@@ -106,6 +106,16 @@ class UserSettings(BaseModel):
     # accept rename requests. Set to False to keep the codepath dormant for
     # users who only ever want NFO/artwork generation.
     rename_enabled: bool = True
+    # v0.11.10: at the end of every successful build, sweep orphaned NFO
+    # and thumbnail companions left behind by Sonarr/Radarr file upgrades.
+    # See ``services/orphans.py`` for the full rationale — in short, when a
+    # release group changes, Sonarr swaps the .mkv but leaves the old
+    # ``<stem>.nfo`` and ``<stem>-thumb.jpg`` orphaned. Plex's NFO agent then
+    # reads those orphans and creates a duplicate library entry for the show.
+    # The sweep is video-driven (only deletes companions whose stem doesn't
+    # match a live video file) and never touches show-level artwork or
+    # ``tvshow.nfo`` / ``season.nfo``.
+    auto_sweep_orphans: bool = True
 
     @classmethod
     def load(cls, path: Path) -> "UserSettings":

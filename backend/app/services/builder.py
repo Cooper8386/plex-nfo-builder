@@ -24,6 +24,7 @@ from .matcher import (
     auto_match_series,
     auto_match_series_tmdb,
 )
+from .orphans import sweep_movie_orphans, sweep_series_orphans
 from .nfo import (
     build_episode_nfo,
     build_episode_nfo_tmdb,
@@ -322,6 +323,10 @@ async def build_series(folder: Path, *, force: bool = False,
             preferred_overrides=preferred_overrides,
         )
         log.info("Artwork download complete")
+        # v0.11.10: sweep orphaned NFO/thumb companions before the rescan so
+        # the DB's nfo-state counts reflect the post-sweep reality. See
+        # services/orphans.py for the full rationale on the Sonarr upgrade bug.
+        _maybe_sweep_orphans(folder, "series", settings, job, log)
         # rescan state
         scan_series_folder(folder, library=folder.parent.name)
         db.upsert_item_state(str(folder), last_built=int(time.time()))
@@ -342,6 +347,42 @@ async def build_series(folder: Path, *, force: bool = False,
         if sink:
             job["log_file"] = str(sink)
     return jid
+
+
+def _maybe_sweep_orphans(folder: Path, kind: str, settings, job: dict, log) -> None:
+    """Sweep orphaned NFO/thumb companions left behind by Sonarr/Radarr file
+    upgrades. Runs at the tail of every successful build when the user has
+    ``auto_sweep_orphans`` enabled (default on). Never raises into the build
+    pipeline — a sweep failure is logged and recorded on the job, but the
+    build itself stays "completed".
+
+    The sweep is video-driven: it only deletes ``<stem>.nfo`` and
+    ``<stem>-thumb.{jpg,jpeg,png}`` files whose stem doesn't pair with a
+    live video file. Show-level artwork, ``tvshow.nfo``, ``season.nfo`` and
+    every video / subtitle / audio file are always preserved.
+    """
+    if not getattr(settings, "auto_sweep_orphans", True):
+        return
+    try:
+        if kind == "series":
+            summary = sweep_series_orphans(folder, dry_run=False)
+        else:
+            summary = sweep_movie_orphans(folder, dry_run=False)
+    except Exception as e:  # noqa: BLE001
+        log.warning("orphan sweep failed for {}: {}", folder, e)
+        return
+    n_nfo = int(summary.get("nfo_removed") or 0)
+    n_thumb = int(summary.get("thumb_removed") or 0)
+    if n_nfo == 0 and n_thumb == 0:
+        return
+    msg = (
+        f"Removed {n_nfo} orphaned NFO(s) and {n_thumb} orphaned "
+        "thumbnail(s) left behind by a Sonarr/Radarr file upgrade. "
+        "This prevents Plex from creating a duplicate library entry "
+        "for the show."
+    )
+    log.info(msg)
+    job["messages"].append(msg)
 
 
 def _maybe_schedule_plex_refresh(folder: Path, settings, job: dict, log) -> None:
@@ -470,6 +511,7 @@ async def build_movie(folder: Path, *, force: bool = False,
             )
         except Exception as e:
             log.warning("Movie artwork: {}", e)
+        _maybe_sweep_orphans(folder, "movie", settings, job, log)
         scan_movie_folder(folder, library=folder.parent.name)
         db.upsert_item_state(str(folder), last_built=int(time.time()))
         try:
@@ -739,6 +781,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
                 url = tmdb_image_url(sp, "original")
                 await _download_url(url, folder / season_poster_filename(snum, ".jpg"), force=force)
 
+        _maybe_sweep_orphans(folder, "series", settings, job, log)
         scan_series_folder(folder, library=folder.parent.name)
         db.upsert_item_state(str(folder), last_built=int(time.time()))
         try:
@@ -842,6 +885,7 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
         await _download_url(bg, folder / "background.jpg", force=force)
         if banner:
             await _download_url(banner, folder / "banner.jpg", force=force)
+        _maybe_sweep_orphans(folder, "movie", settings, job, log)
         scan_movie_folder(folder, library=folder.parent.name)
         db.upsert_item_state(str(folder), last_built=int(time.time()))
         try:

@@ -237,6 +237,8 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
         <WhyStatusPanel path={path} onClose={() => setShowExplain(false)} />
       )}
 
+      <OrphansPanel path={path} title={state?.title ?? path} />
+
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
         <Stat label="Episodes (local)" value={state?.episode_count_local ?? "—"} />
         <Stat
@@ -903,6 +905,115 @@ function SecondarySourcePanel({
 // specific episode files have no .nfo yet. Designed to make the difference
 // between "partial", "foreign", "mixed", and "none" actionable instead of
 // just a bucket label.
+// v0.11.10 — Orphan companion sweeper. Renders inline only when the folder
+// has at least one orphaned `<stem>.nfo` or `<stem>-thumb.*` left behind by
+// a Sonarr/Radarr release upgrade. The hazard-yellow button removes them.
+function OrphansPanel({ path, title }: { path: string; title: string }) {
+  const qc = useQueryClient();
+  const confirmDlg = useConfirm();
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const q = useQuery({
+    queryKey: ["orphans", path],
+    queryFn: () => api.items.orphansPreview(path),
+    staleTime: 15_000,
+  });
+  const total = (q.data?.nfo_removed ?? 0) + (q.data?.thumb_removed ?? 0);
+  if (q.isLoading) return null;
+  if (!q.data || total === 0) return null;
+
+  const files = q.data.files ?? [];
+  const head = files.slice(0, 12).join("\n  • ");
+  const more = files.length > 12 ? `\n  … and ${files.length - 12} more` : "";
+
+  const runSweep = async () => {
+    if (busy) return;
+    const ok = await confirmDlg({
+      title: `Remove ${total} orphaned sidecar${total === 1 ? "" : "s"} for “${title}”?`,
+      message:
+        `These files have no matching video file in the folder — they were left ` +
+        `behind when Sonarr/Radarr swapped a release. Plex reads the orphaned ` +
+        `NFO's <uniqueid> and creates a duplicate library entry, which is the ` +
+        `“my show appears twice” symptom.\n\n` +
+        `Will delete:\n  • ${head}${more}\n\n` +
+        `tvshow.nfo, season.nfo, every show/season-level artwork file, and every ` +
+        `video / subtitle / audio file are preserved. This cannot be undone.`,
+      confirmLabel: "Remove orphans",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setBusy(true);
+    setMsg("Removing orphaned sidecars…");
+    try {
+      const res = await api.items.orphansSweep({
+        folder_path: path,
+        dry_run: false,
+        rescan: true,
+      });
+      setMsg(
+        `Removed ${res.nfo_removed} orphaned NFO(s) and ${res.thumb_removed} orphaned ` +
+          `thumbnail(s).`,
+      );
+      await qc.invalidateQueries({ queryKey: ["orphans", path] });
+      await qc.invalidateQueries({ queryKey: ["detail", path] });
+      await qc.invalidateQueries({ queryKey: ["nfo-explain", path] });
+      await qc.invalidateQueries({ queryKey: ["items"] });
+    } catch (e: any) {
+      setMsg(`Orphan sweep failed: ${e?.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-4 rounded-lg border-2 border-amber-500/60 bg-amber-500/[0.04] p-3">
+      <div className="flex flex-wrap items-start gap-3">
+        <span
+          aria-hidden
+          className="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-400 text-black text-xs font-black flex-none"
+          title="Hazard"
+        >
+          ⚠
+        </span>
+        <div className="flex-1 min-w-[200px]">
+          <div className="text-sm font-semibold text-amber-200">
+            Orphaned sidecars detected
+          </div>
+          <div className="text-xs text-amber-200/80 mt-0.5 leading-relaxed">
+            Found {q.data.nfo_removed} orphaned NFO(s) and {q.data.thumb_removed}{" "}
+            orphaned thumbnail(s) with no matching video. Sonarr/Radarr likely
+            replaced the video with a different release group, leaving the old
+            companion files behind. Plex reads the orphaned NFO and creates a
+            <i> duplicate library entry</i> for this folder — removing them
+            collapses the duplicate.
+          </div>
+          {files.length > 0 && (
+            <details className="mt-2 text-[11px] text-amber-100/90">
+              <summary className="cursor-pointer text-amber-300/90 hover:text-amber-200">
+                Show file list ({files.length})
+              </summary>
+              <ul className="mt-1 font-mono text-[11px] text-amber-100/80 max-h-40 overflow-auto pl-4 list-disc">
+                {files.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {msg && <div className="text-[11px] text-amber-200/80 mt-2">{msg}</div>}
+        </div>
+        <button
+          onClick={runSweep}
+          disabled={busy}
+          className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-black border-2 border-amber-500 rounded text-sm font-semibold disabled:opacity-50 flex-none"
+          title="Delete the orphaned <stem>.nfo and <stem>-thumb.* files for this folder. Live videos and show/season artwork are preserved."
+        >
+          ⚠ Remove orphaned sidecars
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function WhyStatusPanel({
   path,
   onClose,
