@@ -2,6 +2,38 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.14 — 2026-05-10
+
+Cast headshot fix. Plex was showing initials ("ML", "SM", "MJ", "KS")
+for cast members like Miles Luna, Shannon McCormick, Michael Jones, and
+Kerry Shawcross even though their portraits were clearly present on
+TVDB. The bug: TVDB's character object actually carries *two* image
+fields, and we were only emitting the wrong one to the NFO.
+
+### Fixed
+
+- **Actor `<thumb>` now falls back from role art to person headshot.**
+  TVDB v4 character records expose `image` (role-specific art, often
+  `null`) and `personImgURL` (the actor's headshot). Plex's NFO reader
+  renders whichever URL we put in `<actor><thumb>`. The series builder
+  was only writing `image`, so anyone whose character had no role art
+  ended up as initials in Plex even when the actor portrait was set on
+  TVDB. We now fall back to `personImgURL` when `image` is missing,
+  matching what TVDB's own site does. Same fix applied to the episode
+  and movie NFO builders, which weren't writing actor thumbs at all.
+- **Episode and movie NFOs now include cast portraits.** Both builders
+  previously emitted `<actor><name>...</name><role>...</role></actor>`
+  with no `<thumb>`. They now write the same `image → personImgURL`
+  fallback the series builder uses, so Plex finally fills in cast
+  pictures on those scopes too.
+
+### Notes
+
+- Existing series.nfo / episode.nfo / movie.nfo files won't update on
+  their own — run **Force rebuild** on affected items (or **Rebuild
+  changed** if you'd like the app to detect them automatically) to
+  pick up the fix.
+
 ## 0.11.13 — 2026-05-10
 
 Follow-up to v0.11.12. The TMDB language whitelist set in Settings was

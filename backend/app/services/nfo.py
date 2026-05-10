@@ -181,8 +181,17 @@ def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[st
         actor = ET.SubElement(root, "actor")
         _el(actor, "name", c.get("personName") or "")
         _el(actor, "role", c.get("name") or "")
-        if c.get("image"):
-            _el(actor, "thumb", absolutize_tvdb_url(c["image"]) or "")
+        # v0.11.14: TVDB character objects expose two image fields —
+        # `image` is the character/role art (often null) and
+        # `personImgURL` is the actor's headshot. Plex shows whichever
+        # we put in <thumb>. Previously we only used `image`, so cast
+        # entries whose role art was missing rendered as initials in
+        # Plex even when the actor portrait was set on TVDB. Fall back
+        # to the headshot when the role art isn't present, matching
+        # TVDB's own site behaviour.
+        thumb = c.get("image") or c.get("personImgURL")
+        if thumb:
+            _el(actor, "thumb", absolutize_tvdb_url(thumb) or "")
 
     return _pretty(root, {"tvdb_id": s.get("id")})
 
@@ -220,6 +229,11 @@ def build_episode_nfo(episode_extended: dict, *, language: str, fallbacks: list[
             actor = ET.SubElement(root, "actor")
             _el(actor, "name", c["personName"])
             _el(actor, "role", c.get("name") or "")
+            # v0.11.14: include actor portrait, falling back from role
+            # art to person headshot. See series builder for rationale.
+            thumb = c.get("image") or c.get("personImgURL")
+            if thumb:
+                _el(actor, "thumb", absolutize_tvdb_url(thumb) or "")
     return _pretty(root, {"tvdb_id": e.get("id")})
 
 
@@ -291,6 +305,11 @@ def build_movie_nfo(movie_extended: dict, *, language: str, fallbacks: list[str]
             actor = ET.SubElement(root, "actor")
             _el(actor, "name", c["personName"])
             _el(actor, "role", c.get("name") or "")
+            # v0.11.14: include actor portrait, falling back from role
+            # art to person headshot. See series builder for rationale.
+            thumb = c.get("image") or c.get("personImgURL")
+            if thumb:
+                _el(actor, "thumb", absolutize_tvdb_url(thumb) or "")
     return _pretty(root, {"tvdb_id": m.get("id")})
 
 
