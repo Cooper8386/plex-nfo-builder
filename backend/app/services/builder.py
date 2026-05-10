@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from pathlib import Path
@@ -12,7 +13,7 @@ from loguru import logger
 from .. import db
 from ..config import effective_metadata_source, get_user_settings
 from ..logging_setup import job_logger, close_job_logger
-from .artwork import download_movie_canonical, download_series_canonical, season_poster_filename
+from .artwork import absolutize_tvdb_url, download_movie_canonical, download_series_canonical, season_poster_filename
 from .artwork_resolver import (
     resolve_preferred_artwork_movie,
     resolve_preferred_artwork_series,
@@ -177,6 +178,148 @@ async def _hydrate_tvdb_character_thumbs(
         + (f" (failed: {failed})" if failed else ""),
         filled,
         len(needs),
+    )
+
+
+_ACTOR_NAME_SANITIZE_RE = re.compile(r'[<>:"|?*/\\\x00-\x1f]+')
+
+
+def _sanitize_actor_filename(name: str) -> str:
+    """Strip filesystem-illegal characters from an actor name so it can
+    be safely used as ``.actors/{name}.jpg``. Plex matches by the literal
+    filename stem against the ``<name>`` field in the NFO, so we keep
+    spaces and unicode intact and only replace the small set of bytes
+    that Windows / Linux / macOS forbid in filenames.
+    """
+    cleaned = _ACTOR_NAME_SANITIZE_RE.sub("_", name or "").strip().strip(".")
+    return cleaned or "unknown"
+
+
+async def _download_actor_portraits_tvdb(
+    folder: Path,
+    characters: Optional[list],
+    *,
+    log,
+    force: bool,
+    limit: int = 60,
+) -> None:
+    """Save actor headshots to ``{folder}/.actors/{Actor Name}.jpg``.
+
+    Background
+    ----------
+    Even when ``tvshow.nfo`` carries a correct ``<thumb>`` URL for every
+    cast member, Plex's online TV agent will *overwrite* those portraits
+    seconds later by re-scraping TVDB directly. For shows like RWBY where
+    the four lead voice actors (Miles Luna, Shannon McCormick, Michael
+    Jones, Kerry Shawcross) have a null ``image`` field on their TVDB
+    People record, the online agent's overwrite turns the portrait blank
+    — even though our hydrator successfully filled it from the per-show
+    character entry. v0.11.14–0.11.16 chased that bug from the wrong end.
+
+    The fix is the Kodi / Jellyfin / Plex convention of writing actor
+    portraits as local files in ``.actors/{Actor Name}.jpg`` next to
+    ``tvshow.nfo``. Plex's Local Media Assets agent prefers those local
+    files over anything an online agent later fetches, so the portraits
+    survive every subsequent scrape.
+    """
+    if not isinstance(characters, list) or not characters:
+        return
+    seen: set[str] = set()
+    targets: list[tuple[Path, str]] = []
+    for c in characters:
+        if not isinstance(c, dict):
+            continue
+        name = (c.get("personName") or "").strip()
+        if not name:
+            continue
+        url = c.get("image") or c.get("personImgURL")
+        url = absolutize_tvdb_url(url) if url else None
+        if not url:
+            continue
+        fname = _sanitize_actor_filename(name)
+        if fname in seen:
+            continue
+        seen.add(fname)
+        dest = folder / ".actors" / f"{fname}.jpg"
+        targets.append((dest, url))
+        if len(targets) >= limit:
+            break
+    if not targets:
+        return
+    written = 0
+    sem = asyncio.Semaphore(8)
+
+    async def _one(dest: Path, url: str) -> bool:
+        async with sem:
+            return await _download_url(url, dest, force=force)
+
+    results = await asyncio.gather(
+        *(_one(d, u) for d, u in targets), return_exceptions=True
+    )
+    for r in results:
+        if r is True:
+            written += 1
+    log.info(
+        "Wrote {}/{} actor portraits to .actors/ (TVDB)",
+        written, len(targets),
+    )
+
+
+async def _download_actor_portraits_tmdb(
+    folder: Path,
+    cast: Optional[list],
+    *,
+    log,
+    force: bool,
+    limit: int = 60,
+) -> None:
+    """TMDB variant of :func:`_download_actor_portraits_tvdb`.
+
+    Consumes the ``credits.cast`` shape from TMDB v3 and downloads each
+    actor's ``profile_path`` (rendered at w185) into ``.actors/``.
+    """
+    if not isinstance(cast, list) or not cast:
+        return
+    seen: set[str] = set()
+    targets: list[tuple[Path, str]] = []
+    for c in cast:
+        if not isinstance(c, dict):
+            continue
+        name = (c.get("name") or "").strip()
+        if not name:
+            continue
+        path = c.get("profile_path")
+        if not path:
+            continue
+        url = tmdb_image_url(path, "w185")
+        if not url:
+            continue
+        fname = _sanitize_actor_filename(name)
+        if fname in seen:
+            continue
+        seen.add(fname)
+        dest = folder / ".actors" / f"{fname}.jpg"
+        targets.append((dest, url))
+        if len(targets) >= limit:
+            break
+    if not targets:
+        return
+    written = 0
+    sem = asyncio.Semaphore(8)
+
+    async def _one(dest: Path, url: str) -> bool:
+        async with sem:
+            return await _download_url(url, dest, force=force)
+
+    results = await asyncio.gather(
+        *(_one(d, u) for d, u in targets), return_exceptions=True
+    )
+    for r in results:
+        if r is True:
+            written += 1
+    log.info(
+        "Wrote {}/{} actor portraits to .actors/ (TMDB)",
+        written, len(targets),
     )
 
 
@@ -424,6 +567,16 @@ async def build_series(folder: Path, *, force: bool = False,
             preferred_overrides=preferred_overrides,
         )
         log.info("Artwork download complete")
+        # v0.11.17: write actor portraits as local files in `.actors/`.
+        # Plex's online TV agent re-scrapes cast from TVDB after we
+        # write the NFO, and on shows like RWBY (where the lead VAs
+        # have null `image` on their TVDB People record) that scrape
+        # overwrites our correct <thumb> URLs with nothing. Local
+        # `.actors/{Actor Name}.jpg` files are read by Plex's Local
+        # Media Assets agent and survive subsequent online overwrites.
+        await _download_actor_portraits_tvdb(
+            folder, data.get("characters"), log=log, force=force,
+        )
         # v0.11.10: sweep orphaned NFO/thumb companions before the rescan so
         # the DB's nfo-state counts reflect the post-sweep reality. See
         # services/orphans.py for the full rationale on the Sonarr upgrade bug.
@@ -616,6 +769,13 @@ async def build_movie(folder: Path, *, force: bool = False,
             )
         except Exception as e:
             log.warning("Movie artwork: {}", e)
+        # v0.11.17: see series build for the rationale on `.actors/`.
+        try:
+            await _download_actor_portraits_tvdb(
+                folder, data.get("characters"), log=log, force=force,
+            )
+        except Exception as e:
+            log.warning("Actor portrait download (TVDB movie): {}", e)
         _maybe_sweep_orphans(folder, "movie", settings, job, log)
         scan_movie_folder(folder, library=folder.parent.name)
         db.upsert_item_state(str(folder), last_built=int(time.time()))
@@ -865,6 +1025,14 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
             await _download_url(banner, folder / "banner.jpg", force=force)
         if clearlogo:
             await _download_url(clearlogo, folder / "clearlogo.png", force=force)
+        # v0.11.17: see TVDB series build for the rationale on `.actors/`.
+        try:
+            tmdb_cast = ((data.get("credits") or {}).get("cast") or [])
+            await _download_actor_portraits_tmdb(
+                folder, tmdb_cast[:30], log=log, force=force,
+            )
+        except Exception as e:
+            log.warning("Actor portrait download (TMDB series): {}", e)
         # Per-season posters: user selection > preferred-source override > TMDB season poster_path
         for snum, parsed_list in local_seasons.items():
             slot = f"season-{snum:02d}-poster"
@@ -990,6 +1158,14 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
         await _download_url(bg, folder / "background.jpg", force=force)
         if banner:
             await _download_url(banner, folder / "banner.jpg", force=force)
+        # v0.11.17: see TVDB series build for the rationale on `.actors/`.
+        try:
+            tmdb_cast = ((data.get("credits") or {}).get("cast") or [])
+            await _download_actor_portraits_tmdb(
+                folder, tmdb_cast[:30], log=log, force=force,
+            )
+        except Exception as e:
+            log.warning("Actor portrait download (TMDB movie): {}", e)
         _maybe_sweep_orphans(folder, "movie", settings, job, log)
         scan_movie_folder(folder, library=folder.parent.name)
         db.upsert_item_state(str(folder), last_built=int(time.time()))

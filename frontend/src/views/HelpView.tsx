@@ -122,6 +122,54 @@ export default function HelpView() {
         </Bullets>
       </Section>
 
+      <Section title="Actor portraits in .actors/">
+        <p>
+          From v0.11.17, every build also downloads each cast
+          member's headshot to <Code>{'{show_folder}/.actors/{Actor Name}.jpg'}</Code>{' '}
+          alongside <Code>tvshow.nfo</Code> / <Code>movie.nfo</Code>.
+          This is the Kodi / Jellyfin / Plex convention for local
+          actor images and Plex's <i>Local Media Assets</i> agent
+          reads them directly.
+        </p>
+        <Bullets>
+          <li>
+            <b>Why this exists.</b> Even with a correct <Code>&lt;thumb&gt;</Code>{' '}
+            URL in the NFO, Plex's online TV agent re-scrapes cast
+            directly from TVDB seconds after a build finishes and
+            will <i>overwrite</i> the portrait with whatever the
+            actor's People record carries. For voice-acting credits
+            on shows like RWBY — where the lead VAs' People records
+            have a blank image — that overwrite turns the portrait
+            back into initials. Local <Code>.actors/</Code> files
+            survive every subsequent online-agent overwrite, so the
+            portrait sticks.
+          </li>
+          <li>
+            <b>Applies everywhere.</b> TVDB and TMDB, series and
+            movies. TMDB uses the <Code>profile_path</Code> field at{' '}
+            <Code>w185</Code>; TVDB uses the per-show character image
+            (falling back to the headshot via the v0.11.15 hydrator).
+          </li>
+          <li>
+            <b>Limits.</b> Capped at 60 portraits per build with 8
+            concurrent downloads, so a show with hundreds of bit-part
+            credits can't tie up a build. Filenames are sanitized for
+            cross-platform safety — <Code>{'<>:"|?*/\\'}</Code> and
+            control characters get replaced with{' '}
+            <Code>_</Code> — but spaces and unicode pass through
+            unchanged because Plex matches the filename stem against
+            the literal name in the NFO.
+          </li>
+          <li>
+            <b>If a show still has missing portraits</b> after
+            upgrading, run a <i>Force rebuild</i> on it and then
+            trigger Plex's <i>Refresh Metadata</i> on the show. The
+            freshly-written <Code>.actors/</Code> files are picked up
+            on the next scan.
+          </li>
+        </Bullets>
+      </Section>
+
       <Section title="Per-provider artwork language filter">
         <p>
           The TMDB filter above keeps anime and K-drama posters from

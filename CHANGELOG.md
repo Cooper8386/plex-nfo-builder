@@ -2,6 +2,55 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.17 — 2026-05-10
+
+Follow-up to v0.11.16. Cast portraits for Miles Luna / Shannon
+McCormick / Michael Jones / Kerry Shawcross on RWBY (and a handful
+of other shows with the same shape) kept appearing in Plex for a
+few seconds after each build and then disappearing. The diagnosis
+from the v0.11.16 build log was conclusive: the NFO writes the
+correct `<thumb>` URL every single time, but Plex's online TV agent
+re-scrapes cast directly from TVDB seconds later and *overwrites*
+our thumbs with the empty image those four People records carry.
+No amount of fixing on the NFO side can win that race.
+
+### Fixed
+
+- **Actor portraits are now written as local files in `.actors/`**,
+  alongside `tvshow.nfo` / `movie.nfo`. After every successful build
+  the app downloads each cast member's headshot to
+  `{show_folder}/.actors/{Actor Name}.jpg` (Kodi / Jellyfin / Plex
+  convention). Plex's Local Media Assets agent reads those files
+  directly and they survive subsequent online-agent re-scrapes, so
+  the missing portraits stay filled in instead of getting wiped on
+  the next background scrape. Applies to every build path:
+  - TVDB series (per-show cast)
+  - TVDB movies
+  - TMDB series (`credits.cast`)
+  - TMDB movies (`credits.cast`)
+- Concurrency is capped at 8 simultaneous downloads and at most 60
+  portraits per build, so a poorly-curated show with hundreds of
+  bit-part credits can't tie up the build pipeline.
+- Actor filenames are sanitized for cross-platform safety: `<>:"|?*/\\`
+  and control characters get replaced with `_`. Spaces and unicode
+  letters pass through unchanged — Plex matches the filename stem
+  against the literal `<name>` in the NFO.
+
+### Notes
+
+- The `.actors/` directory is hidden on Linux/macOS by the leading
+  dot, exactly like Kodi's convention. Plex skips it during library
+  scans (it's not a media folder) but its agent still reads from it.
+- If you previously had broken portraits in Plex for one of these
+  shows, run a Force rebuild on the affected library, then trigger
+  a Plex "Refresh Metadata" on the show — the freshly-written
+  `.actors/` files will be picked up on the next scan.
+- This release leaves the v0.11.15 hydrator in place. Local portraits
+  + correct NFO `<thumb>` URLs is belt-and-suspenders — the
+  `.actors/` files protect against Plex's online agent overwriting,
+  and the hydrated `<thumb>` URLs still cover the case where someone
+  reads the NFO with a different player.
+
 ## 0.11.16 — 2026-05-10
 
 Follow-up to v0.11.15. The cast hydration step worked on a fresh
