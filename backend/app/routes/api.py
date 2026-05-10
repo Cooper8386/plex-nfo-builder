@@ -47,7 +47,11 @@ from ..services.parser import (
     parse_folder_name,
     season_number_from_dir,
 )
-from ..services.tmdb import get_client as get_tmdb_client, image_url as tmdb_image_url
+from ..services.tmdb import (
+    get_client as get_tmdb_client,
+    image_url as tmdb_image_url,
+    apply_tmdb_image_language_filter,
+)
 from ..services.tvdb import get_client
 
 router = APIRouter(prefix="/api")
@@ -1724,9 +1728,15 @@ async def artwork_candidates(path: str, kind: str = "series"):
                 details = await tc.movie_details(binding["external_id"])
                 if isinstance(details, dict) and details.get("imdb_id"):
                     imdb_id_for_fanart = details["imdb_id"]
-                _extend("poster", _tag_provider(_tmdb_to_candidates(imgs.get("posters") or []), "tmdb"))
-                _extend("background", _tag_provider(_tmdb_to_candidates(imgs.get("backdrops") or []), "tmdb"))
-                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(imgs.get("logos") or []), "tmdb"))
+                # v0.11.13: respect the per-provider artwork language filter
+                # in the manual picker too. Was previously bypassed because
+                # we were already passing include_all_languages=True; user
+                # reported the picker still showed pt/de/it/etc when their
+                # whitelist was [en, ja]. The TMDB filter has its own all-
+                # rejected fallback so a niche import still returns art.
+                _extend("poster", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("posters") or [])), "tmdb"))
+                _extend("background", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("backdrops") or [])), "tmdb"))
+                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("logos") or [])), "tmdb"))
             except Exception as e:
                 logger.warning("TMDB images failed: {}", e)
         else:
@@ -1739,9 +1749,9 @@ async def artwork_candidates(path: str, kind: str = "series"):
                 ext = details.get("external_ids") or {}
                 tvdb_id_for_fanart = str(ext.get("tvdb_id") or "") or None
                 imdb_id_for_fanart = str(ext.get("imdb_id") or "") or None
-                _extend("poster", _tag_provider(_tmdb_to_candidates(imgs.get("posters") or []), "tmdb"))
-                _extend("background", _tag_provider(_tmdb_to_candidates(imgs.get("backdrops") or []), "tmdb"))
-                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(imgs.get("logos") or []), "tmdb"))
+                _extend("poster", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("posters") or [])), "tmdb"))
+                _extend("background", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("backdrops") or [])), "tmdb"))
+                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("logos") or [])), "tmdb"))
                 seasons = details.get("seasons") or []
                 for s in seasons:
                     if not isinstance(s, dict):
@@ -1754,7 +1764,10 @@ async def artwork_candidates(path: str, kind: str = "series"):
                             binding["external_id"], int(sn),
                             include_all_languages=True,
                         )
-                        cands = _tmdb_to_candidates(season_imgs.get("posters") or [], season_number=int(sn))
+                        cands = _tmdb_to_candidates(
+                            apply_tmdb_image_language_filter(season_imgs.get("posters") or []),
+                            season_number=int(sn),
+                        )
                         if cands:
                             _extend(f"season-{int(sn):02d}-poster", _tag_provider(cands, "tmdb"))
                     except Exception:
@@ -1784,16 +1797,16 @@ async def artwork_candidates(path: str, kind: str = "series"):
                 imgs = await tc.movie_images(
                     tmdb_id_for_fanart, include_all_languages=True
                 )
-                _extend("poster", _tag_provider(_tmdb_to_candidates(imgs.get("posters") or []), "tmdb"))
-                _extend("background", _tag_provider(_tmdb_to_candidates(imgs.get("backdrops") or []), "tmdb"))
-                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(imgs.get("logos") or []), "tmdb"))
+                _extend("poster", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("posters") or [])), "tmdb"))
+                _extend("background", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("backdrops") or [])), "tmdb"))
+                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("logos") or [])), "tmdb"))
             else:
                 imgs = await tc.tv_images(
                     tmdb_id_for_fanart, include_all_languages=True
                 )
-                _extend("poster", _tag_provider(_tmdb_to_candidates(imgs.get("posters") or []), "tmdb"))
-                _extend("background", _tag_provider(_tmdb_to_candidates(imgs.get("backdrops") or []), "tmdb"))
-                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(imgs.get("logos") or []), "tmdb"))
+                _extend("poster", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("posters") or [])), "tmdb"))
+                _extend("background", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("backdrops") or [])), "tmdb"))
+                _extend("clearlogo", _tag_provider(_tmdb_to_candidates(apply_tmdb_image_language_filter(imgs.get("logos") or [])), "tmdb"))
                 # Per-season posters from TMDB (supplement TVDB primary)
                 try:
                     tmdb_details = await tc.tv_details(tmdb_id_for_fanart)
@@ -1818,7 +1831,10 @@ async def artwork_candidates(path: str, kind: str = "series"):
                             tmdb_id_for_fanart, sn_int,
                             include_all_languages=True,
                         )
-                        cands = _tmdb_to_candidates(season_imgs.get("posters") or [], season_number=sn_int)
+                        cands = _tmdb_to_candidates(
+                            apply_tmdb_image_language_filter(season_imgs.get("posters") or []),
+                            season_number=sn_int,
+                        )
                         if cands:
                             _extend(f"season-{sn_int:02d}-poster", _tag_provider(cands, "tmdb"))
                     except Exception as e:

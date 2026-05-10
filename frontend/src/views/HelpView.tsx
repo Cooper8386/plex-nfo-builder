@@ -168,9 +168,10 @@ export default function HelpView() {
             posters, fanart, banners, season posters, and clearlogos
             — both TVDB and TMDB image lookups go through the filter
             with their respective whitelist. The manual artwork picker
-            still respects the filter for TVDB candidates; for TMDB
-            it keeps requesting all languages so you see everything
-            when you're hand-picking.
+            (folder detail panel) also respects the filter for both
+            providers (v0.11.13). If you want to hand-pick a foreign
+            poster on purpose, clear the matching whitelist in
+            Settings → Artwork.
           </li>
         </Bullets>
         <Callout>

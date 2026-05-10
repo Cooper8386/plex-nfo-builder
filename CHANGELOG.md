@@ -2,6 +2,37 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.13 — 2026-05-10
+
+Follow-up to v0.11.12. The TMDB language whitelist set in Settings was
+applied everywhere the auto-resolver picks artwork but **not** in the
+manual artwork picker (the candidate grid in a folder's detail panel),
+so a user who set the whitelist to `en, ja` was still seeing `pt`, `es`,
+`de`, `it`, `ar`, `it`, etc. cards in the picker. The picker now goes
+through the same TMDB language filter as the auto-resolver.
+
+### Fixed
+
+- **TMDB manual artwork picker now respects the language whitelist.**
+  `_tmdb_to_candidates` calls in the manual picker (series posters,
+  backdrops, logos, season posters; both primary-TMDB and TVDB-primary-
+  with-TMDB-supplement paths) now run their input through
+  `apply_tmdb_image_language_filter` before normalization. The picker
+  still calls TMDB with `include_all_languages=True` so the filter is
+  the only thing constraining language; when the whitelist is empty,
+  behaviour is unchanged. The all-rejected fallback still applies, so
+  a title with no art in your whitelisted languages still shows the
+  unfiltered set instead of an empty grid.
+
+### Notes
+
+- TVDB manual picker calls already routed through `list_candidates`
+  with `apply_language_filter=True` (default), so it was correctly
+  filtered in v0.11.12. This release closes the TMDB-side gap.
+- If you want the picker to show every uploaded image regardless of
+  language (e.g. you want to hand-pick a foreign poster on purpose),
+  clear the TMDB whitelist in Settings → Artwork.
+
 ## 0.11.12 — 2026-05-09
 
 Artwork language filtering. Mixed-language scrapers (TVDB and TMDB)
