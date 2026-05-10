@@ -92,6 +92,76 @@ def _manual_secondary_tuple(binding) -> Optional[tuple[str, str]]:
     return (sp, sid)
 
 
+async def _hydrate_tvdb_character_thumbs(
+    characters: Optional[list],
+    *,
+    log,
+    force: bool = False,
+    limit: int = 60,
+) -> None:
+    """Backfill missing actor portraits on TVDB character records.
+
+    TVDB v4 character objects expose two image fields:
+
+    * ``image`` — role-specific art for the character (often null)
+    * ``personImgURL`` — a copy of the actor's headshot
+
+    On many shows ``personImgURL`` is *also* null on the character
+    record even though the underlying People record carries the
+    actor's headshot. TVDB's own site falls back to the person
+    record in that case; v0.11.14 only used the two fields already on
+    the character object, so cast members like Miles Luna / Shannon
+    McCormick / Michael Jones / Kerry Shawcross on RWBY still rendered
+    as initials in Plex.
+
+    This helper mutates the characters list in-place: for any entry
+    that has neither ``image`` nor ``personImgURL`` but does carry a
+    ``peopleId``, fetch ``/people/{peopleId}`` and copy its ``image``
+    onto the character as ``personImgURL`` so the existing fallback
+    logic in ``build_*_nfo`` picks it up.
+
+    The fetch is concurrent (one task per missing portrait, capped at
+    ``limit`` so a poorly-curated series with hundreds of recurring
+    bit-parts can't tie up the build). Failures are logged at debug
+    level and silently dropped — the cast member just keeps its
+    initials in Plex, same as before this fix.
+    """
+    if not isinstance(characters, list) or not characters:
+        return
+    needs: list[dict] = []
+    for c in characters:
+        if not isinstance(c, dict):
+            continue
+        if c.get("image") or c.get("personImgURL"):
+            continue
+        if not c.get("peopleId"):
+            continue
+        needs.append(c)
+        if len(needs) >= limit:
+            break
+    if not needs:
+        return
+    client = get_client()
+
+    async def _one(ch: dict) -> None:
+        try:
+            url = await client.person_image(ch["peopleId"], force=force)
+        except Exception as e:  # pragma: no cover
+            log.debug("person_image {} failed: {}", ch.get("peopleId"), e)
+            return
+        if url:
+            ch["personImgURL"] = url
+
+    await asyncio.gather(*(_one(c) for c in needs), return_exceptions=True)
+    filled = sum(1 for c in needs if c.get("personImgURL"))
+    if filled:
+        log.info(
+            "Hydrated {}/{} cast portraits from TVDB people records",
+            filled,
+            len(needs),
+        )
+
+
 _jobs: dict[str, dict] = {}
 
 
@@ -203,6 +273,12 @@ async def build_series(folder: Path, *, force: bool = False,
         if preferred_overrides:
             log.info("Preferred artwork source override applied for {} slot(s): {}",
                      len(preferred_overrides), sorted(preferred_overrides.keys()))
+        # v0.11.15: backfill missing actor portraits from /people/{id}
+        # before NFO is built. TVDB's character payload doesn't always
+        # carry personImgURL even when the actor has a headshot on file.
+        await _hydrate_tvdb_character_thumbs(
+            data.get("characters"), log=log, force=force
+        )
         nfo_text = build_series_nfo(
             data, language=lang, fallbacks=fallbacks,
             translation=series_translation,
@@ -296,6 +372,13 @@ async def build_series(folder: Path, *, force: bool = False,
                 # episode translation must be fetched separately
                 ep_translation = await client.best_translation(
                     "episodes", ep["id"], lang, fallbacks, force=force
+                )
+                # v0.11.15: backfill cast portraits from /people/{id}
+                # for guest stars / supporting cast on the episode too.
+                await _hydrate_tvdb_character_thumbs(
+                    full_ep.get("characters") if isinstance(full_ep, dict) else None,
+                    log=log,
+                    force=force,
                 )
                 ep_text = build_episode_nfo(
                     full_ep, language=lang, fallbacks=fallbacks,
@@ -490,6 +573,10 @@ async def build_movie(folder: Path, *, force: bool = False,
         if preferred_overrides:
             log.info("Preferred artwork source override applied for {} slot(s): {}",
                      len(preferred_overrides), sorted(preferred_overrides.keys()))
+        # v0.11.15: backfill missing actor portraits from /people/{id}.
+        await _hydrate_tvdb_character_thumbs(
+            data.get("characters"), log=log, force=force
+        )
         nfo_text = build_movie_nfo(
             data, language=lang, fallbacks=fallbacks,
             translation=movie_translation,

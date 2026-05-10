@@ -2,6 +2,44 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.15 — 2026-05-10
+
+Follow-up to v0.11.14. The `image → personImgURL` fallback fixed cast
+portraits when TVDB sets either field on the character record, but on
+shows like RWBY the character payload from `/series/{id}/extended`
+leaves *both* fields null even when the actor has a headshot uploaded
+on their People record. So Miles Luna, Shannon McCormick, Michael
+Jones, and Kerry Shawcross still rendered as initials in Plex after
+upgrading.
+
+### Fixed
+
+- **Backfill missing actor portraits from TVDB People records.** Before
+  building each TVDB-sourced NFO (series, movie, and per-episode), the
+  builder now scans the character list for entries with no `image` and
+  no `personImgURL`. For any such entry that has a `peopleId`, it
+  fetches `/people/{peopleId}` and copies the actor's headshot onto
+  the character as `personImgURL`. The existing fallback chain in the
+  NFO writer then picks it up and emits a proper `<thumb>`. Matches
+  what TVDB's own site does — fall back to the person's default
+  headshot when the role art is missing.
+- **Concurrency-capped enrichment.** People lookups are issued in
+  parallel, capped at 60 missing portraits per build to keep a
+  poorly-curated series with hundreds of bit-parts from tying up the
+  job. Failed lookups are logged at debug level and silently dropped
+  — the cast member just keeps its initials, no worse than before.
+- **Cached on the normal TVDB TTL.** Headshot URLs almost never
+  change, and the cache is shared with the rest of the TVDB client,
+  so subsequent builds of the same library reuse the lookups.
+
+### Notes
+
+- Re-run **Force rebuild** on shows that were missing cast pictures
+  in v0.11.14 — the first build of each show will issue the People
+  lookups, and any future builds will hit the cache.
+- This adds at most one TVDB request per missing cast member per
+  show. RWBY's hydration was 4 lookups; on most shows it's zero.
+
 ## 0.11.14 — 2026-05-10
 
 Cast headshot fix. Plex was showing initials ("ML", "SM", "MJ", "KS")

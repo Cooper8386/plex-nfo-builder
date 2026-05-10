@@ -174,6 +174,30 @@ class TVDBClient:
         # endpoint returns object with artworks array
         return d.get("artworks") if isinstance(d, dict) and "artworks" in d else d if isinstance(d, list) else []
 
+    async def person_image(self, people_id: int | str, *, force: bool = False) -> Optional[str]:
+        """Return the actor's default headshot URL (the `image` field on
+        the People record), or None if missing.
+
+        Used as a fallback for character entries on /series/.../extended
+        whose `personImgURL` is empty: TVDB renders those by looking at
+        the underlying person record, and so should we. Cached on the
+        normal TTL because headshots almost never change.
+        """
+        try:
+            data = await self._get(
+                f"/people/{people_id}",
+                ttl=self._ttl(),
+                force=force,
+            )
+        except TVDBError as e:
+            logger.debug("TVDB /people/{} failed: {}", people_id, e)
+            return None
+        d = data.get("data") or {}
+        if not isinstance(d, dict):
+            return None
+        img = d.get("image") or None
+        return img if isinstance(img, str) and img else None
+
     async def movie_extended(self, movie_id: int | str, *, force: bool = False) -> dict:
         data = await self._get(
             f"/movies/{movie_id}/extended",
