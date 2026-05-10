@@ -21,6 +21,7 @@ import httpx
 from loguru import logger
 
 from .. import db
+from ..config import get_user_settings
 
 
 # TVDB serves artwork from a CDN host that's separate from the API host.
@@ -117,17 +118,87 @@ def _rank_factory(prefer_languages: Optional[list[str]]):
     return rank
 
 
+def _tvdb_language_filter() -> tuple[Optional[set[str]], bool]:
+    """Return the user's TVDB artwork language whitelist.
+
+    Reads from :class:`UserSettings` on every call (cheap — settings are
+    loaded from a tiny JSON file). The first element is a lowercase set
+    of allowed 3-letter codes, or ``None`` if no filter is configured
+    (i.e. empty whitelist == everything allowed). The second element is
+    whether artwork tagged with no language should be kept.
+    """
+    try:
+        s = get_user_settings()
+    except Exception:
+        return None, True
+    langs = getattr(s, "tvdb_artwork_languages", None) or []
+    allow_null = bool(getattr(s, "tvdb_artwork_allow_null_language", True))
+    if not langs:
+        return None, allow_null
+    return {str(x).strip().lower() for x in langs if x}, allow_null
+
+
+def _tvdb_artwork_passes_filter(a: dict,
+                                allowed: Optional[set[str]],
+                                allow_null: bool) -> bool:
+    """Apply the user's TVDB language filter to a single artwork dict.
+
+    ``allowed=None`` means no whitelist is configured, in which case the
+    only question is whether unflagged artwork is allowed through. When
+    a whitelist *is* configured, the artwork's language must be in it —
+    or the artwork must be unflagged and the caller must allow unflagged.
+    """
+    raw = a.get("language")
+    lang = (raw or "").strip().lower()
+    if not lang:
+        return allow_null
+    if allowed is None:
+        return True
+    return lang in allowed
+
+
+def _apply_tvdb_language_filter(artworks: Iterable[dict]) -> list[dict]:
+    """Drop TVDB artwork entries whose language is disallowed by Settings.
+
+    Falls back to the *original* list when the filter would remove
+    everything — the goal is a language preference, not a way to end up
+    with no poster. Callers that need stricter behaviour can re-check
+    afterward.
+    """
+    if not artworks:
+        return []
+    allowed, allow_null = _tvdb_language_filter()
+    if allowed is None and allow_null:
+        # No whitelist configured and unflagged is allowed — nothing to do.
+        return list(artworks)
+    kept = [
+        a for a in artworks
+        if isinstance(a, dict)
+        and _tvdb_artwork_passes_filter(a, allowed, allow_null)
+    ]
+    if not kept:
+        # Don't leave the builder with nothing to work with.
+        return [a for a in artworks if isinstance(a, dict)]
+    return kept
+
+
 def list_candidates(artworks: Iterable[dict], type_id: int,
                     prefer_languages: Optional[list[str]] = None,
                     season_number: Optional[int] = None,
-                    series: Optional[dict] = None) -> list[dict]:
+                    series: Optional[dict] = None,
+                    *, apply_language_filter: bool = True) -> list[dict]:
     """Return candidate artworks of a type, sorted best-first.
 
     Each item is a dict with id/url/thumb/language/score (and seasonNumber for seasons).
+
+    ``apply_language_filter=False`` opts out of the Settings-driven
+    whitelist — used by the manual artwork picker, where the user is
+    explicitly choosing and wants every image visible.
     """
+    source = _apply_tvdb_language_filter(artworks) if apply_language_filter else list(artworks or [])
     out: list[dict] = []
     rank = _rank_factory(prefer_languages)
-    for a in artworks or []:
+    for a in source:
         if not isinstance(a, dict):
             continue
         if a.get("type") != type_id:
@@ -157,11 +228,22 @@ def list_candidates(artworks: Iterable[dict], type_id: int,
 
 
 def best_artwork_url(artworks: Iterable[dict], type_id: int,
-                     prefer_languages: Optional[list[str]] = None) -> Optional[str]:
-    """Pick the highest-scored artwork of `type_id`, optionally preferring a language."""
-    candidates = [a for a in (artworks or []) if isinstance(a, dict) and a.get("type") == type_id and (a.get("image") or a.get("url"))]
+                     prefer_languages: Optional[list[str]] = None,
+                     *, apply_language_filter: bool = True) -> Optional[str]:
+    """Pick the highest-scored artwork of `type_id`, optionally preferring a language.
+
+    When ``apply_language_filter`` is True (default), the Settings-driven
+    language whitelist is applied first; if it would leave no candidate,
+    the unfiltered list is used as a fallback so the show still gets art.
+    """
+    source = _apply_tvdb_language_filter(artworks) if apply_language_filter else list(artworks or [])
+    candidates = [a for a in source if isinstance(a, dict) and a.get("type") == type_id and (a.get("image") or a.get("url"))]
     if not candidates:
-        return None
+        # Nothing survived the filter — fall back to raw input for this slot.
+        if apply_language_filter:
+            candidates = [a for a in (artworks or []) if isinstance(a, dict) and a.get("type") == type_id and (a.get("image") or a.get("url"))]
+        if not candidates:
+            return None
     candidates.sort(key=_rank_factory(prefer_languages))
     return absolutize_tvdb_url(candidates[0].get("image") or candidates[0].get("url"))
 

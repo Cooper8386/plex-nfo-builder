@@ -69,6 +69,66 @@ class TMDBError(RuntimeError):
     pass
 
 
+def tmdb_artwork_language_filter() -> tuple[Optional[set[str]], bool]:
+    """Return the user's TMDB artwork language whitelist.
+
+    Mirrors :func:`backend.app.services.artwork._tvdb_language_filter`
+    but reads the TMDB-side fields. Returns ``(allowed_codes, allow_null)``
+    where ``allowed_codes`` is ``None`` when no whitelist is configured.
+    Codes are lowercase 2-letter ISO 639-1.
+    """
+    try:
+        s = get_user_settings()
+    except Exception:
+        return None, True
+    langs = getattr(s, "tmdb_artwork_languages", None) or []
+    allow_null = bool(getattr(s, "tmdb_artwork_allow_null_language", True))
+    if not langs:
+        return None, allow_null
+    out: set[str] = set()
+    for x in langs:
+        if not x:
+            continue
+        code = str(x).strip().lower()
+        if not code:
+            continue
+        # Be tolerant of users pasting 3-letter codes — map down where we know.
+        code = _ISO_639_3_TO_1.get(code, code)
+        out.add(code)
+    return out or None, allow_null
+
+
+def apply_tmdb_image_language_filter(images: Optional[list]) -> list:
+    """Drop TMDB image entries whose ``iso_639_1`` is disallowed by Settings.
+
+    Falls back to the unfiltered list when every entry is rejected so the
+    builder still has something to pick from. Used as a post-filter on
+    each ``posters`` / ``backdrops`` / ``logos`` array returned by
+    ``tv_images`` / ``movie_images`` / ``tv_season_images``.
+    """
+    if not isinstance(images, list) or not images:
+        return list(images or [])
+    allowed, allow_null = tmdb_artwork_language_filter()
+    if allowed is None and allow_null:
+        return list(images)
+    kept: list = []
+    for im in images:
+        if not isinstance(im, dict):
+            continue
+        raw = im.get("iso_639_1")
+        lang = (raw or "").strip().lower() if isinstance(raw, str) else ""
+        if not lang:
+            if allow_null:
+                kept.append(im)
+            continue
+        if allowed is None or lang in allowed:
+            kept.append(im)
+    if not kept:
+        # Don't strand the builder — unfiltered fallback wins over no art.
+        return [im for im in images if isinstance(im, dict)]
+    return kept
+
+
 def image_url(path: Optional[str], size: str = "original") -> Optional[str]:
     """Build a full TMDB image URL from a relative `file_path`."""
     if not path:
@@ -372,6 +432,28 @@ class TMDBClient:
         return await self._get(
             f"/movie/{movie_id}/images", params=params, ttl=self._ttl(), force=force
         )
+
+    async def languages(self, *, force: bool = False) -> list[dict]:
+        """Return TMDB's catalogue of supported languages.
+
+        Each entry is ``{iso_639_1, english_name, name}`` — ``iso_639_1``
+        is the 2-letter code TMDB tags images with (also what we pass in
+        ``include_image_language``). Cached for a week.
+        """
+        try:
+            data = await self._get(
+                "/configuration/languages", params=None,
+                ttl=7 * 24 * 3600, force=force,
+            )
+        except TMDBError as e:
+            logger.debug("TMDB /configuration/languages failed: {}", e)
+            return []
+        # This endpoint returns a bare list at the top level.
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and isinstance(data.get("results"), list):
+            return data["results"]
+        return []
 
     @staticmethod
     def _ttl() -> int:

@@ -33,7 +33,11 @@ from .artwork import (
     best_artwork_url,
     list_candidates,
 )
-from .tmdb import get_client as get_tmdb_client, image_url as tmdb_image_url
+from .tmdb import (
+    apply_tmdb_image_language_filter,
+    get_client as get_tmdb_client,
+    image_url as tmdb_image_url,
+)
 from .tvdb import get_client as get_tvdb_client
 
 
@@ -110,9 +114,9 @@ async def resolve_preferred_artwork_series(
         except Exception as e:
             logger.debug("resolve_preferred_artwork_series: tv_images failed: {}", e)
             return {}
-        poster = _first_tmdb_path(imgs.get("posters"))
-        backdrop = _first_tmdb_path(imgs.get("backdrops"))
-        logo = _first_tmdb_path(imgs.get("logos"))
+        poster = _first_tmdb_path(apply_tmdb_image_language_filter(imgs.get("posters")))
+        backdrop = _first_tmdb_path(apply_tmdb_image_language_filter(imgs.get("backdrops")))
+        logo = _first_tmdb_path(apply_tmdb_image_language_filter(imgs.get("logos")))
         if poster:
             out["poster"] = tmdb_image_url(poster, "original") or ""
         if backdrop:
@@ -129,7 +133,7 @@ async def resolve_preferred_artwork_series(
                     )
                 except Exception:
                     continue
-                fp = _first_tmdb_path(simg.get("posters"))
+                fp = _first_tmdb_path(apply_tmdb_image_language_filter(simg.get("posters")))
                 if fp:
                     url = tmdb_image_url(fp, "original")
                     if url:
@@ -233,9 +237,9 @@ async def resolve_preferred_artwork_movie(
         except Exception as e:
             logger.debug("resolve_preferred_artwork_movie: movie_images failed: {}", e)
             return {}
-        poster = _first_tmdb_path(imgs.get("posters"))
-        backdrop = _first_tmdb_path(imgs.get("backdrops"))
-        logo = _first_tmdb_path(imgs.get("logos"))
+        poster = _first_tmdb_path(apply_tmdb_image_language_filter(imgs.get("posters")))
+        backdrop = _first_tmdb_path(apply_tmdb_image_language_filter(imgs.get("backdrops")))
+        logo = _first_tmdb_path(apply_tmdb_image_language_filter(imgs.get("logos")))
         if poster:
             out["poster"] = tmdb_image_url(poster, "original") or ""
         if backdrop:

@@ -132,6 +132,11 @@ class SettingsIn(BaseModel):
     rename_movie_folder_template: Optional[str] = None
     # v0.11.10 orphan-companion sweeper
     auto_sweep_orphans: Optional[bool] = None
+    # v0.11.12 artwork language filtering (per provider)
+    tvdb_artwork_languages: Optional[list[str]] = None
+    tvdb_artwork_allow_null_language: Optional[bool] = None
+    tmdb_artwork_languages: Optional[list[str]] = None
+    tmdb_artwork_allow_null_language: Optional[bool] = None
 
 
 @router.post("/settings")
@@ -160,6 +165,19 @@ async def update_settings(payload: SettingsIn):
                 v = max(0, min(600, int(v)))
             except (TypeError, ValueError):
                 v = 5
+        if k in ("tvdb_artwork_languages", "tmdb_artwork_languages") and v is not None:
+            # Normalise to a deduped, lowercase list of non-empty codes.
+            seen: set[str] = set()
+            cleaned_codes: list[str] = []
+            for code in v if isinstance(v, list) else []:
+                if not isinstance(code, str):
+                    continue
+                c = code.strip().lower()
+                if not c or c in seen:
+                    continue
+                seen.add(c)
+                cleaned_codes.append(c)
+            v = cleaned_codes
         data[k] = v
     if data.get("metadata_source") not in ("tvdb", "tmdb"):
         data["metadata_source"] = "tvdb"
@@ -2770,6 +2788,62 @@ async def tvdb_movie(movie_id: str):
 async def tvdb_cache_clear():
     n = db.cache_clear()
     return {"cleared": n}
+
+
+# ---- Artwork language catalogue (v0.11.12) --------------------------------
+
+@router.get("/artwork/languages")
+async def artwork_languages():
+    """Return the languages each provider supports tagging artwork with.
+
+    Powers the Settings → Artwork → "languages" multi-select pickers.
+    Each provider block is ``{code, name, native_name?}``:
+
+      * TVDB codes are 3-letter ISO 639-2 (``eng``, ``fra``, ``jpn``)
+      * TMDB codes are 2-letter ISO 639-1 (``en``, ``fr``, ``ja``)
+
+    When a provider has no credentials or the live call fails, the
+    corresponding list comes back empty with ``source="unavailable"``.
+    Cached for a week server-side; clients can cache freely.
+    """
+    out: dict = {"tvdb": [], "tmdb": []}
+
+    # --- TVDB ---
+    api_key, _pin = effective_tvdb_credentials()
+    if api_key:
+        try:
+            langs = await get_client().languages()
+            out["tvdb"] = [
+                {
+                    "code": (l.get("id") or "").strip().lower(),
+                    "name": l.get("name") or l.get("id") or "",
+                    "native_name": l.get("nativeName") or None,
+                }
+                for l in langs
+                if isinstance(l, dict) and l.get("id")
+            ]
+            out["tvdb"].sort(key=lambda x: x["name"].lower())
+        except Exception as e:
+            logger.warning("/artwork/languages: TVDB fetch failed: {}", e)
+
+    # --- TMDB ---
+    if effective_tmdb_credentials():
+        try:
+            langs = await get_tmdb_client().languages()
+            out["tmdb"] = [
+                {
+                    "code": (l.get("iso_639_1") or "").strip().lower(),
+                    "name": l.get("english_name") or l.get("name") or l.get("iso_639_1") or "",
+                    "native_name": l.get("name") or None,
+                }
+                for l in langs
+                if isinstance(l, dict) and l.get("iso_639_1")
+            ]
+            out["tmdb"].sort(key=lambda x: x["name"].lower())
+        except Exception as e:
+            logger.warning("/artwork/languages: TMDB fetch failed: {}", e)
+
+    return out
 
 
 # ---- Plex integration (v0.6.0) ---------------------------------------------

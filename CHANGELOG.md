@@ -2,6 +2,70 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.12 — 2026-05-09
+
+Artwork language filtering. Mixed-language scrapers (TVDB and TMDB)
+surface posters, fanart, and logos in every language a contributor has
+ever uploaded. Until this release the app accepted whatever the
+providers' default ranking returned, which on heavily-localized titles
+often meant a Japanese poster on an English library or a logo with text
+in the wrong script. This release lets you tell each provider which
+languages of artwork you want to see and whether to allow art with no
+language tag at all.
+
+### Added
+
+- **Per-provider artwork language whitelist.** New settings under
+  Settings → Artwork — one multi-select list for TVDB (3-letter ISO
+  639-2 codes like `eng`, `fra`, `jpn`) and a separate list for TMDB
+  (2-letter ISO 639-1 codes like `en`, `fr`, `ja`). The available
+  languages are queried live from each provider so the picker stays in
+  sync with whatever each catalog actually supports. Empty list means
+  *no whitelist* — legacy behaviour, every language is accepted.
+- **Include / exclude language-less artwork toggle, per provider.**
+  Both providers attach a lot of poster art with no language metadata
+  (text-free key art, logos rendered as image-only, fan-uploaded
+  variants). A separate "Include artwork with no language tag" switch
+  for each provider lets you keep or drop those independently of the
+  whitelist.
+- **`GET /api/artwork/languages`** — backend endpoint that returns
+  `{tvdb: [...], tmdb: [...]}` with `{code, name, native_name}` per
+  entry. Returns an empty list for any provider whose credentials are
+  missing so the UI can show a helpful empty state instead of an error.
+- **Searchable language picker component** in the Settings page. The
+  list of TMDB languages alone is close to 200 entries, so each picker
+  has a free-text filter, an inline scrollable list, removable chips
+  for the current selection, and a *Clear all* shortcut.
+
+### Changed
+
+- **Artwork selection respects the whitelist everywhere it picks art.**
+  `services/artwork.py` (`list_candidates`, `best_artwork_url`) and
+  `services/artwork_resolver.py` (TMDB poster / backdrop / logo lookups
+  for series, seasons, and movies) now filter their results through the
+  configured language rules before scoring and ranking. The filter is
+  applied per call so series A's English poster and series B's Japanese
+  poster are still chosen by their own metadata, not pre-filtered out
+  of a shared bag.
+- **All-rejected fallback.** If your filter would leave a given title
+  with *zero* artwork, the unfiltered candidate list is returned
+  instead. The whitelist is a preference, not a guarantee — a niche
+  anime that only ships Japanese posters won't end up with no art
+  because you set the filter to `eng` on a mostly-English library.
+- **Language list normalization** on save. Codes are lowercased and
+  deduplicated server-side so case-insensitive entry from the picker
+  doesn't produce duplicate or mismatching whitelist entries.
+
+### Notes
+
+- TVDB and TMDB use different code systems on purpose. TVDB returns
+  ISO 639-2 (3-letter), TMDB returns ISO 639-1 (2-letter), and there is
+  no clean 1:1 mapping for several languages. Picking each
+  independently is more honest than synthesizing a unified list.
+- Default after upgrading is *unchanged behaviour* — both whitelists
+  are empty (= accept all) and both "include language-less" toggles
+  are on. Configure the filter only if you want it.
+
 ## 0.11.11 — 2026-05-09
 
 A performance pass. After v0.11.10 shipped the orphan companion sweeper,

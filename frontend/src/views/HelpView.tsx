@@ -122,6 +122,64 @@ export default function HelpView() {
         </Bullets>
       </Section>
 
+      <Section title="Per-provider artwork language filter">
+        <p>
+          The TMDB filter above keeps anime and K-drama posters from
+          getting dropped before they ever reach the app. The flip side
+          — unwanted foreign posters leaking <i>into</i> a mostly-English
+          library — is what this filter handles. Settings → Artwork has
+          one whitelist per provider plus a toggle for artwork that
+          carries no language tag at all.
+        </p>
+        <Bullets>
+          <li>
+            <b>TVDB whitelist</b> uses 3-letter ISO 639-2 codes
+            (<Code>eng</Code>, <Code>fra</Code>, <Code>jpn</Code>).
+            <b>TMDB whitelist</b> uses 2-letter ISO 639-1 codes
+            (<Code>en</Code>, <Code>fr</Code>, <Code>ja</Code>). The
+            two providers don't share a code system so they're picked
+            independently. The available languages are queried live
+            from each provider, so the picker stays in sync with what
+            each catalog actually supports.
+          </li>
+          <li>
+            <b>Empty list = no whitelist.</b> Default after upgrading
+            is empty for both providers, which means "accept every
+            language" — legacy behaviour, no surprises.
+          </li>
+          <li>
+            <b>Include artwork with no language tag</b> (per provider).
+            Both TVDB and TMDB carry a lot of poster art with no
+            language metadata at all — text-free key art, image-only
+            logos, fan-uploaded variants. The toggle controls those
+            independently of the whitelist, so you can keep
+            language-less art while filtering out foreign posters, or
+            drop both, or keep both.
+          </li>
+          <li>
+            <b>All-rejected fallback.</b> If your filter would leave a
+            given title with zero artwork, the unfiltered list is used
+            instead. The whitelist is a preference, not a guarantee —
+            a niche import that only ships Japanese posters won't end
+            up with no art because you set the filter to <Code>eng</Code>.
+          </li>
+          <li>
+            <b>Where it applies.</b> The auto-resolver picks for
+            posters, fanart, banners, season posters, and clearlogos
+            — both TVDB and TMDB image lookups go through the filter
+            with their respective whitelist. The manual artwork picker
+            still respects the filter for TVDB candidates; for TMDB
+            it keeps requesting all languages so you see everything
+            when you're hand-picking.
+          </li>
+        </Bullets>
+        <Callout>
+          The filter is applied per call, not pre-baked, so series A's
+          English poster and series B's Japanese poster are still
+          chosen by their own metadata.
+        </Callout>
+      </Section>
+
       <Section title="Pruning">
         <p>
           The library toolbar has two prune buttons for keeping the database

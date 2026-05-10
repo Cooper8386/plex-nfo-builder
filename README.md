@@ -234,6 +234,8 @@ Every NFO also embeds the TVDB CDN URL in `<thumb>` / `<fanart><thumb>` tags. Pl
 
 For TMDB-supplied artwork, the auto-resolver reads each title's TMDB *original language* and includes that flag in its image request alongside `null,en`, so anime, K-dramas, and other foreign-language titles actually surface their fan-uploaded posters instead of coming up empty. The manual artwork picker requests **all** languages from TMDB so you see every uploaded image when you're hand-picking.
 
+**Per-provider artwork language filter** (Settings → Artwork). TVDB and TMDB both surface every language a contributor has ever uploaded, so foreign-language posters and logos with the wrong script can leak in even on titles whose primary language is set correctly. Pick the languages you want to accept from each provider — TVDB uses 3-letter ISO 639-2 codes (`eng`, `fra`, `jpn`), TMDB uses 2-letter ISO 639-1 codes (`en`, `fr`, `ja`) — and toggle whether to include language-less artwork (key art, logos, fan uploads with no language tag) per provider. The list of available languages is queried live from each provider, and the picker is searchable. If your filter would leave a given title with no artwork at all, the unfiltered list is used as a fallback so a niche import never ends up with a blank poster. Empty whitelist means *no filter* — leave it that way for legacy behaviour.
+
 Earlier versions wrote everything through a hidden `.artwork/` folder with symlinks to the canonical names. This broke under some Docker bind-mount configurations and caused blank posters when the active artwork was changed — the NFO and the symlink drifted out of sync. If you're upgrading from v0.2, delete any leftover `.artwork/` folders and run **Force rebuild** on affected items.
 
 ## Logs

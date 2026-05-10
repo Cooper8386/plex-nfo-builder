@@ -211,6 +211,25 @@ class TVDBClient:
                 return t
         return None
 
+    async def languages(self, *, force: bool = False) -> list[dict]:
+        """Return the catalogue of TVDB-supported languages.
+
+        Each entry has the shape
+        ``{id: "eng", name: "English", nativeName: "English"}`` — ``id`` is
+        the 3-letter ISO 639-2 code TVDB tags artwork with. We cache for a
+        full week regardless of the user's normal cache TTL because the
+        list almost never changes.
+        """
+        try:
+            data = await self._get(
+                "/languages", ttl=7 * 24 * 3600, force=force
+            )
+        except TVDBError as e:
+            logger.debug("TVDB /languages failed: {}", e)
+            return []
+        out = data.get("data") or []
+        return out if isinstance(out, list) else []
+
     @staticmethod
     def _ttl() -> int:
         s = get_user_settings()

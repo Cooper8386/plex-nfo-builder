@@ -387,11 +387,39 @@ function ProvidersPane({
 }
 
 function ArtworkPane({ s, update }: { s: any; update: (k: string, v: any) => void }) {
+  const [langs, setLangs] = useState<{
+    tvdb: { code: string; name: string; native_name: string | null }[];
+    tmdb: { code: string; name: string; native_name: string | null }[];
+  } | null>(null);
+  const [langsErr, setLangsErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api.artwork
+      .languages()
+      .then((d) => {
+        if (alive) setLangs(d);
+      })
+      .catch((e) => {
+        if (alive) setLangsErr(e?.message || "Failed to load languages");
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const tvdbSelected: string[] = Array.isArray(s.tvdb_artwork_languages)
+    ? s.tvdb_artwork_languages
+    : [];
+  const tmdbSelected: string[] = Array.isArray(s.tmdb_artwork_languages)
+    ? s.tmdb_artwork_languages
+    : [];
+
   return (
     <>
       <PaneHeader
         title="Artwork"
-        subtitle="Choose which provider's images win during a build. Independent of the metadata source — e.g. use TVDB for descriptions and TMDB for posters."
+        subtitle="Choose which provider's images win during a build, and filter by the language the art is tagged with. Independent of the metadata source — e.g. use TVDB for descriptions and TMDB for posters."
       />
       <Field label="Preferred artwork source">
         <select
@@ -404,12 +432,213 @@ function ArtworkPane({ s, update }: { s: any; update: (k: string, v: any) => voi
           <option value="tmdb">Prefer TMDB artwork</option>
         </select>
       </Field>
-      <p className="text-xs text-slate-500 ml-64 pl-3 max-w-xl">
+      <p className="text-xs text-slate-500 ml-64 pl-3 max-w-xl mb-6">
         Applies to posters, backgrounds, and season posters. Your per-show
         manual picks always override this. When the preferred provider can't
         be reached for a show, the metadata source's own artwork is used.
       </p>
+
+      <div className="border-t border-slate-800 pt-4">
+        <h3 className="text-sm font-semibold text-slate-200 mb-1">
+          Language filter
+        </h3>
+        <p className="text-xs text-slate-500 mb-4 max-w-2xl">
+          Whitelist which languages artwork can be tagged with. Leave the
+          list empty to accept every language (the default). Codes differ
+          per provider: TVDB tags with 3-letter ISO 639-2 (eng, fra, jpn);
+          TMDB tags with 2-letter ISO 639-1 (en, fr, ja). When the filter
+          would leave a show with no poster, the app falls back to the
+          unfiltered best pick so no show ever ends up artless — the filter
+          is a preference, not a guarantee.
+        </p>
+
+        {langsErr && (
+          <div className="text-xs text-amber-400 mb-3">
+            Could not load languages from providers: {langsErr}
+          </div>
+        )}
+
+        <LanguagePicker
+          title="TVDB artwork languages"
+          emptyHint="No TVDB credentials configured or the API is unreachable. Add a TVDB API key under Providers to enable the picker."
+          options={langs?.tvdb || []}
+          selected={tvdbSelected}
+          onChange={(next) => update("tvdb_artwork_languages", next)}
+          allowNull={s.tvdb_artwork_allow_null_language !== false}
+          onAllowNullChange={(b) => update("tvdb_artwork_allow_null_language", b)}
+          codeLabel="3-letter"
+        />
+
+        <div className="h-4" />
+
+        <LanguagePicker
+          title="TMDB artwork languages"
+          emptyHint="No TMDB credentials configured or the API is unreachable. Add a TMDB API key under Providers to enable the picker."
+          options={langs?.tmdb || []}
+          selected={tmdbSelected}
+          onChange={(next) => update("tmdb_artwork_languages", next)}
+          allowNull={s.tmdb_artwork_allow_null_language !== false}
+          onAllowNullChange={(b) => update("tmdb_artwork_allow_null_language", b)}
+          codeLabel="2-letter"
+        />
+      </div>
     </>
+  );
+}
+
+function LanguagePicker({
+  title,
+  emptyHint,
+  options,
+  selected,
+  onChange,
+  allowNull,
+  onAllowNullChange,
+  codeLabel,
+}: {
+  title: string;
+  emptyHint: string;
+  options: { code: string; name: string; native_name: string | null }[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+  allowNull: boolean;
+  onAllowNullChange: (b: boolean) => void;
+  codeLabel: string;
+}) {
+  const [query, setQuery] = useState("");
+
+  const selectedSet = useMemo(() => new Set(selected.map((x) => x.toLowerCase())), [selected]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter(
+      (o) =>
+        o.code.toLowerCase().includes(q) ||
+        o.name.toLowerCase().includes(q) ||
+        (o.native_name || "").toLowerCase().includes(q),
+    );
+  }, [options, query]);
+
+  const toggle = (code: string) => {
+    const lc = code.toLowerCase();
+    if (selectedSet.has(lc)) {
+      onChange(selected.filter((x) => x.toLowerCase() !== lc));
+    } else {
+      onChange([...selected, lc]);
+    }
+  };
+
+  // Show selected codes that aren't in the (possibly empty) catalogue so users
+  // keep visibility on codes they entered before the providers came online.
+  const orphanSelections = selected.filter(
+    (code) => !options.some((o) => o.code.toLowerCase() === code.toLowerCase()),
+  );
+
+  return (
+    <div className="bg-slate-900/40 border border-slate-800 rounded-md p-4">
+      <div className="flex items-start justify-between gap-4 mb-3">
+        <div>
+          <div className="text-sm font-medium text-slate-100">{title}</div>
+          <div className="text-[11px] text-slate-500">
+            {codeLabel} codes · {options.length ? `${options.length} available` : "no options loaded"}
+            {selected.length > 0 && ` · ${selected.length} selected`}
+          </div>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-slate-300 shrink-0">
+          <input
+            type="checkbox"
+            checked={allowNull}
+            onChange={(e) => onAllowNullChange(e.target.checked)}
+          />
+          Include artwork with no language tag
+        </label>
+      </div>
+
+      {selected.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {selected.map((code) => {
+            const match = options.find((o) => o.code.toLowerCase() === code.toLowerCase());
+            return (
+              <button
+                key={code}
+                type="button"
+                onClick={() => toggle(code)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-600/20 border border-indigo-600/50 text-indigo-200 text-xs hover:bg-indigo-600/30"
+                title={`Remove ${code}`}
+              >
+                <span className="font-mono">{code}</span>
+                {match?.name ? <span className="text-indigo-300/70">· {match.name}</span> : null}
+                <span aria-hidden className="text-indigo-300/70">×</span>
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            className="px-2 py-0.5 rounded border border-slate-700 text-slate-400 text-xs hover:bg-slate-800"
+          >
+            Clear all
+          </button>
+        </div>
+      )}
+
+      {options.length === 0 ? (
+        <div className="text-xs text-slate-500">
+          {emptyHint}
+          {orphanSelections.length > 0 && (
+            <div className="mt-2 text-slate-400">
+              Codes saved on this profile: {orphanSelections.join(", ")}
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          <input
+            className="bg-slate-800 px-2 py-1 rounded w-full text-sm mb-2"
+            placeholder="Filter by name or code…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <div className="max-h-56 overflow-auto border border-slate-800 rounded">
+            {filtered.length === 0 ? (
+              <div className="text-xs text-slate-500 p-3">No languages match that filter.</div>
+            ) : (
+              <ul className="divide-y divide-slate-800">
+                {filtered.map((o) => {
+                  const isOn = selectedSet.has(o.code.toLowerCase());
+                  return (
+                    <li key={o.code}>
+                      <button
+                        type="button"
+                        onClick={() => toggle(o.code)}
+                        className={`w-full text-left px-3 py-1.5 flex items-center gap-3 text-sm ${
+                          isOn
+                            ? "bg-indigo-600/15 text-indigo-100"
+                            : "text-slate-200 hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          readOnly
+                          checked={isOn}
+                          className="pointer-events-none"
+                        />
+                        <span className="font-mono text-xs text-slate-400 w-10">{o.code}</span>
+                        <span className="flex-1 truncate">{o.name}</span>
+                        {o.native_name && o.native_name !== o.name && (
+                          <span className="text-xs text-slate-500 truncate">{o.native_name}</span>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

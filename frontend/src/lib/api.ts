@@ -552,6 +552,11 @@ export const api = {
       J<{ items: any[] }>(
         fetch(`/api/artwork/custom?folder_path=${encodeURIComponent(folder_path)}`)
       ),
+    languages: () =>
+      J<{
+        tvdb: { code: string; name: string; native_name: string | null }[];
+        tmdb: { code: string; name: string; native_name: string | null }[];
+      }>(fetch("/api/artwork/languages")),
   },
   episodes: {
     list: (path: string) =>

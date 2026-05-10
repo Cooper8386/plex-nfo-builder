@@ -116,6 +116,27 @@ class UserSettings(BaseModel):
     # match a live video file) and never touches show-level artwork or
     # ``tvshow.nfo`` / ``season.nfo``.
     auto_sweep_orphans: bool = True
+    # v0.11.12: per-provider artwork language filters.
+    #
+    # Each list is a whitelist of language codes that artwork must be
+    # tagged with to be considered during a build. TVDB uses 3-letter
+    # ISO 639-2 codes ("eng", "jpn", "fra"); TMDB uses 2-letter ISO 639-1
+    # codes ("en", "ja", "fr"). An empty list means "no filter" — every
+    # language is allowed (the legacy behaviour).
+    #
+    # The companion ``*_artwork_allow_null_language`` flags control
+    # whether artwork uploaded *without* a language tag is allowed
+    # through. TVDB uses an empty/null ``language`` field; TMDB uses
+    # ``iso_639_1: null``. Many of the cleanest, text-free posters fall
+    # in this bucket so it's enabled by default.
+    #
+    # When the filter would rule out *every* candidate for a slot, the
+    # builder falls back to the unfiltered best pick so the show still
+    # gets a poster — the filter is a preference, not a guarantee.
+    tvdb_artwork_languages: List[str] = []
+    tvdb_artwork_allow_null_language: bool = True
+    tmdb_artwork_languages: List[str] = []
+    tmdb_artwork_allow_null_language: bool = True
 
     @classmethod
     def load(cls, path: Path) -> "UserSettings":
