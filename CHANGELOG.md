@@ -2,6 +2,41 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.11.16 — 2026-05-10
+
+Follow-up to v0.11.15. The cast hydration step worked on a fresh
+build, then immediately regressed when the user Force-rebuilt the next
+show back-to-back. Two bugs combined to cause this and both are fixed.
+
+### Fixed
+
+- **Cast hydration is now cache-first regardless of `force`.** A Force
+  rebuild was passing `force=True` straight through to the new
+  `/people/{peopleId}` lookups, so every Force rebuild re-hit TVDB for
+  every missing portrait. Two back-to-back Force rebuilds (e.g. RWBY,
+  then RWBY Chibi) burned the same token through enough requests to
+  trip TVDB's rate limit, the requests started 429-ing, and the
+  failure path silently dropped the portraits with no log line. People
+  records change at glacial speed; there is no good reason to bypass
+  the cache for them, so the helper now ignores the build's `force`
+  flag and always reads-through the normal cache.
+- **Hydration failures now log loudly.** Previously each failed
+  `/people/{peopleId}` lookup wrote a single debug-level message that
+  most users wouldn't see. Failures now log at warning level with the
+  peopleId, the cast member's name, and the underlying error. The
+  summary line at the end of hydration also reports the list of
+  failed peopleIds, so a glance at the build log will tell you why
+  a particular cast member is still showing initials in Plex.
+
+### Notes
+
+- The cache key is per-peopleId; once a person's headshot is in cache
+  it sticks across rebuilds of every show that person appears in.
+- If you're still seeing missing cast images after this release,
+  check the build log for `person_image lookup failed for peopleId=`
+  lines — those will tell you whether TVDB is rate-limiting, the
+  person record genuinely has no image, or something else.
+
 ## 0.11.15 — 2026-05-10
 
 Follow-up to v0.11.14. The `image → personImgURL` fallback fixed cast

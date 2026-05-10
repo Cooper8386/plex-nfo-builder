@@ -96,7 +96,7 @@ async def _hydrate_tvdb_character_thumbs(
     characters: Optional[list],
     *,
     log,
-    force: bool = False,
+    force: bool = False,  # noqa: ARG001 - kept for call-site compatibility
     limit: int = 60,
 ) -> None:
     """Backfill missing actor portraits on TVDB character records.
@@ -120,11 +120,21 @@ async def _hydrate_tvdb_character_thumbs(
     onto the character as ``personImgURL`` so the existing fallback
     logic in ``build_*_nfo`` picks it up.
 
+    Cache discipline (v0.11.16): we deliberately ignore the build's
+    ``force`` flag for these lookups. People records change at glacial
+    speed and a Force rebuild that issues dozens of fresh /people/{id}
+    calls per show will trip TVDB's per-token rate limit, at which
+    point the request raises and we silently fall back to no portrait.
+    A user reported v0.11.15 fixing RWBY then immediately regressing
+    after Force-rebuilding RWBY Chibi back-to-back — the second build
+    burned through retries against a 429-throttled token. Cache-first
+    keeps subsequent builds free.
+
     The fetch is concurrent (one task per missing portrait, capped at
     ``limit`` so a poorly-curated series with hundreds of recurring
-    bit-parts can't tie up the build). Failures are logged at debug
-    level and silently dropped — the cast member just keeps its
-    initials in Plex, same as before this fix.
+    bit-parts can't tie up the build). Failures are logged at warning
+    level (with the peopleId) so users diagnosing missing portraits
+    can see them in the job log.
     """
     if not isinstance(characters, list) or not characters:
         return
@@ -142,24 +152,32 @@ async def _hydrate_tvdb_character_thumbs(
     if not needs:
         return
     client = get_client()
+    failed: list[int] = []
 
     async def _one(ch: dict) -> None:
         try:
-            url = await client.person_image(ch["peopleId"], force=force)
-        except Exception as e:  # pragma: no cover
-            log.debug("person_image {} failed: {}", ch.get("peopleId"), e)
+            # NEVER force the cache here — see docstring.
+            url = await client.person_image(ch["peopleId"], force=False)
+        except Exception as e:
+            log.warning(
+                "person_image lookup failed for peopleId={} ({}): {}",
+                ch.get("peopleId"),
+                ch.get("personName") or "?",
+                e,
+            )
+            failed.append(int(ch["peopleId"]))
             return
         if url:
             ch["personImgURL"] = url
 
     await asyncio.gather(*(_one(c) for c in needs), return_exceptions=True)
     filled = sum(1 for c in needs if c.get("personImgURL"))
-    if filled:
-        log.info(
-            "Hydrated {}/{} cast portraits from TVDB people records",
-            filled,
-            len(needs),
-        )
+    log.info(
+        "Hydrated {}/{} cast portraits from TVDB people records"
+        + (f" (failed: {failed})" if failed else ""),
+        filled,
+        len(needs),
+    )
 
 
 _jobs: dict[str, dict] = {}
