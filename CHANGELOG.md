@@ -2,6 +2,77 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.12.0 — 2026-05-15
+
+Adds a built-in **filesystem watcher** so the scan → match → build
+pipeline runs automatically the moment new media lands on disk — no
+more waiting for the next scheduled run or hitting *Scan* manually
+after Sonarr/Radarr imports a show. The watcher is enabled by default
+and can be toggled live from the new Settings → Watcher panel.
+
+### Added
+
+- **Filesystem watcher service** (`backend/app/services/watcher.py`)
+  built on the `watchdog` library. Watches every enabled library root
+  recursively. Reacts to:
+  - new directory creation (e.g. `Severance (2022)/`, `Season 02/`)
+  - new media files appearing inside an already-tracked show folder
+    (catches mid-season episode adds Sonarr does into an existing
+    `Season NN/`).
+- **Debounce/stabilization window**, default 30s, configurable via the
+  `WATCHER_DEBOUNCE_SECONDS` env var **or** the new Settings → Watcher
+  panel. Every fresh event for the same show folder resets the timer,
+  so a 30-minute multi-file copy collapses into a single trigger.
+- **Stability poll** before dispatch: the watcher snapshots the
+  recursive size + mtime of the folder and verifies two consecutive
+  reads match before kicking off the pipeline. If files are still
+  being written, the debounce timer is re-armed.
+- **Toggle**: `WATCHER_ENABLED=true` env var (default `true`); also
+  exposed as a checkbox in Settings → Watcher. Disabling at runtime
+  tears down all observers without a container restart.
+- **Dedicated manual-review queue**. When auto-match fails (no
+  candidates, score below `auto_match_threshold`, or the matcher
+  raised), the folder is queued in the new `watcher_review` table
+  instead of being silently skipped or auto-bound to a bad guess.
+  Surfaced as a first-class **Watcher** view in the top nav, with two
+  tabs:
+  - **Activity**: live timeline of the in-memory event ring buffer
+    (last 500 events; folder detected, settled, matched, built,
+    queued for review, errors).
+  - **Review queue**: every unresolved item, with one-click *Retry*
+    and *Dismiss* actions plus a deep link into the existing detail
+    page so the user can bind the show manually.
+- **API endpoints**:
+  - `GET /api/watcher/status` — runtime state (running, debounce, watched paths).
+  - `POST /api/watcher/toggle` — enable/disable and persist to settings.
+  - `GET /api/watcher/events` — in-memory activity ring buffer.
+  - `GET /api/watcher/review` — review-queue rows.
+  - `POST /api/watcher/review/retry` — re-run the pipeline.
+  - `POST /api/watcher/review/resolve` — dismiss a single item.
+  - `DELETE /api/watcher/review` — clear the queue.
+- New `watcher_review` SQLite table (idempotent migration; existing
+  DBs gain it on first boot under v0.12.0).
+
+### Changed
+
+- FastAPI startup moved from the deprecated `@app.on_event("startup"/"shutdown")`
+  decorators to a single `lifespan` context manager so the watcher and
+  scheduler share one coordinated boot/teardown path.
+- The settings + library mutation endpoints now hot-reload the
+  watcher when enable/debounce or per-library enablement changes
+  — no app restart required.
+
+### Notes
+
+- Bind-mounted Unraid shares support inotify, which the watcher uses
+  by default — no additional configuration required on the
+  `/mnt/user/data/media:/media` mapping. NFS-only setups will
+  automatically fall back to the polling observer that ships with
+  watchdog. Latency may increase to ~1 polling interval.
+- The Docker image picks up `watchdog==5.0.3` via
+  `backend/requirements.txt`. No `docker-compose.yml` changes are
+  required.
+
 ## 0.11.17 — 2026-05-10
 
 Follow-up to v0.11.16. Cast portraits for Miles Luna / Shannon

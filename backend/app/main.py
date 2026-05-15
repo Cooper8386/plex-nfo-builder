@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -18,11 +19,65 @@ from .logging_setup import setup_logging
 from .routes.api import router as api_router
 from .services import scanner
 from .services.scheduler import scheduler
+from .services.watcher import watcher
 
 setup_logging()
 db.conn()  # init sqlite
 
-app = FastAPI(title="Plex NFO Builder", version=__version__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup + shutdown coordination (v0.12.0).
+
+    Replaces the legacy ``@app.on_event`` pair so the watcher can hook in
+    cleanly alongside the scheduler. Library detection runs in the
+    background so the API can begin serving immediately; the watcher is
+    started after detection completes (or fails) so it always sees the
+    fresh library set.
+    """
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "plex-nfo-builder v{} starting (media={}, config={})",
+        __version__, MEDIA_ROOT, CONFIG_DIR,
+    )
+
+    loop = asyncio.get_running_loop()
+
+    async def _detect_libraries_bg() -> None:
+        try:
+            libs = await asyncio.to_thread(scanner.detect_libraries)
+            logger.info("Detected libraries: {}", [l["name"] for l in libs])
+        except Exception as e:
+            logger.warning("Initial library detection failed: {}", e)
+        # Start the watcher *after* detection so it sees the right paths.
+        try:
+            watcher.start(loop=loop)
+        except Exception as e:
+            logger.warning("Watcher failed to start: {}", e)
+
+    asyncio.create_task(_detect_libraries_bg())
+
+    try:
+        scheduler.start()
+    except Exception as e:
+        logger.warning("Scheduler failed to start: {}", e)
+
+    try:
+        yield
+    finally:
+        # Stop the watcher first so it doesn't keep spawning build jobs
+        # after the rest of the app has begun tearing down.
+        try:
+            watcher.stop()
+        except Exception as e:
+            logger.warning("Watcher failed to stop cleanly: {}", e)
+        try:
+            await scheduler.stop()
+        except Exception as e:
+            logger.warning("Scheduler failed to stop cleanly: {}", e)
+
+
+app = FastAPI(title="Plex NFO Builder", version=__version__, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,37 +85,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(api_router)
-
-
-@app.on_event("startup")
-async def startup():
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    logger.info("plex-nfo-builder starting (media={}, config={})", MEDIA_ROOT, CONFIG_DIR)
-    # v0.11.11: detect_libraries() can take several seconds when MEDIA_ROOT
-    # lives on a network share — it iterdir()s the root and probes 16
-    # children of every library to infer kind. Running it in the startup
-    # hook used to delay the very first request by exactly that long. Move
-    # it onto a background task so the API begins serving immediately.
-    async def _detect_libraries_bg() -> None:
-        try:
-            libs = await asyncio.to_thread(scanner.detect_libraries)
-            logger.info("Detected libraries: {}", [l["name"] for l in libs])
-        except Exception as e:
-            logger.warning("Initial library detection failed: {}", e)
-
-    asyncio.create_task(_detect_libraries_bg())
-    try:
-        scheduler.start()
-    except Exception as e:
-        logger.warning("Scheduler failed to start: {}", e)
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    try:
-        await scheduler.stop()
-    except Exception as e:
-        logger.warning("Scheduler failed to stop cleanly: {}", e)
 
 
 # Serve the built frontend if present

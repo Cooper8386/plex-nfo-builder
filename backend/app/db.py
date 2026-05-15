@@ -201,6 +201,24 @@ def _init_schema(c: sqlite3.Connection) -> None:
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
+
+            -- v0.12.0: filesystem watcher review queue. When the watcher
+            -- detects a new folder but auto-match fails (score below the
+            -- threshold, no candidates, or the matcher raised), the folder
+            -- is queued here so the user can resolve it manually instead of
+            -- the pipeline silently skipping or auto-binding a bad guess.
+            CREATE TABLE IF NOT EXISTS watcher_review (
+                folder_path TEXT PRIMARY KEY,
+                library TEXT,
+                kind TEXT,                     -- series | movie | unknown
+                reason TEXT NOT NULL,          -- no_match | low_confidence | error | ambiguous
+                detail TEXT,                   -- free-form explanation for the UI
+                detected_at INTEGER NOT NULL,
+                last_attempt_at INTEGER,
+                attempts INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_watcher_review_library
+                ON watcher_review(library);
             """
         )
 
@@ -242,6 +260,29 @@ def _migrate(c: sqlite3.Connection) -> None:
                 c.execute("ALTER TABLE schedules ADD COLUMN last_message TEXT")
             except Exception:
                 pass
+        # v0.12.0: watcher_review table for the filesystem watcher's queue.
+        # Older DBs created before v0.12.0 won't have it; create idempotently.
+        try:
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS watcher_review (
+                    folder_path TEXT PRIMARY KEY,
+                    library TEXT,
+                    kind TEXT,
+                    reason TEXT NOT NULL,
+                    detail TEXT,
+                    detected_at INTEGER NOT NULL,
+                    last_attempt_at INTEGER,
+                    attempts INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_watcher_review_library "
+                "ON watcher_review(library)"
+            )
+        except Exception:
+            pass
         # v0.11.4: item_state.sort_title — Plex/Sonarr-style ordering. Sourced
         # from (1) per-show sorttitle override, (2) provider sortName, (3)
         # title with leading articles stripped. Backfilled here for any rows
@@ -1087,3 +1128,89 @@ def update_schedule_run(sched_id: int, *, last_run: int,
             """,
             (int(last_run), last_status, last_message, int(time.time()), int(sched_id)),
         )
+
+
+# ---- Watcher review queue (v0.12.0) ---------------------------------------
+
+def upsert_watcher_review(folder_path: str, *, library: Optional[str],
+                          kind: Optional[str], reason: str,
+                          detail: Optional[str] = None) -> None:
+    """Insert or refresh a review-queue row for ``folder_path``.
+
+    Bumps ``attempts`` and updates ``last_attempt_at`` on conflict so the UI
+    can show how many times the watcher tried and gave up. ``detected_at``
+    is preserved across retries.
+    """
+    c = conn()
+    now = int(time.time())
+    with _lock:
+        existing = c.execute(
+            "SELECT attempts FROM watcher_review WHERE folder_path = ?",
+            (folder_path,),
+        ).fetchone()
+        if existing:
+            c.execute(
+                """
+                UPDATE watcher_review
+                   SET library = ?, kind = ?, reason = ?, detail = ?,
+                       last_attempt_at = ?, attempts = attempts + 1
+                 WHERE folder_path = ?
+                """,
+                (library, kind, reason, detail, now, folder_path),
+            )
+        else:
+            c.execute(
+                """
+                INSERT INTO watcher_review
+                    (folder_path, library, kind, reason, detail,
+                     detected_at, last_attempt_at, attempts)
+                VALUES (?,?,?,?,?,?,?,1)
+                """,
+                (folder_path, library, kind, reason, detail, now, now),
+            )
+
+
+def list_watcher_review(library: Optional[str] = None) -> list[sqlite3.Row]:
+    c = conn()
+    with _lock:
+        if library:
+            return c.execute(
+                "SELECT * FROM watcher_review WHERE library = ? "
+                "ORDER BY detected_at DESC",
+                (library,),
+            ).fetchall()
+        return c.execute(
+            "SELECT * FROM watcher_review ORDER BY detected_at DESC"
+        ).fetchall()
+
+
+def get_watcher_review(folder_path: str) -> Optional[sqlite3.Row]:
+    c = conn()
+    with _lock:
+        return c.execute(
+            "SELECT * FROM watcher_review WHERE folder_path = ?",
+            (folder_path,),
+        ).fetchone()
+
+
+def delete_watcher_review(folder_path: str) -> int:
+    c = conn()
+    with _lock:
+        cur = c.execute(
+            "DELETE FROM watcher_review WHERE folder_path = ?",
+            (folder_path,),
+        )
+        return cur.rowcount
+
+
+def clear_watcher_review(library: Optional[str] = None) -> int:
+    """Drop every queued item (optionally scoped to one library)."""
+    c = conn()
+    with _lock:
+        if library:
+            cur = c.execute(
+                "DELETE FROM watcher_review WHERE library = ?", (library,)
+            )
+        else:
+            cur = c.execute("DELETE FROM watcher_review")
+        return cur.rowcount
