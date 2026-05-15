@@ -7,6 +7,7 @@ import SettingsView from "./views/SettingsView";
 import LogsView from "./views/LogsView";
 import JobsView from "./views/JobsView";
 import HelpView from "./views/HelpView";
+import WatcherView from "./views/WatcherView";
 import { api } from "./lib/api";
 
 export type ViewMode = "grid" | "list";
@@ -16,6 +17,7 @@ export type Route =
   | { name: "detail"; library: string; path: string }
   | { name: "jobs" }
   | { name: "logs" }
+  | { name: "watcher" }
   | { name: "settings" }
   | { name: "help" };
 
@@ -33,6 +35,7 @@ function parseLocation(): Route {
   }
   if (path === "/jobs") return { name: "jobs" };
   if (path === "/logs") return { name: "logs" };
+  if (path === "/watcher") return { name: "watcher" };
   if (path === "/settings") return { name: "settings" };
   if (path === "/help") return { name: "help" };
   return { name: "home" };
@@ -50,6 +53,8 @@ function routeToUrl(r: Route): string {
       return "/jobs";
     case "logs":
       return "/logs";
+    case "watcher":
+      return "/watcher";
     case "settings":
       return "/settings";
     case "help":
@@ -216,6 +221,7 @@ export default function App() {
             navigate(activeLibrary ? { name: "library", library: activeLibrary } : { name: "home" });
           } else if (r === "jobs") navigate({ name: "jobs" });
           else if (r === "logs") navigate({ name: "logs" });
+          else if (r === "watcher") navigate({ name: "watcher" });
           else if (r === "settings") navigate({ name: "settings" });
           else if (r === "help") navigate({ name: "help" });
         }}
@@ -260,6 +266,13 @@ export default function App() {
           {route.name === "settings" && <SettingsView />}
           {route.name === "logs" && <LogsView />}
           {route.name === "jobs" && <JobsView />}
+          {route.name === "watcher" && (
+            <WatcherView
+              onOpenDetail={(library, path) =>
+                navigate({ name: "detail", library, path })
+              }
+            />
+          )}
           {route.name === "help" && <HelpView />}
         </main>
       </div>

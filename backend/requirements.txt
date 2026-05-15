@@ -8,3 +8,4 @@ aiofiles==24.1.0
 python-multipart==0.0.12
 lxml==5.3.0
 rapidfuzz==3.10.0
+watchdog==5.0.3

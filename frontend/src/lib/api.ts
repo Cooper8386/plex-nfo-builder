@@ -121,6 +121,48 @@ export type Schedule = {
   updated_at: number;
 };
 
+// v0.12.0 — filesystem watcher types.
+export type WatcherStatus = {
+  available: boolean;
+  enabled: boolean;
+  running: boolean;
+  debounce_seconds: number;
+  watched_paths: string[];
+  pending_count: number;
+  in_flight_count: number;
+};
+
+export type WatcherEvent = {
+  timestamp: number;
+  event_type:
+    | "detected"
+    | "debounced"
+    | "processing"
+    | "matched"
+    | "built"
+    | "queued_for_review"
+    | "error"
+    | "started"
+    | "stopped"
+    | "reloaded"
+    | string;
+  folder_path: string;
+  library: string | null;
+  message: string;
+  status: "info" | "success" | "warning" | "error";
+};
+
+export type WatcherReviewItem = {
+  folder_path: string;
+  library: string | null;
+  kind: "series" | "movie" | "unknown" | string | null;
+  reason: "no_match" | "low_confidence" | "error" | "ambiguous" | string;
+  detail: string | null;
+  detected_at: number;
+  last_attempt_at: number | null;
+  attempts: number;
+};
+
 export type Item = {
   folder_path: string;
   library: string;
@@ -724,6 +766,56 @@ export const api = {
       ),
   },
   logs: () => J<{ lines: string[] }>(fetch("/api/logs/app?tail=400")),
+  watcher: {
+    status: () => J<WatcherStatus>(fetch("/api/watcher/status")),
+    toggle: (enabled: boolean) =>
+      J<{ ok: true; status: WatcherStatus }>(
+        fetch("/api/watcher/toggle", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        })
+      ),
+    events: (limit = 200) =>
+      J<{ events: WatcherEvent[] }>(
+        fetch(`/api/watcher/events?limit=${limit}`)
+      ),
+    review: {
+      list: (library?: string) =>
+        J<{ items: WatcherReviewItem[] }>(
+          fetch(
+            `/api/watcher/review${
+              library ? `?library=${encodeURIComponent(library)}` : ""
+            }`
+          )
+        ),
+      retry: (folder_path: string) =>
+        J<{ ok: true; library: string; folder_path: string }>(
+          fetch("/api/watcher/review/retry", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ folder_path }),
+          })
+        ),
+      resolve: (folder_path: string) =>
+        J<{ ok: true; removed: number }>(
+          fetch("/api/watcher/review/resolve", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ folder_path }),
+          })
+        ),
+      clear: (library?: string) =>
+        J<{ ok: true; cleared: number }>(
+          fetch(
+            `/api/watcher/review${
+              library ? `?library=${encodeURIComponent(library)}` : ""
+            }`,
+            { method: "DELETE" }
+          )
+        ),
+    },
+  },
   tvdb: {
     series: (id: string) => J<any>(fetch(`/api/tvdb/series/${encodeURIComponent(id)}`)),
     movie: (id: string) => J<any>(fetch(`/api/tvdb/movie/${encodeURIComponent(id)}`)),

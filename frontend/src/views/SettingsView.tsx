@@ -9,6 +9,7 @@ type SectionKey =
   | "plex"
   | "renaming"
   | "schedules"
+  | "watcher"
   | "about";
 
 const SECTIONS: { key: SectionKey; label: string; description: string }[] = [
@@ -18,6 +19,7 @@ const SECTIONS: { key: SectionKey; label: string; description: string }[] = [
   { key: "plex", label: "Plex", description: "Server URL, token, auto-refresh" },
   { key: "renaming", label: "Renaming", description: "Sonarr/Radarr-style templates" },
   { key: "schedules", label: "Schedules", description: "Recurring scan/match/build" },
+  { key: "watcher", label: "Watcher", description: "Auto-build on new media" },
   { key: "about", label: "About", description: "Version & links" },
 ];
 
@@ -89,8 +91,9 @@ export default function SettingsView() {
     }
   };
 
-  // Schedules has its own UI and doesn't need the save bar.
-  const showSaveBar = section !== "schedules" && section !== "about";
+  // Schedules and Watcher have their own UI and don't need the save bar.
+  const showSaveBar =
+    section !== "schedules" && section !== "about" && section !== "watcher";
 
   return (
     <div className="flex h-full min-h-0">
@@ -160,6 +163,7 @@ export default function SettingsView() {
             )}
             {section === "renaming" && <RenamingPane s={s} setS={setS} update={update} />}
             {section === "schedules" && <SchedulesSection />}
+            {section === "watcher" && <WatcherPane />}
             {section === "about" && <AboutPane />}
           </div>
         </div>
@@ -979,6 +983,212 @@ function RenamingPane({
           for context on each token.
         </p>
       </details>
+    </>
+  );
+}
+
+function WatcherPane() {
+  const [status, setStatus] = useState<
+    | null
+    | {
+        available: boolean;
+        enabled: boolean;
+        running: boolean;
+        debounce_seconds: number;
+        watched_paths: string[];
+        pending_count: number;
+        in_flight_count: number;
+      }
+  >(null);
+  const [debounce, setDebounce] = useState<number>(30);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+
+  const reload = async () => {
+    try {
+      const [st, settings] = await Promise.all([
+        api.watcher.status(),
+        api.settings.get(),
+      ]);
+      setStatus(st);
+      const d =
+        typeof settings.watcher_debounce_seconds === "number"
+          ? settings.watcher_debounce_seconds
+          : st.debounce_seconds;
+      setDebounce(d);
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    }
+  };
+
+  useEffect(() => {
+    reload();
+    const t = setInterval(() => {
+      api.watcher
+        .status()
+        .then(setStatus)
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  const onToggle = async (enabled: boolean) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api.watcher.toggle(enabled);
+      setStatus(r.status);
+      setSavedMsg(enabled ? "Watcher enabled." : "Watcher disabled.");
+      setTimeout(() => setSavedMsg(null), 1800);
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onSaveDebounce = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const n = Math.max(1, Math.min(3600, Math.floor(debounce)));
+      await api.settings.set({ watcher_debounce_seconds: n });
+      await reload();
+      setSavedMsg(`Debounce set to ${n}s.`);
+      setTimeout(() => setSavedMsg(null), 1800);
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <PaneHeader
+        title="Watcher"
+        subtitle="Watch every enabled library for new folders and media files, then automatically scan, match, and build NFOs. Builds that can't auto-match are queued for manual review on the Watcher page (top nav)."
+      />
+
+      {!status ? (
+        <div className="text-xs text-slate-500">Loading watcher status…</div>
+      ) : (
+        <>
+          {!status.available && (
+            <div className="mb-4 rounded-md border border-amber-800 bg-amber-900/20 px-3 py-2 text-xs text-amber-200">
+              The <code className="text-amber-100">watchdog</code> package is
+              not available in this container. The watcher cannot run; rebuild
+              the image with the latest <code>requirements.txt</code> to fix.
+            </div>
+          )}
+          <Field label="Enable filesystem watcher">
+            <div className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={!!status.enabled}
+                disabled={busy || !status.available}
+                onChange={(e) => onToggle(e.target.checked)}
+                className="mt-1"
+              />
+              <span className="text-[11px] text-slate-500 max-w-xl leading-relaxed">
+                When on, new folders and media files under every enabled
+                library trigger the same scan → match → build pipeline that
+                Schedules runs, after the debounce window expires.
+              </span>
+            </div>
+          </Field>
+
+          <Field label="Debounce window (seconds)">
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                max={3600}
+                className="bg-slate-800 px-2 py-1 rounded w-24"
+                value={debounce}
+                onChange={(e) =>
+                  setDebounce(parseInt(e.target.value || "30", 10))
+                }
+              />
+              <button
+                type="button"
+                className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded"
+                onClick={onSaveDebounce}
+                disabled={busy}
+              >
+                Save
+              </button>
+              <span className="text-[11px] text-slate-500 max-w-md">
+                How long the folder has to be quiet before the pipeline
+                fires. 30s suits most Sonarr/Radarr setups; raise it if you
+                regularly copy huge files manually.
+              </span>
+            </div>
+          </Field>
+
+          <Divider />
+
+          <SubHeader>Runtime</SubHeader>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-2xl">
+            <Card>
+              <CardLabel>Status</CardLabel>
+              <div className="text-sm text-slate-100">
+                {status.running ? (
+                  <span className="text-emerald-300">Running</span>
+                ) : status.enabled ? (
+                  <span className="text-amber-300">Enabled, not running</span>
+                ) : (
+                  <span className="text-slate-400">Disabled</span>
+                )}
+              </div>
+            </Card>
+            <Card>
+              <CardLabel>Active debounce</CardLabel>
+              <div className="text-sm font-mono text-slate-100">
+                {status.debounce_seconds}s
+              </div>
+            </Card>
+            <Card>
+              <CardLabel>Pending folders</CardLabel>
+              <div className="text-sm font-mono text-slate-100">
+                {status.pending_count}
+              </div>
+            </Card>
+            <Card>
+              <CardLabel>In-flight pipelines</CardLabel>
+              <div className="text-sm font-mono text-slate-100">
+                {status.in_flight_count}
+              </div>
+            </Card>
+          </div>
+
+          <div className="mt-4">
+            <SubHeader>Watched paths</SubHeader>
+            {status.watched_paths.length === 0 ? (
+              <div className="text-xs text-slate-500">
+                No paths are currently being watched. Enable a library in the
+                sidebar to add it.
+              </div>
+            ) : (
+              <ul className="text-xs font-mono text-slate-300 space-y-0.5">
+                {status.watched_paths.map((p) => (
+                  <li key={p} className="truncate">
+                    {p}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+
+      {err && (
+        <div className="mt-4 text-xs text-rose-400">{err}</div>
+      )}
+      {savedMsg && (
+        <div className="mt-2 text-xs text-emerald-400">{savedMsg}</div>
+      )}
     </>
   );
 }

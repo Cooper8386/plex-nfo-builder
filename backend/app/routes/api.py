@@ -40,6 +40,7 @@ from ..services import scanner
 from ..services import renamer as renamer_svc
 from ..services import sidecar as sidecar_svc
 from ..services.scheduler import cron_matches as _cron_matches, scheduler as _scheduler
+from ..services.watcher import watcher as _watcher
 from ..services.parser import (
     detect_season_dirs,
     folder_looks_like_movie,
@@ -141,6 +142,9 @@ class SettingsIn(BaseModel):
     tvdb_artwork_allow_null_language: Optional[bool] = None
     tmdb_artwork_languages: Optional[list[str]] = None
     tmdb_artwork_allow_null_language: Optional[bool] = None
+    # v0.12.0 filesystem watcher
+    watcher_enabled: Optional[bool] = None
+    watcher_debounce_seconds: Optional[int] = None
 
 
 @router.post("/settings")
@@ -189,6 +193,14 @@ async def update_settings(payload: SettingsIn):
         data["preferred_artwork_source"] = "auto"
     new = UserSettings(**data)
     save_user_settings(new)
+    # v0.12.0: if anything touched the watcher knobs, ask the watcher to
+    # re-evaluate immediately so the user doesn't have to restart the app.
+    try:
+        touched = payload.model_dump(exclude_unset=True)
+        if "watcher_enabled" in touched or "watcher_debounce_seconds" in touched:
+            _watcher.reload()
+    except Exception as e:
+        logger.warning("watcher reload after settings update failed: {}", e)
     return {"ok": True}
 
 
@@ -230,6 +242,11 @@ async def browse(path: Optional[str] = None):
 @router.post("/libraries/detect")
 async def libraries_detect():
     libs = scanner.detect_libraries()
+    # v0.12.0: a new library means a new path to watch.
+    try:
+        _watcher.reload()
+    except Exception as e:
+        logger.warning("watcher reload after detect failed: {}", e)
     return {"libraries": libs}
 
 
@@ -262,6 +279,13 @@ async def libraries_update(name: str, body: LibraryUpdate):
         db.set_library_enabled(name, bool(payload["enabled"]))
     if "metadata_source" in payload:
         db.set_library_metadata_source(name, payload["metadata_source"])
+    # v0.12.0: enabling/disabling a library changes the watcher's set of
+    # watched paths; reload so changes take effect without a restart.
+    if "enabled" in payload and payload["enabled"] is not None:
+        try:
+            _watcher.reload()
+        except Exception as e:
+            logger.warning("watcher reload after library update failed: {}", e)
     row = db.get_library(name)
     return {
         "ok": True,
@@ -280,6 +304,12 @@ async def libraries_delete(name: str):
     if not db.get_library(name):
         raise HTTPException(status_code=404, detail="library not found")
     summary = db.delete_library(name)
+    # v0.12.0: drop the watch for the removed library so we don't keep
+    # firing on a path we no longer track.
+    try:
+        _watcher.reload()
+    except Exception as e:
+        logger.warning("watcher reload after library delete failed: {}", e)
     return {"ok": True, **summary}
 
 
@@ -2998,3 +3028,93 @@ async def schedules_run(sched_id: int):
     if not _scheduler.run_now(sched_id):
         raise HTTPException(status_code=404, detail="schedule not found")
     return {"ok": True, "started": True}
+
+
+# ---- Filesystem watcher (v0.12.0) -----------------------------------------
+
+@router.get("/watcher/status")
+async def watcher_status():
+    """Return the runtime state of the filesystem watcher."""
+    return _watcher.status()
+
+
+class WatcherToggleIn(BaseModel):
+    enabled: bool
+
+
+@router.post("/watcher/toggle")
+async def watcher_toggle(payload: WatcherToggleIn):
+    """Enable or disable the watcher and persist the choice to settings."""
+    s = get_user_settings()
+    data = s.model_dump()
+    data["watcher_enabled"] = bool(payload.enabled)
+    save_user_settings(UserSettings(**data))
+    try:
+        _watcher.reload()
+    except Exception as e:
+        logger.warning("watcher reload after toggle failed: {}", e)
+    return {"ok": True, "status": _watcher.status()}
+
+
+@router.get("/watcher/events")
+async def watcher_events(limit: int = 200):
+    """Return the most recent in-memory watcher events (newest first)."""
+    return {"events": _watcher.recent_events(limit=limit)}
+
+
+@router.get("/watcher/review")
+async def watcher_review_list(library: Optional[str] = None):
+    """Return the manual-review queue, optionally scoped to one library."""
+    rows = db.list_watcher_review(library=library)
+    return {"items": [dict(r) for r in rows]}
+
+
+class WatcherReviewResolveIn(BaseModel):
+    folder_path: str
+
+
+@router.post("/watcher/review/resolve")
+async def watcher_review_resolve(payload: WatcherReviewResolveIn):
+    """Drop a single folder from the review queue.
+
+    Use this when the user has manually matched the show via the existing
+    Library view and no longer wants it listed in the queue.
+    """
+    n = db.delete_watcher_review(payload.folder_path)
+    return {"ok": True, "removed": n}
+
+
+@router.post("/watcher/review/retry")
+async def watcher_review_retry(payload: WatcherReviewResolveIn):
+    """Force the watcher to try the scan → match → build pipeline again.
+
+    Useful after the user updates their auto-match threshold or adds a
+    TMDB/TVDB id to the folder name. The folder must still exist on disk
+    and must live under a configured library.
+    """
+    p = Path(payload.folder_path)
+    if not p.exists() or not p.is_dir():
+        raise HTTPException(status_code=400, detail="folder does not exist on disk")
+    try:
+        rel = p.resolve().relative_to(MEDIA_ROOT.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="folder is outside MEDIA_ROOT")
+    parts = rel.parts
+    if not parts:
+        raise HTTPException(status_code=400, detail="folder is the library root itself")
+    library = parts[0]
+    # Re-arm the debounce path so all the normal stability + activity
+    # plumbing fires; this also dedupes against an in-flight run.
+    try:
+        _watcher._schedule_debounce(library, p.resolve(), str(p), True)  # type: ignore[attr-defined]
+    except Exception as e:
+        logger.warning("watcher manual retry {} failed: {}", p, e)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "library": library, "folder_path": str(p)}
+
+
+@router.delete("/watcher/review")
+async def watcher_review_clear(library: Optional[str] = None):
+    """Drop every queued review entry (optionally scoped to one library)."""
+    n = db.clear_watcher_review(library=library)
+    return {"ok": True, "cleared": n}

@@ -24,6 +24,11 @@ class EnvSettings(BaseSettings):
     log_level: str = Field(default="INFO")
     listen_host: str = Field(default="0.0.0.0")
     listen_port: int = Field(default=8000)
+    # v0.12.0: filesystem watcher defaults. The user-editable settings below
+    # can override these at runtime; env values are the boot defaults applied
+    # when the user has never touched the toggle.
+    watcher_enabled: bool = Field(default=True)
+    watcher_debounce_seconds: int = Field(default=30)
 
 
 class UserSettings(BaseModel):
@@ -36,42 +41,22 @@ class UserSettings(BaseModel):
     overwrite_foreign_nfo: bool = False
     tvdb_api_key: Optional[str] = None  # overrides env
     tvdb_pin: Optional[str] = None
+    tmdb_api_key: Optional[str] = None  # overrides env
+    fanart_api_key: Optional[str] = None  # overrides env
     auto_match_threshold: int = 85
     # v0.5.0: alternate metadata + artwork sources
     metadata_source: str = "tvdb"   # tvdb | tmdb — primary source for matching/NFOs
-    tmdb_api_key: Optional[str] = None  # overrides env
-    fanart_api_key: Optional[str] = None  # overrides env
     fanart_enabled: bool = True
     tmdb_artwork_enabled: bool = True
     # v0.5.8: which provider's artwork wins by default (independent of metadata source)
-    #   "auto" — whichever provider the show is bound to (plus supplements)
-    #   "tvdb" — always prefer TVDB images when available
-    #   "tmdb" — always prefer TMDB images when available
-    # User per-folder selections always override this.
     preferred_artwork_source: str = "auto"
-    # v0.6.0: Plex Media Server integration. When configured, the app can
-    # ask Plex to rescan a show/movie folder right after a build completes
-    # so the changes show up without having to refresh manually.
-    plex_url: Optional[str] = None              # e.g. http://192.168.1.10:32400
-    plex_token: Optional[str] = None            # X-Plex-Token
-    plex_auto_refresh: bool = False             # auto-refresh after each successful build
-    plex_refresh_delay_seconds: int = 5         # seconds to wait before refreshing
-    # Mappings to translate the app's local paths to Plex's view of the same
-    # folder. Each item is {"from": "/media", "to": "/data"}. The longest
-    # matching prefix wins. Empty list = no translation needed.
+    # v0.6.0: Plex Media Server integration.
+    plex_url: Optional[str] = None
+    plex_token: Optional[str] = None
+    plex_auto_refresh: bool = False
+    plex_refresh_delay_seconds: int = 5
     plex_path_mappings: List[dict] = []
     # v0.11.0: Sonarr/Radarr-compatible file-rename templates.
-    # Tokens use Sonarr/Radarr grammar (case-insensitive):
-    #   {Series TitleYear}, {Series CleanTitle}, {Episode CleanTitle}
-    #   {season:00}, {episode:00}  — zero-padded to width of format spec
-    #   {Air-Date}, {Release Year}, {(Release Year)}
-    #   {Quality Full}, {Custom Formats}
-    #   {MediaInfo VideoCodec}, {MediaInfo VideoBitDepth}, {MediaInfo VideoDynamicRangeType}
-    #   {MediaInfo AudioCodec}, {MediaInfo AudioChannels}, {MediaInfo AudioLanguages}, {MediaInfo 3D}
-    #   {Release Group}, {-Release Group}
-    #   {TvdbId}, {TmdbId}, {ImdbId}, {Edition Tags}
-    # Conditional groups: {[Token]}, {[Token1}{ Token2]}, [{Token}suffix], {-Token}, {tvdb-{TvdbId}}
-    # Old v0.10.0 simple tokens ({title}, {year}, {episode_title}, {ext}, {quality}) still work.
     rename_episode_template: str = (
         "{Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} "
         "{[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}"
@@ -102,41 +87,20 @@ class UserSettings(BaseModel):
     rename_movie_folder_template: str = (
         "{Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}"
     )
-    # When True, builds offer a "Rename to scheme" affordance and the API will
-    # accept rename requests. Set to False to keep the codepath dormant for
-    # users who only ever want NFO/artwork generation.
     rename_enabled: bool = True
-    # v0.11.10: at the end of every successful build, sweep orphaned NFO
-    # and thumbnail companions left behind by Sonarr/Radarr file upgrades.
-    # See ``services/orphans.py`` for the full rationale — in short, when a
-    # release group changes, Sonarr swaps the .mkv but leaves the old
-    # ``<stem>.nfo`` and ``<stem>-thumb.jpg`` orphaned. Plex's NFO agent then
-    # reads those orphans and creates a duplicate library entry for the show.
-    # The sweep is video-driven (only deletes companions whose stem doesn't
-    # match a live video file) and never touches show-level artwork or
-    # ``tvshow.nfo`` / ``season.nfo``.
     auto_sweep_orphans: bool = True
     # v0.11.12: per-provider artwork language filters.
-    #
-    # Each list is a whitelist of language codes that artwork must be
-    # tagged with to be considered during a build. TVDB uses 3-letter
-    # ISO 639-2 codes ("eng", "jpn", "fra"); TMDB uses 2-letter ISO 639-1
-    # codes ("en", "ja", "fr"). An empty list means "no filter" — every
-    # language is allowed (the legacy behaviour).
-    #
-    # The companion ``*_artwork_allow_null_language`` flags control
-    # whether artwork uploaded *without* a language tag is allowed
-    # through. TVDB uses an empty/null ``language`` field; TMDB uses
-    # ``iso_639_1: null``. Many of the cleanest, text-free posters fall
-    # in this bucket so it's enabled by default.
-    #
-    # When the filter would rule out *every* candidate for a slot, the
-    # builder falls back to the unfiltered best pick so the show still
-    # gets a poster — the filter is a preference, not a guarantee.
     tvdb_artwork_languages: List[str] = []
     tvdb_artwork_allow_null_language: bool = True
     tmdb_artwork_languages: List[str] = []
     tmdb_artwork_allow_null_language: bool = True
+
+    # v0.12.0: filesystem watcher. Both fields are nullable so the UI can
+    # explicitly say "follow the env default" (None) vs. "I set this to X".
+    # ``effective_watcher_*`` helpers below resolve None to the EnvSettings
+    # value so every consumer can call one accessor instead of branching.
+    watcher_enabled: Optional[bool] = None
+    watcher_debounce_seconds: Optional[int] = None
 
     @classmethod
     def load(cls, path: Path) -> "UserSettings":
@@ -215,3 +179,33 @@ def effective_metadata_source(library_name: Optional[str] = None) -> str:
             # Defensive: never let library lookup break a build.
             pass
     return global_src if global_src in ("tvdb", "tmdb") else "tvdb"
+
+
+def effective_watcher_enabled() -> bool:
+    """Resolve the runtime watcher enable flag.
+
+    User setting wins when explicitly set (True/False); otherwise the
+    container env default applies. Default-default is True (the watcher is
+    on out of the box; users can disable from Settings → Watcher or by
+    setting ``WATCHER_ENABLED=false`` in the container).
+    """
+    s = get_user_settings()
+    if s.watcher_enabled is not None:
+        return bool(s.watcher_enabled)
+    return bool(env.watcher_enabled)
+
+
+def effective_watcher_debounce_seconds() -> int:
+    """Resolve the active debounce window in seconds.
+
+    Clamped to [1, 3600] — anything shorter than 1s defeats the point and
+    anything longer than an hour is almost certainly a typo. The default
+    is 30s which matches typical Sonarr/Radarr post-import settling.
+    """
+    s = get_user_settings()
+    raw = s.watcher_debounce_seconds if s.watcher_debounce_seconds is not None else env.watcher_debounce_seconds
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        v = 30
+    return max(1, min(3600, v))
