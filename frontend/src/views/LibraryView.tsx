@@ -24,6 +24,70 @@ function loadFilterFor(library: string | null): LibFilter {
   return "all";
 }
 
+// v0.13.0 — library sort. Client-side over the (≤5000 row) items list; the
+// choice persists per library, same pattern as the status filter above.
+type SortKey = "title-asc" | "title-desc" | "added" | "updated" | "seasons";
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: "title-asc", label: "Title (A-Z)" },
+  { key: "title-desc", label: "Title (Z-A)" },
+  { key: "added", label: "Date Added" },
+  { key: "updated", label: "Date Updated" },
+  { key: "seasons", label: "Season Count (On disk)" },
+];
+
+const SORT_KEYS = new Set<string>(SORT_OPTIONS.map((o) => o.key));
+
+function loadSortFor(library: string | null): SortKey {
+  if (!library) return "title-asc";
+  try {
+    const v = localStorage.getItem(`pnb.libSort.${library}`);
+    if (v && SORT_KEYS.has(v)) return v as SortKey;
+  } catch {}
+  return "title-asc";
+}
+
+const titleOf = (i: Item) => (i.sort_title || i.title || "").toLowerCase();
+const byTitle = (a: Item, b: Item) => titleOf(a).localeCompare(titleOf(b));
+
+/** Descending on a numeric field; items without a value sink to the bottom
+ *  regardless of direction, then tiebreak by title. */
+function byNumberDesc(field: (i: Item) => number | null | undefined) {
+  return (a: Item, b: Item) => {
+    const av = field(a);
+    const bv = field(b);
+    const aMissing = av === null || av === undefined;
+    const bMissing = bv === null || bv === undefined;
+    if (aMissing && bMissing) return byTitle(a, b);
+    if (aMissing) return 1;
+    if (bMissing) return -1;
+    if (bv! !== av!) return bv! - av!;
+    return byTitle(a, b);
+  };
+}
+
+function sortItems(items: Item[], sort: SortKey): Item[] {
+  const out = [...items];
+  switch (sort) {
+    case "title-asc":
+      out.sort(byTitle);
+      break;
+    case "title-desc":
+      out.sort((a, b) => byTitle(b, a));
+      break;
+    case "added":
+      out.sort(byNumberDesc((i) => i.date_added));
+      break;
+    case "updated":
+      out.sort(byNumberDesc((i) => i.date_updated));
+      break;
+    case "seasons":
+      out.sort(byNumberDesc((i) => i.season_count_local));
+      break;
+  }
+  return out;
+}
+
 const STATUS_COLOR: Record<string, string> = {
   none: "bg-slate-700 text-slate-200",
   partial: "bg-amber-700 text-amber-100",
@@ -50,10 +114,12 @@ export default function LibraryView(props: {
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [filter, setFilter] = useState<LibFilter>(() => loadFilterFor(props.library));
+  const [sort, setSort] = useState<SortKey>(() => loadSortFor(props.library));
 
-  // Reload persisted filter when the active library changes.
+  // Reload persisted filter + sort when the active library changes.
   useEffect(() => {
     setFilter(loadFilterFor(props.library));
+    setSort(loadSortFor(props.library));
   }, [props.library]);
 
   const setFilterPersisted = (f: LibFilter) => {
@@ -61,6 +127,15 @@ export default function LibraryView(props: {
     if (props.library) {
       try {
         localStorage.setItem(`pnb.libFilter.${props.library}`, f);
+      } catch {}
+    }
+  };
+
+  const setSortPersisted = (s: SortKey) => {
+    setSort(s);
+    if (props.library) {
+      try {
+        localStorage.setItem(`pnb.libSort.${props.library}`, s);
       } catch {}
     }
   };
@@ -91,7 +166,11 @@ export default function LibraryView(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
-  const items = data?.items ?? [];
+  const rawItems = data?.items ?? [];
+  // v0.13.0 — apply the library sort client-side. The backend returns rows
+  // in sort_title order (the "Title (A-Z)" default), everything else is
+  // re-ordered here.
+  const items = useMemo(() => sortItems(rawItems, sort), [rawItems, sort]);
   const allSelected = items.length > 0 && items.every((i) => selected.has(i.folder_path));
   const someSelected = selected.size > 0;
 
@@ -323,6 +402,21 @@ export default function LibraryView(props: {
               </span>
             )}
           </label>
+
+          {/* Sort dropdown — v0.13.0 */}
+          <select
+            value={sort}
+            onChange={(e) => setSortPersisted(e.target.value as SortKey)}
+            className="text-xs bg-slate-900 border border-slate-800 rounded-md px-2 py-1.5 text-slate-300 hover:border-slate-700 focus:outline-none focus:border-indigo-600 cursor-pointer"
+            title="Sort this library"
+            aria-label="Sort library"
+          >
+            {SORT_OPTIONS.map((o) => (
+              <option key={o.key} value={o.key}>
+                Sort: {o.label}
+              </option>
+            ))}
+          </select>
 
           {/* Status filter pill — v0.11.4 */}
           <div className="flex bg-slate-900 border border-slate-800 rounded-md p-0.5">

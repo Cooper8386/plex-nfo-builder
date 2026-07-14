@@ -2,6 +2,45 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.13.0 — 2026-07-14
+
+Library sorting and a proper app icon.
+
+### Added
+
+- **Library sort dropdown** on every library toolbar with five options,
+  remembered per library (same localStorage pattern as the status
+  filter pill):
+  - **Title (A-Z)** / **Title (Z-A)** — the existing Plex/Sonarr-style
+    sort key (`sorttitle` override → provider `sortName` →
+    leading-article-stripped title), ascending or descending.
+  - **Date Added** — newest first. Recorded the first time the scanner
+    sees a folder and never overwritten afterwards. Existing rows are
+    backfilled from the folder's mtime by an idempotent migration, so
+    upgrades sort sensibly on first load.
+  - **Date Updated** — newest first. The newest mtime across the item
+    folder **and** its season subfolders, refreshed on every scan. The
+    season-dir part matters: Sonarr importing an episode into
+    `Season 03/` bumps that directory's mtime, not the show root's.
+  - **Season Count (On disk)** — most seasons first, counting seasons
+    with at least one episode on disk (Specials included). Movies
+    carry no season count and sort after all series.
+- **`item_state` columns** `date_added`, `date_updated`,
+  `season_count_local`, written by both series and movie scans and
+  returned by `GET /api/items` with no API shape change.
+- **App icons**: new SVG-first icon set (NFO document with angle
+  brackets and an emerald status check on the app's slate background)
+  — `favicon.svg`, `favicon.ico`, `favicon-32.png`,
+  `apple-touch-icon.png`, `icon-192.png`, `icon-512.png` — plus a web
+  manifest (`site.webmanifest`) and `theme-color` so the app looks
+  right in browser tabs, pinned tabs, home screens, and PWA installs.
+  Replaces the dead `/vite.svg` favicon reference.
+
+### Fixed
+
+- `index.html` pointed at `/vite.svg`, which was never shipped —
+  browsers showed a blank tab icon and logged a 404.
+
 ## 0.12.0 — 2026-05-15
 
 Adds a built-in **filesystem watcher** so the scan → match → build

@@ -62,6 +62,33 @@ export default function HelpView() {
           Editing a series or movie sorttitle override automatically refreshes
           the cached sort key. No rescan needed.
         </Callout>
+        <p>
+          v0.13.0 adds a <b>Sort</b> dropdown to the library toolbar with five
+          options, remembered per library:
+        </p>
+        <Bullets>
+          <li>
+            <b>Title (A-Z)</b> / <b>Title (Z-A)</b> — the Plex-style sort key
+            described above, ascending or descending.
+          </li>
+          <li>
+            <b>Date Added</b> — newest first, by when the scanner first saw the
+            folder. Existing libraries are backfilled from the folder's
+            modified time on upgrade, so the order is sensible from day one.
+          </li>
+          <li>
+            <b>Date Updated</b> — newest first, by the most recent modified
+            time across the item folder <i>and</i> its season subfolders, so
+            an episode landing in <Code>Season 03/</Code> bumps the show even
+            though the show root's mtime never changes. Refreshed on every
+            scan.
+          </li>
+          <li>
+            <b>Season Count (On disk)</b> — most seasons first, counting only
+            seasons with at least one episode on disk (Specials included).
+            Movies have no seasons and sort after all series, alphabetically.
+          </li>
+        </Bullets>
       </Section>
 
       <Section title="Library status filter">

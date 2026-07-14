@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- plex-nfo-builder app icon (v0.13.0): an NFO/XML document on the app's
+       slate-950 background, angle brackets for the XML payload, emerald
+       "complete" dot echoing the library status badges. -->
+  <defs>
+    <linearGradient id="doc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#818cf8"/>
+      <stop offset="1" stop-color="#4f46e5"/>
+    </linearGradient>
+  </defs>
+  <!-- background -->
+  <rect width="512" height="512" rx="112" fill="#020617"/>
+  <rect x="10" y="10" width="492" height="492" rx="102" fill="none" stroke="#1e293b" stroke-width="8"/>
+  <!-- document with folded corner -->
+  <path d="M156 96h136l84 84v236a20 20 0 0 1-20 20H156a20 20 0 0 1-20-20V116a20 20 0 0 1 20-20z" fill="url(#doc)"/>
+  <path d="M292 96l84 84h-64a20 20 0 0 1-20-20V96z" fill="#c7d2fe"/>
+  <!-- angle brackets -->
+  <path d="M218 258l-44 46 44 46" fill="none" stroke="#eef2ff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M294 258l44 46-44 46" fill="none" stroke="#eef2ff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- status dot -->
+  <circle cx="392" cy="404" r="52" fill="#020617"/>
+  <circle cx="392" cy="404" r="38" fill="#10b981"/>
+  <path d="M374 404l13 13 24-26" fill="none" stroke="#022c22" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

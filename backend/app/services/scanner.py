@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -125,6 +126,25 @@ def scan_library(name: str) -> int:
     return count
 
 
+def _folder_mtime(p: Path) -> Optional[int]:
+    try:
+        return int(p.stat().st_mtime)
+    except Exception:
+        return None
+
+
+def _series_date_updated(folder: Path, season_dirs: list[Path]) -> Optional[int]:
+    """Newest mtime across the series folder and its season subfolders.
+
+    v0.13.0 — backs the "Date Updated" library sort. A new episode landing
+    in ``Season 01/`` bumps that directory's mtime but not the show root's,
+    so the root mtime alone would miss most real updates.
+    """
+    stamps = [_folder_mtime(folder)] + [_folder_mtime(sd) for sd in season_dirs]
+    known = [s for s in stamps if s is not None]
+    return max(known) if known else None
+
+
 def scan_series_folder(folder: Path, library: str) -> SeriesFolderScan:
     # Restore binding/overrides from a sidecar file if the DB has nothing yet.
     # Safe to call repeatedly; it no-ops when a binding already exists.
@@ -168,6 +188,7 @@ def scan_series_folder(folder: Path, library: str) -> SeriesFolderScan:
     # fallback strips a leading article.
     series_overrides = db.get_nfo_overrides(str(folder)).get("series", {})
     sort_title = db.compute_sort_title(pf.title, series_overrides.get("sorttitle"))
+    now = int(time.time())
     db.upsert_item_state(
         str(folder),
         library=library,
@@ -180,9 +201,17 @@ def scan_series_folder(folder: Path, library: str) -> SeriesFolderScan:
         nfo_status=nfo_state,
         episode_count_local=total_eps,
         episode_count_tvdb=None,
-        last_scanned=int(__import__("time").time()),
+        last_scanned=now,
         poster_path=str(poster) if poster else None,
         orphan_count=int(orphan_count),
+        # v0.13.0 — library sort keys. date_added is insert-only (see
+        # db.upsert_item_state); seasons with at least one episode on disk
+        # count toward season_count_local, Specials included.
+        date_added=now,
+        date_updated=_series_date_updated(
+            folder, [sd for sd, _eps in season_dirs_resolved]
+        ),
+        season_count_local=len(seasons),
     )
     return SeriesFolderScan(folder=pf, seasons=seasons, nfo_state=nfo_state,
                             has_provenance=has_prov, nfo_episode_count=nfo_count,
@@ -226,6 +255,7 @@ def scan_movie_folder(folder: Path, library: str) -> dict:
     movie_overrides = db.get_nfo_overrides(str(folder)).get("movie", {})
     movie_title = pm_title or folder_pf.title
     sort_title = db.compute_sort_title(movie_title, movie_overrides.get("sorttitle"))
+    now = int(time.time())
     db.upsert_item_state(
         str(folder),
         library=library,
@@ -238,9 +268,14 @@ def scan_movie_folder(folder: Path, library: str) -> dict:
         nfo_status=state,
         episode_count_local=len(videos),
         episode_count_tvdb=None,
-        last_scanned=int(__import__("time").time()),
+        last_scanned=now,
         poster_path=str(poster) if poster else None,
         orphan_count=int(orphan_count),
+        # v0.13.0 — library sort keys. Movies have no seasons; NULL keeps
+        # them grouped after series when sorting by season count.
+        date_added=now,
+        date_updated=_folder_mtime(folder),
+        season_count_local=None,
     )
     return {"title": pm_title or folder_pf.title, "state": state}
 

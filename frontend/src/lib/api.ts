@@ -178,6 +178,12 @@ export type Item = {
   last_built?: number | null;
   /** v0.11.4 — sortable title (override → provider → stripped article fallback). */
   sort_title?: string | null;
+  /** v0.13.0 — unix time the scanner first saw this folder (insert-only). */
+  date_added?: number | null;
+  /** v0.13.0 — newest mtime across the folder and its season subfolders. */
+  date_updated?: number | null;
+  /** v0.13.0 — seasons with ≥1 episode on disk (Specials included); null for movies. */
+  season_count_local?: number | null;
 };
 
 const J = <T,>(p: Promise<Response>): Promise<T> =>

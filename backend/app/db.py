@@ -338,6 +338,48 @@ def _migrate(c: sqlite3.Connection) -> None:
         except Exception:
             pass
 
+        # v0.13.0: three sortable columns for the library page.
+        #   date_added         — unix time the scanner first saw the folder.
+        #                        Insert-only after this migration (see
+        #                        upsert_item_state), backfilled from folder
+        #                        mtime so existing libraries sort sensibly on
+        #                        first load after upgrade.
+        #   date_updated       — unix time of the newest mtime across the item
+        #                        folder and its season subfolders. Refreshed on
+        #                        every scan.
+        #   season_count_local — number of seasons with at least one episode
+        #                        on disk (Specials included). NULL for movies.
+        item_cols = {r[1] for r in c.execute("PRAGMA table_info(item_state)").fetchall()}
+        needs_date_backfill = bool(item_cols) and "date_added" not in item_cols
+        for col in ("date_added", "date_updated", "season_count_local"):
+            if item_cols and col not in item_cols:
+                try:
+                    c.execute(f"ALTER TABLE item_state ADD COLUMN {col} INTEGER")
+                except Exception:
+                    pass
+        if needs_date_backfill:
+            now = int(time.time())
+            try:
+                rows = c.execute(
+                    "SELECT folder_path FROM item_state "
+                    "WHERE date_added IS NULL OR date_updated IS NULL"
+                ).fetchall()
+                for r in rows:
+                    ts = now
+                    try:
+                        ts = int(Path(r["folder_path"]).stat().st_mtime)
+                    except Exception:
+                        pass  # folder missing/unreadable — fall back to now
+                    c.execute(
+                        "UPDATE item_state SET "
+                        "date_added = COALESCE(date_added, ?), "
+                        "date_updated = COALESCE(date_updated, ?) "
+                        "WHERE folder_path = ?",
+                        (ts, ts, r["folder_path"]),
+                    )
+            except Exception:
+                pass
+
 
 # ---- TVDB cache -------------------------------------------------------------
 
@@ -516,7 +558,14 @@ def upsert_item_state(folder_path: str, **fields: Any) -> None:
     cols = ["folder_path"] + list(fields.keys())
     vals = [folder_path] + list(fields.values())
     placeholders = ",".join(["?"] * len(cols))
-    sets = ",".join([f"{k}=excluded.{k}" for k in fields.keys()])
+    # v0.13.0: date_added is insert-only — the first value ever written for a
+    # folder wins, every later scan keeps it. All other fields overwrite.
+    sets = ",".join(
+        f"{k}=COALESCE(item_state.{k}, excluded.{k})"
+        if k == "date_added"
+        else f"{k}=excluded.{k}"
+        for k in fields.keys()
+    )
     with _lock:
         c.execute(
             f"INSERT INTO item_state({','.join(cols)}) VALUES ({placeholders})"
