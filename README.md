@@ -202,6 +202,13 @@ Old v0.10.0 simple tokens (`{title}`, `{year}`, `{season}`, `{season:02}`, `{epi
 
 ## NFO provenance
 
+All NFO writes are atomic (temp file + `os.replace`) and empty
+`<uniqueid>` tags are never emitted. These two guarantees prevent
+Plex from momentarily seeing a torn or ambiguous NFO and spinning up
+a duplicate library entry for the show — see the Help tab in-app
+for the full explanation and, if you already have a duplicate, the
+steps to merge it into the correct show.
+
 Every NFO file this app writes starts with:
 
 ```xml

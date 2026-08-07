@@ -344,6 +344,46 @@ export default function HelpView() {
         </p>
       </Section>
 
+      <Section title="Duplicate library entries in Plex (v0.13.2 hardening)">
+        <p>
+          Plex can occasionally create a second library entry for a show
+          you rebuild here (classic shape: seasons 1–18 on the original
+          entry, the newest season stranded on a phantom entry). Two
+          things in the writer used to make that possible; both are
+          fixed as of v0.13.2.
+        </p>
+        <Bullets>
+          <li>
+            <b>Empty <Code>&lt;uniqueid&gt;</Code> tags are no longer
+            written.</b> When TVDB or TMDB left a metadata id blank, the
+            builder would still emit
+            <Code>&lt;uniqueid type="tvdb" default="true"/&gt;</Code>.
+            Plex reads that as “valid but unresolved,” falls back to
+            the <Code>Plex Series</Code> provider, and can spin up a
+            duplicate entry keyed off the season folder. The builder
+            now skips the tag entirely when there’s no real id; Plex
+            inherits the parent binding from <Code>tvshow.nfo</Code>.
+          </li>
+          <li>
+            <b>NFO writes are atomic.</b> <Code>tvshow.nfo</Code>,
+            <Code>season.nfo</Code>, and per-episode / per-movie
+            <Code>.nfo</Code> files are written to a temp file first
+            and swapped in with <Code>os.replace</Code>. A Plex scan
+            that fires mid-build can no longer catch a half-written
+            NFO and hand the folder to the fallback provider.
+          </li>
+          <li>
+            <b>If you already have a duplicate</b>, the fix above stops
+            new ones from being created but doesn’t merge the existing
+            phantom. In Plex: open the phantom entry &rarr; <b>… &rarr;
+            Fix Match &rarr; Merge</b> into the correct show, or
+            simply delete the phantom entry and run a Plex library
+            scan; Plex will re-add the affected season under the
+            correct show now that the NFOs are consistent.
+          </li>
+        </Bullets>
+      </Section>
+
       <Section title="Filesystem watcher (v0.12.0, hardened in v0.13.1)">
         <p>
           The watcher tails every enabled library root with{" "}

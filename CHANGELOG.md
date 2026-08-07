@@ -2,6 +2,32 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.13.2 — 2026-08-07
+
+Stop Plex from creating a duplicate library entry after an NFO rebuild.
+
+### Fixed
+
+- **Never emit an empty `<uniqueid>` tag.** Every builder path (series,
+  episode, movie, season; TVDB and TMDB variants) previously wrote
+  `<uniqueid type="tvdb" default="true"></uniqueid>` when a metadata
+  record was missing an id. Plex's NFO agents treat an empty default
+  uniqueid as a valid-but-unresolved match hint, then fall back to the
+  `Plex Series` provider for the affected files, which can spawn a
+  second library entry keyed off the season folder (e.g. seasons 1–18
+  on the original show entry, season 19 stranded on a phantom entry).
+  The new `_uid` helper in `services/nfo.py` skips the element
+  entirely when we don't have a real value; Plex then correctly
+  inherits the parent binding from `tvshow.nfo`.
+- **NFO writes are atomic.** `tvshow.nfo`, `season.nfo`, and every
+  per-episode / per-movie `.nfo` now go through a temp file + `os.replace`
+  swap. Plex's scanner can pick up a file mid-write, and a torn read
+  (truncated XML, incomplete `<uniqueid>`) is enough to knock the NFO
+  agent off the primary match and hand the show to the fallback
+  provider. `os.replace` is atomic on POSIX (Unraid SHFS included), so
+  any concurrent Plex read sees either the previous full contents or
+  the new full contents — never a torn view.
+
 ## 0.13.1 — 2026-08-06
 
 Watcher no longer blocks the WebUI.

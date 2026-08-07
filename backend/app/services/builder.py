@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -46,6 +48,45 @@ from .scanner import scan_movie_folder, scan_series_folder
 from .sidecar import write_sidecar
 from .tmdb import get_client as get_tmdb_client, image_url as tmdb_image_url
 from .tvdb import get_client
+
+
+def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Write ``text`` to ``path`` via a temp file + rename so Plex never sees a
+    half-written NFO.
+
+    v0.13.2: Plex's scanner can pick up an NFO the instant it appears on disk.
+    If the file is only partially flushed (invalid XML, missing closing tags,
+    truncated ``<uniqueid>``) Plex's NFO agent bails and the fallback
+    ``Plex Series`` provider matches the show against its own catalogue — which
+    on a rebind or partial rebuild can produce a second library entry keyed
+    off whatever season folder happened to be scanned mid-write. Writing to a
+    sibling temp file first and then ``os.replace`` gives an atomic swap on
+    POSIX (Unraid SHFS included), so any observer either sees the previous
+    valid content or the new valid content, never a torn read.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent),
+    )
+    tmp = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding, newline="\n") as f:
+            f.write(text)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                # Some filesystems (network shares, tmpfs) reject fsync; the
+                # write has still hit the kernel buffer, and os.replace below
+                # is atomic at the VFS layer, which is what we actually need.
+                pass
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def _manual_secondary_id(binding, want_provider: str) -> Optional[str]:
@@ -448,7 +489,7 @@ async def build_series(folder: Path, *, force: bool = False,
             preferred_overrides=preferred_overrides,
             manual_secondary=_manual_secondary_tuple(binding),
         )
-        (folder / "tvshow.nfo").write_text(nfo_text, encoding="utf-8")
+        _atomic_write_text(folder / "tvshow.nfo", nfo_text)
         job["progress"] += 1
         log.info("Wrote tvshow.nfo")
 
@@ -498,7 +539,7 @@ async def build_series(folder: Path, *, force: bool = False,
                         external_id=str(tvs.get("id")) if tvs.get("id") else None,
                         provider="tvdb",
                     )
-                    (sd / "season.nfo").write_text(season_nfo, encoding="utf-8")
+                    _atomic_write_text(sd / "season.nfo", season_nfo)
             except Exception as se:
                 log.warning("season.nfo write for s{:02d} failed: {}", snum, se)
             for parsed in list_season_episodes(sd):
@@ -547,7 +588,7 @@ async def build_series(folder: Path, *, force: bool = False,
                     overrides=nfo_overrides,
                 )
                 nfo_path = parsed.path.with_suffix(".nfo")
-                nfo_path.write_text(ep_text, encoding="utf-8")
+                _atomic_write_text(nfo_path, ep_text)
                 # remember local path for thumbnail download
                 marker = dict(ep)
                 marker["_local_path"] = str(parsed.path)
@@ -756,7 +797,7 @@ async def build_movie(folder: Path, *, force: bool = False,
             preferred_overrides=preferred_overrides,
             manual_secondary=_manual_secondary_tuple(binding),
         )
-        main.with_suffix(".nfo").write_text(nfo_text, encoding="utf-8")
+        _atomic_write_text(main.with_suffix(".nfo"), nfo_text)
         job["progress"] += 1
 
         # Artwork — direct canonical files in the movie folder.
@@ -933,7 +974,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
         },
                                          overrides=nfo_overrides,
                                          manual_secondary=_manual_secondary_tuple(binding))
-        (folder / "tvshow.nfo").write_text(nfo_text, encoding="utf-8")
+        _atomic_write_text(folder / "tvshow.nfo", nfo_text)
         job["progress"] += 1
         log.info("Wrote tvshow.nfo (TMDB tv_id={})", data.get("id"))
 
@@ -969,7 +1010,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
                                 season_dir = sd
                                 break
                     if season_dir.exists():
-                        (season_dir / "season.nfo").write_text(season_nfo, encoding="utf-8")
+                        _atomic_write_text(season_dir / "season.nfo", season_nfo)
             except Exception as se:
                 log.warning("TMDB season.nfo for s{:02d} failed: {}", snum, se)
             for parsed in parsed_list:
@@ -986,7 +1027,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
                     continue
                 ep_text = build_episode_nfo_tmdb(ep, language=lang, fallbacks=fallbacks,
                                                   overrides=nfo_overrides)
-                parsed.path.with_suffix(".nfo").write_text(ep_text, encoding="utf-8")
+                _atomic_write_text(parsed.path.with_suffix(".nfo"), ep_text)
                 # Episode thumbnail next to the file.
                 #
                 # v0.11.9: TMDB ships multiple stills per episode and the
@@ -1146,7 +1187,7 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
         },
                                         overrides=nfo_overrides,
                                         manual_secondary=_manual_secondary_tuple(binding))
-        main.with_suffix(".nfo").write_text(nfo_text, encoding="utf-8")
+        _atomic_write_text(main.with_suffix(".nfo"), nfo_text)
         job["progress"] += 1
 
         poster = _pick_art(folder, "poster", preferred_overrides,

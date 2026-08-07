@@ -29,6 +29,30 @@ def _el(parent: ET.Element, tag: str, text: Optional[Any] = None,
     return e
 
 
+def _uid(parent: ET.Element, value: Any, *, provider: str,
+         default: bool = False) -> Optional[ET.Element]:
+    """Emit a ``<uniqueid>`` only when we have a real value to put in it.
+
+    v0.13.2: Plex's NFO agents treat ``<uniqueid type="tvdb" default="true"/>``
+    (empty text) as a valid-but-unresolved match hint. When several episodes
+    in a series carry that empty tag — or when a season's episode NFOs carry
+    a stale id from a previous binding while ``tvshow.nfo`` carries the new
+    one — Plex falls back to the ``Plex Series`` provider for the affected
+    files and can spawn a second library entry keyed off the season folder.
+    Skipping the element entirely when we don't have a real id is the safe
+    default; Plex will inherit the parent's binding from ``tvshow.nfo``.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s in ("0", "None"):
+        return None
+    attrib = {"type": provider}
+    if default:
+        attrib["default"] = "true"
+    return _el(parent, "uniqueid", s, attrib=attrib)
+
+
 def _pretty(root: ET.Element, provenance: dict) -> str:
     raw = ET.tostring(root, encoding="utf-8", xml_declaration=False).decode("utf-8")
     dom = minidom.parseString(raw)
@@ -142,21 +166,24 @@ def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[st
     runtime = s.get("averageRuntime") or s.get("runtime")
     if runtime:
         _el(root, "runtime", runtime)
-    # uniqueids
-    _el(root, "uniqueid", str(s.get("id") or ""), attrib={"type": "tvdb", "default": "true"})
-    emitted_uid_types: set[str] = {"tvdb"}
+    # uniqueids — skip empties (see _uid docstring for the Plex split-entry
+    # failure mode this prevents).
+    emitted_uid_types: set[str] = set()
+    if _uid(root, s.get("id"), provider="tvdb", default=True) is not None:
+        emitted_uid_types.add("tvdb")
     rms = s.get("remoteIds") or []
     for rm in rms:
         if isinstance(rm, dict) and rm.get("sourceName"):
             slug = _provider_slug(rm.get("sourceName"))
-            _el(root, "uniqueid", str(rm.get("id") or ""),
-                attrib={"type": slug})
-            emitted_uid_types.add(slug)
+            if slug in emitted_uid_types:
+                continue
+            if _uid(root, rm.get("id"), provider=slug) is not None:
+                emitted_uid_types.add(slug)
     if manual_secondary:
         sp, sid = manual_secondary
         sp = (sp or "").lower()
         if sp and sid and sp not in emitted_uid_types:
-            _el(root, "uniqueid", str(sid), attrib={"type": sp})
+            _uid(root, sid, provider=sp)
 
     # Artwork: always TVDB CDN URLs, unless the user's preferred-artwork-source
     # has supplied cross-provider URLs (e.g. TMDB images while bound to TVDB).
@@ -219,7 +246,7 @@ def build_episode_nfo(episode_extended: dict, *, language: str, fallbacks: list[
     _el(root, "plot", plot)
     if e.get("runtime"):
         _el(root, "runtime", e.get("runtime"))
-    _el(root, "uniqueid", str(e.get("id") or ""), attrib={"type": "tvdb", "default": "true"})
+    _uid(root, e.get("id"), provider="tvdb", default=True)
     # episode thumbnail: TVDB CDN URL (Plex caches it; local <stem>-thumb.jpg
     # is also written by the artwork pipeline as a fallback)
     if e.get("image"):
@@ -271,20 +298,23 @@ def build_movie_nfo(movie_extended: dict, *, language: str, fallbacks: list[str]
     if m.get("runtime"):
         _el(root, "runtime", m["runtime"])
     _emit_genres(root, m.get("genres") or [], folder_path)
-    _el(root, "uniqueid", str(m.get("id") or ""), attrib={"type": "tvdb", "default": "true"})
-    emitted_uid_types: set[str] = {"tvdb"}
+    # uniqueids — see _uid docstring; skip empties.
+    emitted_uid_types: set[str] = set()
+    if _uid(root, m.get("id"), provider="tvdb", default=True) is not None:
+        emitted_uid_types.add("tvdb")
     rms = m.get("remoteIds") or []
     for rm in rms:
         if isinstance(rm, dict) and rm.get("sourceName"):
             slug = _provider_slug(rm.get("sourceName"))
-            _el(root, "uniqueid", str(rm.get("id") or ""),
-                attrib={"type": slug})
-            emitted_uid_types.add(slug)
+            if slug in emitted_uid_types:
+                continue
+            if _uid(root, rm.get("id"), provider=slug) is not None:
+                emitted_uid_types.add(slug)
     if manual_secondary:
         sp, sid = manual_secondary
         sp = (sp or "").lower()
         if sp and sid and sp not in emitted_uid_types:
-            _el(root, "uniqueid", str(sid), attrib={"type": sp})
+            _uid(root, sid, provider=sp)
 
     urls = movie_image_urls(
         m, m.get("artworks") or [],
@@ -369,21 +399,20 @@ def build_series_nfo_tmdb(tv: dict, *, language: str, fallbacks: list[str],
     runtimes = tv.get("episode_run_time") or []
     if runtimes:
         _el(root, "runtime", runtimes[0])
-    # uniqueids
-    _el(root, "uniqueid", str(tv.get("id") or ""), attrib={"type": "tmdb", "default": "true"})
-    emitted_uid_types: set[str] = {"tmdb"}
+    # uniqueids — skip empties (see _uid docstring).
+    emitted_uid_types: set[str] = set()
+    if _uid(root, tv.get("id"), provider="tmdb", default=True) is not None:
+        emitted_uid_types.add("tmdb")
     ext = tv.get("external_ids") or {}
-    if ext.get("tvdb_id"):
-        _el(root, "uniqueid", str(ext["tvdb_id"]), attrib={"type": "tvdb"})
+    if _uid(root, ext.get("tvdb_id"), provider="tvdb") is not None:
         emitted_uid_types.add("tvdb")
-    if ext.get("imdb_id"):
-        _el(root, "uniqueid", str(ext["imdb_id"]), attrib={"type": "imdb"})
+    if _uid(root, ext.get("imdb_id"), provider="imdb") is not None:
         emitted_uid_types.add("imdb")
     if manual_secondary:
         sp, sid = manual_secondary
         sp = (sp or "").lower()
         if sp and sid and sp not in emitted_uid_types:
-            _el(root, "uniqueid", str(sid), attrib={"type": sp})
+            _uid(root, sid, provider=sp)
 
     # Artwork: respect per-folder selections, else use TMDB poster + backdrop URLs.
     extra = extra_artwork or {}
@@ -427,7 +456,7 @@ def build_episode_nfo_tmdb(ep: dict, *, language: str, fallbacks: list[str],
     _el(root, "plot", plot)
     if ep.get("runtime"):
         _el(root, "runtime", ep.get("runtime"))
-    _el(root, "uniqueid", str(ep.get("id") or ""), attrib={"type": "tmdb", "default": "true"})
+    _uid(root, ep.get("id"), provider="tmdb", default=True)
     if ep.get("still_path"):
         _el(root, "thumb", _tmdb_image(ep["still_path"], "original"))
     return _pretty(root, {"tvdb_id": ""})
@@ -464,20 +493,20 @@ def build_movie_nfo_tmdb(mv: dict, *, language: str, fallbacks: list[str],
     for s in (mv.get("production_companies") or []):
         if isinstance(s, dict) and s.get("name"):
             _el(root, "studio", s["name"])
-    _el(root, "uniqueid", str(mv.get("id") or ""), attrib={"type": "tmdb", "default": "true"})
-    emitted_uid_types: set[str] = {"tmdb"}
-    if mv.get("imdb_id"):
-        _el(root, "uniqueid", str(mv.get("imdb_id")), attrib={"type": "imdb"})
+    # uniqueids — skip empties (see _uid docstring).
+    emitted_uid_types: set[str] = set()
+    if _uid(root, mv.get("id"), provider="tmdb", default=True) is not None:
+        emitted_uid_types.add("tmdb")
+    if _uid(root, mv.get("imdb_id"), provider="imdb") is not None:
         emitted_uid_types.add("imdb")
     ext = mv.get("external_ids") or {}
-    if ext.get("tvdb_id"):
-        _el(root, "uniqueid", str(ext["tvdb_id"]), attrib={"type": "tvdb"})
+    if _uid(root, ext.get("tvdb_id"), provider="tvdb") is not None:
         emitted_uid_types.add("tvdb")
     if manual_secondary:
         sp, sid = manual_secondary
         sp = (sp or "").lower()
         if sp and sid and sp not in emitted_uid_types:
-            _el(root, "uniqueid", str(sid), attrib={"type": sp})
+            _uid(root, sid, provider=sp)
 
     extra = extra_artwork or {}
     poster = extra.get("poster") or _tmdb_image(mv.get("poster_path"), "original")
@@ -533,6 +562,5 @@ def build_season_nfo(season_number: int, *,
     _el(root, "plot", plot)
     if tagline:
         _el(root, "tagline", tagline)
-    if external_id:
-        _el(root, "uniqueid", str(external_id), attrib={"type": provider, "default": "true"})
+    _uid(root, external_id, provider=provider, default=True)
     return _pretty(root, {"tvdb_id": external_id or ""})
