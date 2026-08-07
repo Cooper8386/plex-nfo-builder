@@ -104,6 +104,10 @@ Environment variables:
 | `CONFIG_DIR`      | `/config`        | DB / logs / settings live here.                           |
 | `LOG_LEVEL`       | `INFO`           | `DEBUG`, `INFO`, `WARNING`, `ERROR`.                      |
 | `TZ`              | `America/Chicago`| Container time zone.                                      |
+| `WATCHER_ENABLED` | `true`           | Boot default for the filesystem watcher. Settings → Watcher overrides it at runtime. |
+| `WATCHER_DEBOUNCE_SECONDS` | `30`    | Boot default debounce window (1–3600). Settings → Watcher overrides it at runtime. |
+| `WATCHER_MAX_INFLIGHT` | `2`         | Cap on concurrent watcher pipelines. Prevents Sonarr/Radarr batches from starving the WebUI. |
+| `WATCHER_KILL_SWITCH` | _unset_      | Set to `1` / `true` to force the watcher off without a rebuild or UI toggle. Emergency use. |
 
 ## How matching works
 

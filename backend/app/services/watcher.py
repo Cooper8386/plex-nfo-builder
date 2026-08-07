@@ -105,6 +105,21 @@ _EVENT_BUFFER_SIZE = 500
 _STABILITY_POLL_INTERVAL = 5  # seconds
 _STABILITY_POLL_MAX = 3        # iterations
 
+# v0.13.1: hard concurrency cap on the pipeline. When Sonarr/Radarr commit a
+# batch, watchdog can fire dozens of settled-folder events in quick succession.
+# Without a cap they all hit ``_process_folder`` in parallel and each one runs
+# blocking scanner/DB I/O; on network shares (Unraid SHFS, NFS, SMB) that
+# starves the FastAPI event loop and every request hangs. Two-in-flight keeps
+# real Sonarr imports responsive while leaving headroom for API traffic.
+_MAX_INFLIGHT = int(os.environ.get("WATCHER_MAX_INFLIGHT", "2") or 2)
+
+# v0.13.1: runtime kill switch. Set ``WATCHER_KILL_SWITCH=1`` in the container
+# env (no rebuild, no settings file edit) to force the watcher off even when
+# the persisted user setting says enabled. Intended for emergency use when the
+# watcher is misbehaving and the WebUI is unreachable to toggle it normally.
+_KILL_SWITCH = (os.environ.get("WATCHER_KILL_SWITCH", "").strip().lower()
+                in ("1", "true", "yes", "on"))
+
 
 @dataclass
 class WatcherEvent:
@@ -216,6 +231,10 @@ class Watcher:
         self._enabled = False
         # Protect against concurrent start/stop/reload calls.
         self._lifecycle_lock = threading.Lock()
+        # v0.13.1: hard cap on concurrent _process_folder runs. Constructed
+        # lazily on the loop the watcher starts on so it binds to the right
+        # asyncio context.
+        self._inflight_sem: Optional[asyncio.Semaphore] = None
 
     # ----- lifecycle ------------------------------------------------------
 
@@ -232,6 +251,10 @@ class Watcher:
                 return
             if self._observer is not None:
                 return
+            if _KILL_SWITCH:
+                logger.warning("WATCHER_KILL_SWITCH set; watcher will not start")
+                self._enabled = False
+                return
             if not effective_watcher_enabled():
                 logger.info("Filesystem watcher is disabled via settings; not starting")
                 self._enabled = False
@@ -241,6 +264,8 @@ class Watcher:
             except RuntimeError:
                 logger.warning("No running event loop; watcher cannot start")
                 return
+            if self._inflight_sem is None:
+                self._inflight_sem = asyncio.Semaphore(max(1, _MAX_INFLIGHT))
             self._build_observer()
             self._enabled = True
             self._record_event(
@@ -275,7 +300,9 @@ class Watcher:
         the actual observer manipulation is serialised by the lifecycle lock.
         """
         with self._lifecycle_lock:
-            enabled = effective_watcher_enabled() and _WATCHDOG_AVAILABLE
+            enabled = (effective_watcher_enabled()
+                       and _WATCHDOG_AVAILABLE
+                       and not _KILL_SWITCH)
             if not enabled:
                 if self._observer is not None:
                     self._teardown_observer()
@@ -474,9 +501,38 @@ class Watcher:
         task.add_done_callback(_cleanup)
 
     async def _process_folder(self, folder: Path, library: str) -> None:
-        """Drive the scan → match → build pipeline for a settled folder."""
+        """Drive the scan → match → build pipeline for a settled folder.
+
+        v0.13.1 hardening:
+          * Every blocking call (``folder.exists``, ``db.*``, ``scanner_svc``,
+            ``sidecar_svc``) now runs via ``asyncio.to_thread`` so it can
+            never pin the FastAPI event loop on slow network I/O. The prior
+            layout called ``db.get_binding``/``scan_series_folder`` inline,
+            which on Unraid SHFS routinely blocked ``/api/*`` for tens of
+            seconds per event.
+          * The full-library ``scan_library`` refresh on every settled folder
+            is gone. It was overkill (every event triggered a walk of every
+            show in the library) and it was the single biggest contributor
+            to lock contention against the read path. The per-folder
+            ``scan_series_folder`` / ``scan_movie_folder`` calls below already
+            keep ``item_state`` correct for the affected folder.
+          * A global asyncio semaphore caps in-flight pipelines at
+            ``WATCHER_MAX_INFLIGHT`` (default 2). Excess events queue
+            instead of stampeding the DB and share.
+        """
+        sem = self._inflight_sem
+        if sem is None:
+            # Watcher started outside our normal lifecycle. Fall back to a
+            # local one-shot semaphore rather than crashing.
+            sem = asyncio.Semaphore(max(1, _MAX_INFLIGHT))
+            self._inflight_sem = sem
+        async with sem:
+            await self._process_folder_locked(folder, library)
+
+    async def _process_folder_locked(self, folder: Path, library: str) -> None:
         try:
-            if not folder.exists():
+            exists = await asyncio.to_thread(folder.exists)
+            if not exists:
                 self._record_event(
                     event_type="error",
                     folder_path=str(folder),
@@ -509,18 +565,28 @@ class Watcher:
                 status="info",
             )
 
-            # 1. Refresh DB state for the whole library (cheap; idempotent).
-            try:
-                await asyncio.to_thread(scanner_svc.scan_library, library)
-            except Exception as e:
-                logger.warning("watcher scan_library({}) failed: {}", library, e)
+            # 1. Determine the folder's kind.
+            kind = await asyncio.to_thread(_detect_kind, folder, library)
 
-            # 2. Determine the folder's kind.
-            kind = _detect_kind(folder, library)
-
-            # 3. If already matched, skip directly to build.
-            binding = db.get_binding(str(folder))
+            # 2. If already matched, skip directly to build.
+            binding = await asyncio.to_thread(db.get_binding, str(folder))
             if binding and binding["external_id"]:
+                # Refresh state for the single folder so downstream views see
+                # the new episode count / mtime; this replaces the removed
+                # library-wide scan_library refresh above.
+                try:
+                    if kind == "series":
+                        await asyncio.to_thread(
+                            scanner_svc.scan_series_folder, folder, library,
+                        )
+                    else:
+                        await asyncio.to_thread(
+                            scanner_svc.scan_movie_folder, folder, library,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "watcher per-folder rescan (bound) {} failed: {}", folder, e,
+                    )
                 self._record_event(
                     event_type="matched",
                     folder_path=str(folder),
@@ -533,13 +599,13 @@ class Watcher:
                 )
                 await self._queue_build(folder, kind, library)
                 # Clear any prior review-queue entry — it auto-resolved.
-                db.delete_watcher_review(str(folder))
+                await asyncio.to_thread(db.delete_watcher_review, str(folder))
                 return
 
-            # 4. Auto-match.
-            settings = get_user_settings()
+            # 3. Auto-match.
+            settings = await asyncio.to_thread(get_user_settings)
             lang = settings.preferred_language
-            source = effective_metadata_source(library)
+            source = await asyncio.to_thread(effective_metadata_source, library)
             try:
                 if source == "tmdb":
                     if kind == "series":
@@ -565,7 +631,8 @@ class Watcher:
                         )
             except Exception as e:
                 logger.warning("watcher auto-match {} failed: {}", folder, e)
-                db.upsert_watcher_review(
+                await asyncio.to_thread(
+                    db.upsert_watcher_review,
                     str(folder), library=library, kind=kind,
                     reason="error", detail=str(e),
                 )
@@ -579,7 +646,8 @@ class Watcher:
                 return
 
             if not data:
-                db.upsert_watcher_review(
+                await asyncio.to_thread(
+                    db.upsert_watcher_review,
                     str(folder), library=library, kind=kind,
                     reason="no_match",
                     detail="No candidate scored above the auto-match threshold.",
@@ -593,13 +661,17 @@ class Watcher:
                 )
                 return
 
-            # 5. Persist + build.
+            # 4. Persist + build.
             try:
                 if kind == "series":
-                    scanner_svc.scan_series_folder(folder, library=library)
+                    await asyncio.to_thread(
+                        scanner_svc.scan_series_folder, folder, library,
+                    )
                 else:
-                    scanner_svc.scan_movie_folder(folder, library=library)
-                sidecar_svc.write_sidecar(folder)
+                    await asyncio.to_thread(
+                        scanner_svc.scan_movie_folder, folder, library,
+                    )
+                await asyncio.to_thread(sidecar_svc.write_sidecar, folder)
             except Exception as e:
                 logger.warning("watcher post-match rescan {} failed: {}", folder, e)
 
@@ -610,7 +682,7 @@ class Watcher:
                 message=f"Matched to {data.get('name') or data.get('title') or '?'}",
                 status="success",
             )
-            db.delete_watcher_review(str(folder))
+            await asyncio.to_thread(db.delete_watcher_review, str(folder))
             await self._queue_build(folder, kind, library)
         except Exception as e:
             logger.exception("watcher pipeline crashed on {}: {}", folder, e)
@@ -624,7 +696,8 @@ class Watcher:
 
     async def _queue_build(self, folder: Path, kind: str, library: str) -> None:
         try:
-            jid = build_svc.start_build(folder, kind, force=False)
+            # start_build enqueues + touches the DB, so keep it off the loop.
+            jid = await asyncio.to_thread(build_svc.start_build, folder, kind, False)
             self._record_event(
                 event_type="built",
                 folder_path=str(folder),

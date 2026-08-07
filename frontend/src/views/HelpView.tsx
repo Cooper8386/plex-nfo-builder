@@ -344,6 +344,47 @@ export default function HelpView() {
         </p>
       </Section>
 
+      <Section title="Filesystem watcher (v0.12.0, hardened in v0.13.1)">
+        <p>
+          The watcher tails every enabled library root with{" "}
+          <Code>watchdog</Code> and drives the scan → match → build
+          pipeline whenever a show or movie folder settles. It debounces
+          events per folder (default 30s) so a multi-gigabyte Sonarr /
+          Radarr copy is treated as a single settled-import.
+        </p>
+        <Bullets>
+          <li>
+            <b>Enable / disable at runtime</b> from{" "}
+            <Code>Settings → Watcher</Code>, or with the container env
+            var <Code>WATCHER_ENABLED</Code>.
+          </li>
+          <li>
+            <b>Debounce window</b> is user-editable in the same panel
+            and can also be set via <Code>WATCHER_DEBOUNCE_SECONDS</Code>.
+            Longer values are safer on slow shares.
+          </li>
+          <li>
+            <b>Concurrency cap</b>: the watcher runs at most{" "}
+            <Code>WATCHER_MAX_INFLIGHT</Code> pipelines at once (default
+            2). Excess events queue instead of hammering SQLite and the
+            share when a Sonarr batch commits.
+          </li>
+          <li>
+            <b>Kill switch</b>: set{" "}
+            <Code>WATCHER_KILL_SWITCH=1</Code> in the container to force
+            the watcher off even when the persisted setting says
+            enabled. Restart the container to apply.
+          </li>
+          <li>
+            <b>Non-blocking pipeline (v0.13.1)</b>: every blocking
+            DB / disk call inside the pipeline now runs on a worker
+            thread, so a slow Unraid / NFS / SMB share can never stall
+            <Code>/api/*</Code> or the WebUI while a folder is being
+            processed.
+          </li>
+        </Bullets>
+      </Section>
+
       <Section title="The 60-second tour">
         <Ol>
           <li>

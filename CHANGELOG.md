@@ -2,6 +2,40 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.13.1 — 2026-08-06
+
+Watcher no longer blocks the WebUI.
+
+### Fixed
+
+- **Event loop no longer stalls under watcher load.** Every blocking call
+  inside the watcher pipeline (`folder.exists`, `db.get_binding`,
+  `db.upsert_watcher_review`, `db.delete_watcher_review`, `scan_series_folder`,
+  `scan_movie_folder`, `sidecar.write_sidecar`, `builder.start_build`) now
+  runs on a worker thread via `asyncio.to_thread` instead of directly on
+  the FastAPI event loop. On Unraid SHFS / NFS / SMB shares those calls
+  can take tens of seconds each; running them inline made `/api/health`,
+  `/api/items`, and every other endpoint time out while the watcher was
+  chewing on a settled folder.
+- **No more full-library rescan on every settled folder.** The pipeline
+  used to call `scan_library(<lib>)` at the top of each event, which
+  walked every show in the library and rewrote every `item_state` row —
+  massive lock contention against the read path and pure waste when only
+  one folder changed. The per-folder `scan_series_folder` /
+  `scan_movie_folder` calls the pipeline already made keep the affected
+  row correct.
+
+### Added
+
+- **`WATCHER_MAX_INFLIGHT` env var** (default 2) caps concurrent watcher
+  pipelines. Excess settled-folder events queue on an asyncio semaphore
+  instead of stampeding SQLite and the media share when Sonarr/Radarr
+  commit a batch.
+- **`WATCHER_KILL_SWITCH` env var**: set to `1` / `true` in the container
+  to force the watcher off without a rebuild or WebUI toggle. Intended
+  for emergencies where the watcher is misbehaving and the UI is
+  unreachable.
+
 ## 0.13.0 — 2026-07-14
 
 Library sorting and a proper app icon.
