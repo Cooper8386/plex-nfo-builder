@@ -15,7 +15,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from loguru import logger
 

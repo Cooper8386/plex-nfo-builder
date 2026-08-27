@@ -32,12 +32,12 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 from loguru import logger
 
 from .. import db
-from ..config import MEDIA_ROOT, effective_metadata_source, get_user_settings
+from ..config import effective_metadata_source, get_user_settings
 from . import builder as build_svc
 from . import matcher as matcher_svc
 from . import scanner as scanner_svc
@@ -96,7 +96,7 @@ def _expand_cron(expr: str) -> tuple[set[int], set[int], set[int], set[int], set
     parts = expr.split()
     if len(parts) != 5:
         raise ValueError(f"cron must have 5 fields, got {len(parts)}: {expr!r}")
-    return tuple(_parse_field(p, lo, hi) for p, (lo, hi) in zip(parts, _FIELD_RANGES))
+    return tuple(_parse_field(p, lo, hi) for p, (lo, hi) in zip(parts, _FIELD_RANGES))  # type: ignore[return-value]
 
 
 def cron_matches(expr: str, dt: datetime) -> bool:

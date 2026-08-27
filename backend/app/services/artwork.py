@@ -425,7 +425,7 @@ def _season_number_for_artwork(art: dict, series: dict) -> Optional[int]:
             continue
         if str(s.get("id")) == str(sid):
             try:
-                return int(s.get("number"))
+                return int(s.get("number"))  # type: ignore[arg-type]
             except Exception:
                 return None
     return None

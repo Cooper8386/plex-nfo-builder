@@ -3,14 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import re
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-import httpx
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from loguru import logger
 from pydantic import BaseModel
@@ -45,7 +43,6 @@ from ..services.parser import (
     detect_season_dirs,
     folder_looks_like_movie,
     list_season_episodes,
-    parse_folder_name,
     season_number_from_dir,
 )
 from ..services.tmdb import (
@@ -1131,7 +1128,7 @@ async def _gather_tags_for_detail(folder: Path, binding) -> dict:
             else:
                 data = await tvdb_c.movie_extended(external_id, force=False)
             out["tvdb"] = [
-                g.get("name") for g in (data.get("genres") or [])
+                g.get("name") for g in (data.get("genres") or [])  # type: ignore[misc]
                 if isinstance(g, dict) and g.get("name")
             ]
         except Exception as e:
@@ -1173,7 +1170,7 @@ async def _gather_tags_for_detail(folder: Path, binding) -> dict:
                     k.get("name") for k in (kw.get("keywords") or [])
                     if isinstance(k, dict) and k.get("name")
                 ]
-            out["tmdb"] = names
+            out["tmdb"] = names  # type: ignore[assignment]
             # If the item is bound to TMDB its `genres` array is also worth
             # surfacing as the canonical "tags" — prepend them ahead of keywords.
             if provider == "tmdb":
@@ -1786,7 +1783,7 @@ async def artwork_candidates(path: str, kind: str = "series"):
                 for s in seasons:
                     if not isinstance(s, dict):
                         continue
-                    sn = s.get("season_number")
+                    sn = s.get("season_number")  # type: ignore[assignment]
                     if sn is None or int(sn) < 0:
                         continue
                     try:
@@ -1847,7 +1844,7 @@ async def artwork_candidates(path: str, kind: str = "series"):
                 for s in tmdb_seasons:
                     if not isinstance(s, dict):
                         continue
-                    sn = s.get("season_number")
+                    sn = s.get("season_number")  # type: ignore[assignment]
                     if sn is None:
                         continue
                     try:
@@ -2287,7 +2284,7 @@ async def episodes_list(path: str):
         snum = season_number_from_dir(sd.name)
         for parsed in list_season_episodes(sd):
             if not getattr(parsed, "parsed", True):
-                locals_out.append(_row_for(parsed.path, snum, None, unparsed=True))
+                locals_out.append(_row_for(parsed.path, snum, None, unparsed=True))  # type: ignore[arg-type]
                 continue
             locals_out.append(
                 _row_for(parsed.path, snum, int(parsed.episode), unparsed=False)
@@ -2295,7 +2292,7 @@ async def episodes_list(path: str):
     # Loose video files at the series root — use the parser's own season.
     for parsed in list_season_episodes(p):
         if not getattr(parsed, "parsed", True):
-            locals_out.append(_row_for(parsed.path, None, None, unparsed=True))
+            locals_out.append(_row_for(parsed.path, None, None, unparsed=True))  # type: ignore[arg-type]
             continue
         locals_out.append(
             _row_for(
@@ -2861,12 +2858,12 @@ async def artwork_languages():
             langs = await get_client().languages()
             out["tvdb"] = [
                 {
-                    "code": (l.get("id") or "").strip().lower(),
-                    "name": l.get("name") or l.get("id") or "",
-                    "native_name": l.get("nativeName") or None,
+                    "code": (lang.get("id") or "").strip().lower(),
+                    "name": lang.get("name") or lang.get("id") or "",
+                    "native_name": lang.get("nativeName") or None,
                 }
-                for l in langs
-                if isinstance(l, dict) and l.get("id")
+                for lang in langs
+                if isinstance(lang, dict) and lang.get("id")
             ]
             out["tvdb"].sort(key=lambda x: x["name"].lower())
         except Exception as e:
@@ -2878,12 +2875,12 @@ async def artwork_languages():
             langs = await get_tmdb_client().languages()
             out["tmdb"] = [
                 {
-                    "code": (l.get("iso_639_1") or "").strip().lower(),
-                    "name": l.get("english_name") or l.get("name") or l.get("iso_639_1") or "",
-                    "native_name": l.get("name") or None,
+                    "code": (lang.get("iso_639_1") or "").strip().lower(),
+                    "name": lang.get("english_name") or lang.get("name") or lang.get("iso_639_1") or "",
+                    "native_name": lang.get("name") or None,
                 }
-                for l in langs
-                if isinstance(l, dict) and l.get("iso_639_1")
+                for lang in langs
+                if isinstance(lang, dict) and lang.get("iso_639_1")
             ]
             out["tmdb"].sort(key=lambda x: x["name"].lower())
         except Exception as e:

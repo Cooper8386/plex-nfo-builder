@@ -1123,7 +1123,7 @@ def insert_schedule(*, library: Optional[str], cron: str, action: str,
             """,
             (library, cron, action, 1 if enabled else 0, now, now),
         )
-        return int(cur.lastrowid)
+        return int(cur.lastrowid)  # type: ignore[arg-type]
 
 
 def update_schedule(sched_id: int, *, library: Optional[str] = None,

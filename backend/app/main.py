@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,7 +13,7 @@ from loguru import logger
 
 from . import __version__
 from . import db
-from .config import CONFIG_DIR, MEDIA_ROOT, env
+from .config import CONFIG_DIR, MEDIA_ROOT
 from .logging_setup import setup_logging
 from .routes.api import router as api_router
 from .services import scanner
@@ -46,7 +45,7 @@ async def lifespan(app: FastAPI):
     async def _detect_libraries_bg() -> None:
         try:
             libs = await asyncio.to_thread(scanner.detect_libraries)
-            logger.info("Detected libraries: {}", [l["name"] for l in libs])
+            logger.info("Detected libraries: {}", [lib["name"] for lib in libs])
         except Exception as e:
             logger.warning("Initial library detection failed: {}", e)
         # Start the watcher *after* detection so it sees the right paths.
