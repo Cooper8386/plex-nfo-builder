@@ -922,7 +922,7 @@ function OrphansPanel({
   /**
    * v0.11.11 — the scanner caches the orphan count on item_state so we can
    * skip the per-folder disk walk on the detail page when there's nothing
-   * to show. ``null`` means "unknown — fetch to confirm". ``0`` is the
+   * to show. ``null`` means "unknown — fetch to confirm". ``0`` is the
    * fast path: don't render the panel and don't hit the backend at all.
    */
   cachedOrphanCount: number | null;
