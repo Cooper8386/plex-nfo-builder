@@ -272,6 +272,31 @@ npm install
 npm run dev      # http://localhost:5173 (proxies /api -> :8000)
 ```
 
+## Development checks
+
+CI (`.github/workflows/ci.yml`) runs on PRs and pushes to `main`: a **backend**
+job (ruff, mypy, pytest on Python 3.12) and a **frontend** job (tsc, ESLint on
+Node 20). Run the same checks locally before pushing:
+
+```bash
+# backend
+cd backend
+pip install -r requirements.txt -r requirements-dev.txt
+ruff check app
+mypy app
+python -m pytest -q
+
+# frontend
+cd frontend
+npm ci
+npm run typecheck
+npm run lint
+```
+
+Tests pin current behavior; ruff/mypy/eslint baselines are lenient (some rules
+relaxed against the existing code). Latent bugs found while adding the safety
+net are tracked as separate issues, not fixed under the gate.
+
 ## License
 
 MIT
