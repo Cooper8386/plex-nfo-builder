@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ArtworkCandidate, ArtworkProvider } from "../lib/api";
+import { mediaUrl } from "../lib/auth";
 import { useConfirm, usePrompt } from "../components/ConfirmDialog";
 
 const SLOT_LABELS: Record<string, string> = {
@@ -322,7 +323,7 @@ export default function ArtworkPicker({
                 >
                   <div className={`bg-slate-800 ${aspectFor(current)}`}>
                     <img
-                      src={c.thumb}
+                      src={mediaUrl(c.thumb)}
                       alt=""
                       className="w-full h-full object-cover"
                       loading="lazy"

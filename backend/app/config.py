@@ -24,6 +24,20 @@ class EnvSettings(BaseSettings):
     log_level: str = Field(default="INFO")
     listen_host: str = Field(default="0.0.0.0")
     listen_port: int = Field(default=8000)
+    # v0.14.0: access control. The API is fail-closed — every /api request is
+    # rejected until ``API_TOKEN`` is set. Clients send it as the
+    # ``X-API-Token`` header (or ``Authorization: Bearer``), and image <img>
+    # tags that can't set headers pass it as the ``api_token`` query param.
+    api_token: Optional[str] = Field(default=None)
+    # Comma-separated origin allowlist for cross-origin browsers. Empty (the
+    # default) installs no CORS middleware at all — the bundled SPA is
+    # same-origin and needs none. Only set this if you serve the frontend from
+    # a different origin than the API.
+    cors_allow_origins: str = Field(default="")
+    # Comma-separated Host header allowlist (DNS-rebinding defense). Empty
+    # means accept any Host — set it to your real hostname(s)/IP(s) for
+    # defense-in-depth behind a reverse proxy.
+    trusted_hosts: str = Field(default="")
     # v0.12.0: filesystem watcher defaults. The user-editable settings below
     # can override these at runtime; env values are the boot defaults applied
     # when the user has never touched the toggle.
