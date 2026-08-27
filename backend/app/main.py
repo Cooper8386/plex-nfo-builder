@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
@@ -78,12 +81,76 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Plex NFO Builder", version=__version__, lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+# ---- Access control (v0.14.0) ---------------------------------------------
+# The API is fail-closed: with no API_TOKEN set, every /api call is refused
+# so an upgraded-but-unconfigured instance can't be driven by a LAN attacker.
+_API_TOKEN: Optional[str] = (env.api_token or "").strip() or None
+if not _API_TOKEN:
+    logger.warning(
+        "API_TOKEN is not set — the API is locked (fail-closed). Set the "
+        "API_TOKEN environment variable and reload to enable access."
+    )
+
+# Host header allowlist (DNS-rebinding defense). Outermost so a spoofed Host
+# is rejected before anything else runs. Empty allowlist => accept any host.
+_trusted = [h.strip() for h in env.trusted_hosts.split(",") if h.strip()]
+if _trusted:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_trusted)
+
+# CORS is opt-in and off by default: the bundled SPA is same-origin. Only
+# configured origins are allowed — never a wildcard on these file-mutating
+# routes.
+_origins = [o.strip() for o in env.cors_allow_origins.split(",") if o.strip()]
+if _origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+def _request_token(request: Request) -> Optional[str]:
+    """Pull the API token from header, bearer auth, or the ``api_token`` query
+    param (the last covers <img>/<a> requests that can't set headers)."""
+    tok = request.headers.get("x-api-token")
+    if tok:
+        return tok
+    auth = request.headers.get("authorization")
+    if auth and auth[:7].lower() == "bearer ":
+        return auth[7:].strip()
+    return request.query_params.get("api_token")
+
+
+# The auto-generated schema/docs leak the full endpoint surface, so they're
+# gated too (not just /api). The SPA and its static assets stay open so the
+# login screen can bootstrap.
+_PROTECTED_EXACT = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+
+
+@app.middleware("http")
+async def _require_token(request: Request, call_next):
+    path = request.url.path
+    if path == "/api" or path.startswith("/api/") or path in _PROTECTED_EXACT:
+        # Let CORS preflights through unauthenticated (browsers can't attach
+        # the token to a preflight); the actual request still gets checked.
+        if request.method != "OPTIONS":
+            if not _API_TOKEN:
+                return JSONResponse(
+                    {"detail": "Server misconfigured: API_TOKEN is not set."},
+                    status_code=503,
+                )
+            provided = _request_token(request)
+            # Compare as bytes: compare_digest raises TypeError on non-ASCII
+            # str, which a crafted token could otherwise turn into a 500.
+            if not provided or not secrets.compare_digest(
+                provided.encode("utf-8", "ignore"), _API_TOKEN.encode("utf-8")
+            ):
+                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
 app.include_router(api_router)
 
 

@@ -1,6 +1,8 @@
 """Loguru configuration with rotating files and per-job logs."""
 from __future__ import annotations
 
+import logging
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -11,6 +13,20 @@ from .config import LOG_DIR, env
 
 
 _initialized = False
+
+# Redact the API token from uvicorn's access log, which otherwise records the
+# full request line including the ``api_token`` query param used by <img> loads.
+_TOKEN_QS = re.compile(r"(api_token=)[^&\s\"]+", re.IGNORECASE)
+
+
+class _RedactTokenFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                _TOKEN_QS.sub(r"\1REDACTED", a) if isinstance(a, str) else a
+                for a in record.args
+            )
+        return True
 
 
 def setup_logging() -> None:
@@ -36,6 +52,11 @@ def setup_logging() -> None:
         backtrace=True,
         diagnose=False,
     )
+    # Attach to the logger instance so the filter survives uvicorn configuring
+    # its own handlers afterwards.
+    _access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _RedactTokenFilter) for f in _access.filters):
+        _access.addFilter(_RedactTokenFilter())
     _initialized = True
 
 

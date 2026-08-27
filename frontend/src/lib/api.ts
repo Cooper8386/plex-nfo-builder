@@ -1,3 +1,10 @@
+import { authFetch, mediaUrl } from "./auth";
+
+// Every call below goes through authFetch, which injects the X-API-Token
+// header and signals a re-login on 401. Shadowing the global here keeps the
+// ~80 call sites untouched.
+const fetch = authFetch;
+
 export type Library = {
   name: string;
   kind: string;
@@ -546,7 +553,8 @@ export const api = {
     list: () => J<{ jobs: any[] }>(fetch("/api/jobs")),
   },
   artwork: {
-    fileUrl: (path: string) => `/api/artwork/file?path=${encodeURIComponent(path)}`,
+    fileUrl: (path: string) =>
+      mediaUrl(`/api/artwork/file?path=${encodeURIComponent(path)}`),
     candidates: (path: string, kind: "series" | "movie" = "series") =>
       J<{
         path: string;

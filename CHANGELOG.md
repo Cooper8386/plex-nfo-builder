@@ -2,6 +2,34 @@
 
 All notable changes to **plex-nfo-builder**. The project follows [SemVer](https://semver.org/).
 
+## 0.14.0 — 2026-08-26
+
+Close the unauthenticated remote-access hole. Previously any web page a LAN
+user visited could silently call the file-deleting endpoints (NFO/artwork
+wipes, sidecar blasts, empty-folder prune, rename-apply) and overwrite Plex
+credentials, because there was no auth and CORS was a wildcard.
+
+### Security
+
+- **API is now fail-closed behind `API_TOKEN`.** Every `/api` request is
+  rejected until the `API_TOKEN` env var is set (`503` when unset, `401` on a
+  bad/missing token). The token is checked in constant time and accepted via
+  the `X-API-Token` header, `Authorization: Bearer`, or an `api_token` query
+  param (for `<img>` loads that can't set headers).
+- **Wildcard CORS removed.** CORS is off by default (the bundled SPA is
+  same-origin); set `CORS_ALLOW_ORIGINS` to an explicit allowlist only if you
+  serve the frontend cross-origin.
+- **Optional `Host` allowlist** via `TRUSTED_HOSTS` for DNS-rebinding defense.
+- **Interactive docs gated too.** `/docs`, `/redoc`, and `/openapi.json` now
+  require the token so the endpoint surface isn't disclosed unauthenticated.
+- **Token redacted from access logs.** The `api_token` query param is scrubbed
+  to `REDACTED` in uvicorn's access log.
+- **UI token gate + Sign out.** First load prompts for the token once and
+  stores it in the browser; a `401` mid-session drops back to the prompt; a
+  **Sign out** button in the top bar forgets it.
+- `docker-compose.yml` now requires `API_TOKEN` and refuses to start without
+  it. See the new **Security & access** section in the README.
+
 ## 0.13.2 — 2026-08-07
 
 Stop Plex from creating a duplicate library entry after an NFO rebuild.
