@@ -92,13 +92,18 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
 
+    _STATIC_ROOT = STATIC_DIR.resolve()
+
     @app.get("/{full_path:path}")
     async def spa(full_path: str):
         # fall through API
         if full_path.startswith("api/"):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
-        candidate = STATIC_DIR / full_path
-        if candidate.is_file():
+        # Resolve + enforce containment so URL-encoded traversal
+        # (e.g. /%2e%2e/config/settings.json) can't escape the static dir
+        # and serve secrets/DB/arbitrary files.
+        candidate = (STATIC_DIR / full_path).resolve()
+        if (candidate == _STATIC_ROOT or _STATIC_ROOT in candidate.parents) and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(STATIC_DIR / "index.html")
 else:
