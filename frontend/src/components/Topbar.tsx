@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ViewMode } from "../App";
 import { api } from "../lib/api";
+import { signOut } from "../lib/auth";
 
 export default function Topbar(props: {
   viewMode: ViewMode;
@@ -97,6 +98,13 @@ export default function Topbar(props: {
           </div>
         </>
       )}
+      <button
+        onClick={signOut}
+        title="Forget the API token on this browser and return to the login screen"
+        className="ml-1 px-3 py-1.5 text-sm rounded transition text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800"
+      >
+        Sign out
+      </button>
     </div>
   );
 }

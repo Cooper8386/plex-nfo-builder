@@ -81,7 +81,7 @@ echo "$GH_PAT" | docker login ghcr.io -u Cooper8386 --password-stdin
 git clone https://github.com/Cooper8386/plex-nfo-builder.git
 cd plex-nfo-builder
 cp .env.example .env  # edit TVDB_API_KEY
-# in docker-compose.yml: comment out `image:` and uncomment `build: .`
+# in docker-compose.yml: replace the `image:` line with `build: .`
 docker compose up -d --build
 ```
 
@@ -98,6 +98,9 @@ Environment variables:
 
 | Variable          | Default          | Notes                                                     |
 | ----------------- | ---------------- | --------------------------------------------------------- |
+| `API_TOKEN`       | _required_       | Access token for the whole API. The app is **fail-closed**: with no token set every `/api` call is refused. See [Security & access](#security--access). |
+| `CORS_ALLOW_ORIGINS` |               | Comma-separated origin allowlist for cross-origin browsers. Empty = no CORS (the bundled UI is same-origin and needs none). |
+| `TRUSTED_HOSTS`   |                  | Comma-separated `Host` header allowlist (DNS-rebinding defense). Empty = accept any host. |
 | `TVDB_API_KEY`    | _required_       | Or paste it in the Settings UI.                           |
 | `TVDB_PIN`        |                  | Optional subscriber PIN.                                  |
 | `MEDIA_ROOT`      | `/media`         | Anything under this becomes a library (one per top dir).  |
@@ -108,6 +111,37 @@ Environment variables:
 | `WATCHER_DEBOUNCE_SECONDS` | `30`    | Boot default debounce window (1–3600). Settings → Watcher overrides it at runtime. |
 | `WATCHER_MAX_INFLIGHT` | `2`         | Cap on concurrent watcher pipelines. Prevents Sonarr/Radarr batches from starving the WebUI. |
 | `WATCHER_KILL_SWITCH` | _unset_      | Set to `1` / `true` to force the watcher off without a rebuild or UI toggle. Emergency use. |
+
+## Security & access
+
+The API mutates and **deletes files** on your media volume (NFO/artwork wipes,
+sidecar blasts, empty-folder prune, rename-apply). It is therefore fail-closed:
+**you must set `API_TOKEN`.** Until you do, every `/api` request returns `503`
+and the UI shows a "server has no API_TOKEN configured" screen.
+
+Generate one and put it in your `.env`:
+
+```bash
+echo "API_TOKEN=$(openssl rand -hex 32)" >> .env
+```
+
+`docker-compose.yml` reads `${API_TOKEN}` and refuses to start if it's unset.
+On first load the UI asks for the token once and stores it in that browser's
+`localStorage`; `fetch` calls send it as the `X-API-Token` header and image
+tags pass it as an `api_token` query param (which is redacted from the access
+log). A **Sign out** button in the top bar forgets the token. The interactive
+docs (`/docs`, `/redoc`, `/openapi.json`) require the token as well.
+
+- **CORS is off by default.** The bundled SPA is same-origin, so no CORS is
+  needed. Set `CORS_ALLOW_ORIGINS` only if you serve the frontend from a
+  different origin — never a wildcard, which would let any web page you visit
+  drive these destructive endpoints.
+- **Host allowlist.** Set `TRUSTED_HOSTS` to your real hostname(s)/IP(s) for
+  defense-in-depth against DNS rebinding.
+- **Recommended: put it behind a reverse proxy** (Caddy, Traefik, nginx) that
+  terminates TLS and adds its own auth (SSO / basic-auth). The `API_TOKEN`
+  layer is the baseline; a proxy is the right place for real user auth and
+  HTTPS. Don't expose the raw port to untrusted networks.
 
 ## How matching works
 
