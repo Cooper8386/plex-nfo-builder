@@ -24,7 +24,7 @@ from loguru import logger
 from rapidfuzz import fuzz
 
 from .. import db
-from ..config import effective_metadata_source, get_user_settings
+from ..config import effective_metadata_source
 from .parser import (
     detect_season_dirs,
     folder_looks_like_movie,
@@ -214,7 +214,7 @@ def _pick_best(results: list[dict], title: str, year: Optional[int]) -> Optional
         score = fuzz.token_set_ratio(title.lower(), name.lower())
         if year and r.get("year"):
             try:
-                ry = int(r.get("year"))
+                ry = int(r.get("year"))  # type: ignore[arg-type]
                 if ry == year:
                     score += 15
                 elif abs(ry - year) == 1:
@@ -285,7 +285,7 @@ async def manual_search(query: str, type_: str = "series",
             "provider": "tvdb",
             "id": r.get("tvdb_id") or r.get("id"),
             "name": name,
-            "year": int(r.get("year")) if r.get("year") and str(r.get("year")).isdigit() else None,
+            "year": int(r.get("year")) if r.get("year") and str(r.get("year")).isdigit() else None,  # type: ignore[arg-type]
             "image_url": absolutize_tvdb_url(r.get("image_url") or r.get("image")),
             "overview": r.get("overview"),
             "tvdb_id": r.get("tvdb_id") or r.get("id"),

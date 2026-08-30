@@ -172,7 +172,7 @@ class TVDBClient:
         )
         d = data.get("data", {}) or {}
         # endpoint returns object with artworks array
-        return d.get("artworks") if isinstance(d, dict) and "artworks" in d else d if isinstance(d, list) else []
+        return d.get("artworks") if isinstance(d, dict) and "artworks" in d else d if isinstance(d, list) else []  # type: ignore[return-value]
 
     async def person_image(self, people_id: int | str, *, force: bool = False) -> Optional[str]:
         """Return the actor's default headshot URL (the `image` field on

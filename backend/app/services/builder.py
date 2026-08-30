@@ -41,7 +41,6 @@ from .parser import (
     detect_season_dirs,
     is_video,
     list_season_episodes,
-    parse_folder_name,
     season_number_from_dir,
 )
 from .scanner import scan_movie_folder, scan_series_folder
@@ -435,7 +434,7 @@ async def build_series(folder: Path, *, force: bool = False,
             client = get_client()
             data = await client.series_extended(binding["external_id"], force=False)
         else:
-            data = await auto_match_series(folder, language=lang,
+            data = await auto_match_series(folder, language=lang,  # type: ignore[assignment]
                                             threshold=settings.auto_match_threshold)
         if not data:
             job["status"] = "failed"
@@ -551,14 +550,14 @@ async def build_series(folder: Path, *, force: bool = False,
                     job["progress"] += 1
                     continue
                 key = (snum, parsed.episode)
-                ep = None
+                ep = None  # type: ignore[assignment]
                 if key in overrides:
-                    ep = tvdb_by_id.get(str(overrides[key]))
+                    ep = tvdb_by_id.get(str(overrides[key]))  # type: ignore[assignment]
                     if ep:
                         log.info("Override applied for s{:02d}e{:02d} -> tvdb ep {}",
                                  snum, parsed.episode, ep.get("id"))
                 if not ep:
-                    ep = tvdb_index.get(key)
+                    ep = tvdb_index.get(key)  # type: ignore[assignment]
                 if not ep:
                     unmatched.append(parsed.path.name)
                     job["progress"] += 1
@@ -750,7 +749,7 @@ async def build_movie(folder: Path, *, force: bool = False,
             client = get_client()
             data = await client.movie_extended(binding["external_id"], force=force)
         else:
-            data = await auto_match_movie(folder, language=lang,
+            data = await auto_match_movie(folder, language=lang,  # type: ignore[assignment]
                                           threshold=settings.auto_match_threshold)
         if not data:
             job["status"] = "failed"
@@ -845,7 +844,7 @@ async def build_movie(folder: Path, *, force: bool = False,
 # whatever URLs we hand it) and skip per-season poster detection from TVDB
 # entirely — we use TMDB's per-season image API instead.
 
-import httpx as _httpx  # local alias to avoid touching top imports
+import httpx as _httpx  # noqa: E402  # local alias to avoid touching top imports
 
 
 async def _download_url(url: Optional[str], dest: Path, *, force: bool) -> bool:
@@ -930,7 +929,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
                     )
                 raise
         else:
-            data = await auto_match_series_tmdb(folder, language=lang,
+            data = await auto_match_series_tmdb(folder, language=lang,  # type: ignore[assignment]
                                                 threshold=settings.auto_match_threshold)
         if not data:
             job["status"] = "failed"
@@ -1151,7 +1150,7 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
                     )
                 raise
         else:
-            data = await auto_match_movie_tmdb(folder, language=lang,
+            data = await auto_match_movie_tmdb(folder, language=lang,  # type: ignore[assignment]
                                                threshold=settings.auto_match_threshold)
         if not data:
             job["status"] = "failed"

@@ -79,8 +79,8 @@ def clean_folder(folder: Path, *, keep_sidecar: bool = True) -> dict:
     def _remove(p: Path, kind: str) -> None:
         try:
             p.unlink()
-            summary[f"{kind}_deleted"] += 1
-            summary["files"].append(str(p.relative_to(folder)))
+            summary[f"{kind}_deleted"] += 1  # type: ignore[operator]
+            summary["files"].append(str(p.relative_to(folder)))  # type: ignore[attr-defined]
         except FileNotFoundError:
             pass
         except Exception as e:
@@ -146,4 +146,4 @@ def preview_clean(folder: Path) -> list[str]:
     return out
 
 
-__all__: Iterable[str] = ("clean_folder", "preview_clean")
+__all__: Iterable[str] = ("clean_folder", "preview_clean")  # type: ignore[misc]

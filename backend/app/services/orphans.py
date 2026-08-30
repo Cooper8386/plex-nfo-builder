@@ -281,7 +281,7 @@ def count_movie_orphans(folder: Path) -> int:
     return _count_directory_orphans(folder, stems)
 
 
-__all__: Iterable[str] = (
+__all__: Iterable[str] = (  # type: ignore[misc]
     "sweep_series_orphans",
     "sweep_movie_orphans",
     "preview_series_orphans",

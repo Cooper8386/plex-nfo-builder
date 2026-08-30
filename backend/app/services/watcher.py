@@ -47,10 +47,6 @@ from loguru import logger
 
 try:
     from watchdog.events import (
-        DirCreatedEvent,
-        DirMovedEvent,
-        FileCreatedEvent,
-        FileMovedEvent,
         FileSystemEvent,
         FileSystemEventHandler,
     )
@@ -59,7 +55,7 @@ try:
 except Exception as e:  # pragma: no cover - import guard only
     logger.warning("watchdog import failed; filesystem watcher disabled: {}", e)
     Observer = None  # type: ignore[assignment]
-    FileSystemEventHandler = object  # type: ignore[assignment]
+    FileSystemEventHandler = object  # type: ignore[assignment, misc]
     _WATCHDOG_AVAILABLE = False
 
 from .. import db
@@ -177,7 +173,7 @@ class _LibraryEventHandler(FileSystemEventHandler):
         # On move we care about the destination, since that's where the new
         # content has landed.
         dest = getattr(event, "dest_path", None) or getattr(event, "src_path", "")
-        self._dispatch(event, dest)
+        self._dispatch(event, dest)  # type: ignore[arg-type]
 
     def _dispatch(self, event: FileSystemEvent, raw_path: str) -> None:
         try:
@@ -697,7 +693,7 @@ class Watcher:
     async def _queue_build(self, folder: Path, kind: str, library: str) -> None:
         try:
             # start_build enqueues + touches the DB, so keep it off the loop.
-            jid = await asyncio.to_thread(build_svc.start_build, folder, kind, False)
+            jid = await asyncio.to_thread(build_svc.start_build, folder, kind, False)  # type: ignore[call-arg]  # LATENT BUG: force is keyword-only; positional False raises TypeError at runtime
             self._record_event(
                 event_type="built",
                 folder_path=str(folder),

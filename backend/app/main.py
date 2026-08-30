@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -49,7 +48,7 @@ async def lifespan(app: FastAPI):
     async def _detect_libraries_bg() -> None:
         try:
             libs = await asyncio.to_thread(scanner.detect_libraries)
-            logger.info("Detected libraries: {}", [l["name"] for l in libs])
+            logger.info("Detected libraries: {}", [lib["name"] for lib in libs])
         except Exception as e:
             logger.warning("Initial library detection failed: {}", e)
         # Start the watcher *after* detection so it sees the right paths.

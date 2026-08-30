@@ -29,7 +29,6 @@ from .artwork import (
     MOVIE_BACKGROUND,
     MOVIE_BANNER,
     MOVIE_POSTER,
-    absolutize_tvdb_url,
     best_artwork_url,
     list_candidates,
 )
