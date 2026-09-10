@@ -1,110 +1,78 @@
-import { useEffect, useState } from "react";
-import { ViewMode } from "../App";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { signOut } from "../lib/auth";
+export type NavPage =
+  | "library"
+  | "jobs"
+  | "logs"
+  | "watcher"
+  | "settings"
+  | "help";
 
-export default function Topbar(props: {
-  viewMode: ViewMode;
-  setViewMode: (m: ViewMode) => void;
-  search: string;
-  setSearch: (s: string) => void;
-  onNav: (r: any) => void;
-  route: string;
-  showLibraryControls?: boolean;
+export default function Topbar({
+  onNav,
+  route,
+}: {
+  onNav: (route: NavPage) => void;
+  route: NavPage;
 }) {
-  const [version, setVersion] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    api
-      .version()
-      .then((v) => {
-        if (alive) setVersion(v.version || null);
-      })
-      .catch(() => {
-        // ignore — chip just won't render
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
+  const { data } = useQuery({
+    queryKey: ["version"],
+    queryFn: api.version,
+    staleTime: Infinity,
+  });
   return (
-    <div className="sticky top-0 z-30 flex items-center gap-3 px-4 h-14 border-b border-slate-800 bg-slate-950/95 backdrop-blur supports-[backdrop-filter]:bg-slate-950/80">
-      <h1 className="font-bold text-base tracking-tight">
-        <span className="text-indigo-400">Plex</span>{" "}
-        <span className="text-slate-200">NFO</span>
-      </h1>
-      {version && (
-        <span
-          className="px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border border-slate-800 bg-slate-900 text-slate-400 select-none"
-          title={`Backend version ${version} — useful when running the :latest Docker tag.`}
-        >
-          v{version}
+    <header className="app-topbar">
+      <button
+        className="brand text-left"
+        onClick={() => onNav("library")}
+        aria-label="Plex NFO Builder home"
+      >
+        <span className="brand-mark" aria-hidden="true">
+          N
         </span>
-      )}
-      <div className="flex bg-slate-900 border border-slate-800 rounded-md p-0.5">
-        {(["library", "jobs", "logs", "watcher", "settings", "help"] as const).map((r) => (
+        <span>
+          <span className="block text-sm font-semibold tracking-tight">
+            Plex <span className="text-indigo-300">NFO</span> Builder
+          </span>
+          <span className="block text-[9px] uppercase tracking-[.16em] text-slate-500 mt-0.5">
+            Your media. Your metadata.
+          </span>
+        </span>
+      </button>
+      <nav aria-label="Main navigation" className="top-nav">
+        {(
+          [
+            ["library", "Library"],
+            ["jobs", "Activity"],
+            ["watcher", "Automation"],
+            ["logs", "Logs"],
+            ["settings", "Settings"],
+            ["help", "Help"],
+          ] as const
+        ).map(([key, label]) => (
           <button
-            key={r}
-            onClick={() => props.onNav(r)}
-            className={`px-3 py-1.5 text-sm capitalize rounded transition ${
-              props.route === r
-                ? "bg-indigo-600 text-white"
-                : "text-slate-400 hover:text-white hover:bg-slate-800"
-            }`}
+            key={key}
+            onClick={() => onNav(key)}
+            aria-current={route === key ? "page" : undefined}
           >
-            {r}
+            {label}
           </button>
         ))}
+      </nav>
+      <div className="ml-auto flex items-center gap-3">
+        {data?.version && (
+          <span
+            className="text-[10px] font-mono text-slate-500"
+            title="Running backend version"
+          >
+            v{data.version}
+          </span>
+        )}
+        <button className="btn btn-ghost" onClick={signOut}>
+          Sign out
+        </button>
       </div>
-      <div className="flex-1" />
-      {props.showLibraryControls && (
-        <>
-          <div className="relative">
-            <svg
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="11" cy="11" r="8" />
-              <line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-            <input
-              value={props.search}
-              onChange={(e) => props.setSearch(e.target.value)}
-              placeholder="Search title"
-              className="bg-slate-900 border border-slate-800 pl-8 pr-3 py-1.5 rounded-md text-sm w-56 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-            />
-          </div>
-          <div className="flex bg-slate-900 border border-slate-800 rounded-md p-0.5">
-            {(["grid", "list"] as ViewMode[]).map((m) => (
-              <button
-                key={m}
-                onClick={() => props.setViewMode(m)}
-                className={`px-2.5 py-1.5 text-xs capitalize rounded transition ${
-                  props.viewMode === m
-                    ? "bg-indigo-600 text-white"
-                    : "text-slate-400 hover:text-white hover:bg-slate-800"
-                }`}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-      <button
-        onClick={signOut}
-        title="Forget the API token on this browser and return to the login screen"
-        className="ml-1 px-3 py-1.5 text-sm rounded transition text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800"
-      >
-        Sign out
-      </button>
-    </div>
+    </header>
   );
 }

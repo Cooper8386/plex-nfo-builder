@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -11,12 +12,14 @@ from loguru import logger
 from .. import db
 from ..config import MEDIA_ROOT
 from .sidecar import restore_from_sidecar
+from .orphans import _count_directory_orphans, orphan_kind
 from .parser import (
     SeriesFolderScan,
     detect_season_dirs,
     folder_looks_like_movie,
     folder_root_videos,
     is_video,
+    is_within_folder,
     list_season_episodes,
     parse_folder_name,
     parse_movie_filename,
@@ -27,6 +30,29 @@ from .parser import (
 PROVENANCE_TAG = "<!-- plex-nfo-builder"
 
 
+def _has_provenance(path: Path) -> bool:
+    try:
+        with path.open(encoding="utf-8", errors="ignore") as source:
+            return PROVENANCE_TAG in source.read(2000)
+    except OSError:
+        return False
+
+
+def _series_status(has_show: bool, show_prov: bool, nfo_eps: int,
+                   foreign_eps: int, expected: int) -> str:
+    if not has_show and nfo_eps == 0:
+        return "none"
+    if has_show and show_prov and nfo_eps == expected and expected > 0 and foreign_eps == 0:
+        return "complete"
+    if not show_prov and nfo_eps > 0 and foreign_eps == nfo_eps:
+        return "foreign"
+    if has_show and nfo_eps < expected:
+        return "partial"
+    if has_show and nfo_eps > 0:
+        return "mixed"
+    return "partial"
+
+
 def detect_libraries(media_root: Optional[Path] = None) -> list[dict]:
     """Scan top-level dirs of /media and infer kind."""
     root = media_root or MEDIA_ROOT
@@ -35,7 +61,7 @@ def detect_libraries(media_root: Optional[Path] = None) -> list[dict]:
         logger.warning("Media root does not exist: {}", root)
         return out
     for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
+        if not entry.is_dir() or not is_within_folder(entry, root):
             continue
         if entry.name.startswith("."):
             continue
@@ -76,7 +102,7 @@ def _infer_library_kind(library_dir: Path) -> str:
 
 def scan_library(name: str) -> int:
     lib_path = MEDIA_ROOT / name
-    if not lib_path.is_dir():
+    if not lib_path.is_dir() or not is_within_folder(lib_path, MEDIA_ROOT):
         return 0
     rows = db.list_libraries()
     lib_row = next((r for r in rows if r["name"] == name), None)
@@ -86,7 +112,7 @@ def scan_library(name: str) -> int:
     kind = lib_row["kind"] if lib_row else "mixed"
     count = 0
     for entry in sorted(lib_path.iterdir()):
-        if not entry.is_dir() or entry.name.startswith("."):
+        if not entry.is_dir() or entry.name.startswith(".") or not is_within_folder(entry, lib_path):
             continue
         # v0.9.0: per-folder kind detection so a Radarr movie sitting in a
         # mostly-TV library (common for anime libraries) still gets scanned
@@ -99,12 +125,16 @@ def scan_library(name: str) -> int:
             effective = "tv"
         elif folder_looks_like_movie(entry):
             effective = "movies"
+        elif folder_root_videos(entry):
+            effective = "tv"
         # v0.9.2: self-heal a stale binding whose kind no longer matches
         # the folder's actual content. Without this a binding written by
         # v0.9.0 (movie) keeps the build pipeline stuck on movie_details
         # for an id that is actually a TV show.
         binding = db.get_binding(str(entry))
         if binding:
+            if not detect_season_dirs(entry) and not folder_root_videos(entry):
+                effective = "tv" if binding["kind"] == "series" else "movies"
             want = "series" if effective == "tv" else "movie"
             if binding["kind"] != want:
                 logger.info(
@@ -230,13 +260,7 @@ def scan_movie_folder(folder: Path, library: str) -> dict:
     pm = parse_movie_filename(main) if main else None
     nfo_path = main.with_suffix(".nfo") if main else (folder / "movie.nfo")
     has_nfo = nfo_path.exists() if main else False
-    has_prov = False
-    if has_nfo:
-        try:
-            head = nfo_path.read_text(errors="ignore")[:2000]
-            has_prov = PROVENANCE_TAG in head
-        except Exception:
-            pass
+    has_prov = _has_provenance(nfo_path) if has_nfo else False
     # v0.11.11: compute the orphan count for the movie folder from the same
     # iterdir() we just did above (cheap — small directory).
     orphan_count = _count_movie_orphans_inline(folder, videos)
@@ -278,9 +302,6 @@ def scan_movie_folder(folder: Path, library: str) -> dict:
     return {"title": pm_title or folder_pf.title, "state": state}
 
 
-_THUMB_SUFFIXES_LOWER: tuple[str, ...] = ("-thumb.jpg", "-thumb.jpeg", "-thumb.png")
-
-
 def _scan_series_state(folder: Path,
                        season_dirs_resolved: list[tuple[Path, list]],
                        root_eps: list,
@@ -302,12 +323,7 @@ def _scan_series_state(folder: Path,
     """
     show_nfo = folder / "tvshow.nfo"
     has_show = show_nfo.exists()
-    show_prov = False
-    if has_show:
-        try:
-            show_prov = PROVENANCE_TAG in show_nfo.read_text(errors="ignore")[:2000]
-        except Exception:
-            pass
+    show_prov = _has_provenance(show_nfo) if has_show else False
 
     nfo_eps = 0
     foreign_eps = 0
@@ -319,31 +335,25 @@ def _scan_series_state(folder: Path,
             entries = list(season_dir.iterdir())
         except (PermissionError, OSError):
             return
-        video_stems = {ep.path.stem for ep in eps}
+        video_stems = {os.path.normcase(ep.path.stem) for ep in eps}
         for f in entries:
             if not f.is_file():
                 continue
             name = f.name
             low = name.lower()
             if low.endswith(".nfo"):
-                if low == "season.nfo":
+                if low in {"season.nfo", "tvshow.nfo", "movie.nfo"}:
+                    continue
+                if os.path.normcase(f.stem) not in video_stems:
+                    if video_stems:
+                        orphan_count += 1
                     continue
                 nfo_eps += 1
-                try:
-                    head = f.read_text(errors="ignore")[:2000]
-                    if PROVENANCE_TAG not in head:
-                        foreign_eps += 1
-                except Exception:
-                    pass
-                if f.stem not in video_stems:
-                    orphan_count += 1
+                if not _has_provenance(f):
+                    foreign_eps += 1
                 continue
-            for sfx in _THUMB_SUFFIXES_LOWER:
-                if low.endswith(sfx):
-                    stem = name[: -len(sfx)]
-                    if stem not in video_stems:
-                        orphan_count += 1
-                    break
+            if video_stems and orphan_kind(name, video_stems):
+                orphan_count += 1
 
     for sd, eps in season_dirs_resolved:
         _scan_one(sd, eps)
@@ -353,47 +363,12 @@ def _scan_series_state(folder: Path,
 
     has_prov_anywhere = show_prov or (nfo_eps > foreign_eps and nfo_eps > 0)
 
-    if not has_show and nfo_eps == 0:
-        return "none", False, 0, orphan_count
-    if has_show and nfo_eps == expected_episodes and expected_episodes > 0 and (show_prov or foreign_eps == 0):
-        return "complete", has_prov_anywhere, nfo_eps, orphan_count
-    if not show_prov and nfo_eps > 0 and foreign_eps == nfo_eps:
-        return "foreign", False, nfo_eps, orphan_count
-    if has_show and nfo_eps < expected_episodes:
-        return "partial", has_prov_anywhere, nfo_eps, orphan_count
-    if has_show and nfo_eps > 0:
-        return "mixed", has_prov_anywhere, nfo_eps, orphan_count
-    return "partial", has_prov_anywhere, nfo_eps, orphan_count
+    status = _series_status(has_show, show_prov, nfo_eps, foreign_eps, expected_episodes)
+    return status, has_prov_anywhere, nfo_eps, orphan_count
 
 
 def _count_movie_orphans_inline(folder: Path, videos: list[Path]) -> int:
-    if not videos:
-        return 0
-    stems = {v.stem for v in videos}
-    try:
-        entries = list(folder.iterdir())
-    except (PermissionError, OSError):
-        return 0
-    count = 0
-    for f in entries:
-        if not f.is_file():
-            continue
-        name = f.name
-        low = name.lower()
-        if low.endswith(".nfo"):
-            if low == "season.nfo":
-                continue
-            if f.stem in stems:
-                continue
-            count += 1
-            continue
-        for sfx in _THUMB_SUFFIXES_LOWER:
-            if low.endswith(sfx):
-                stem = name[: -len(sfx)]
-                if stem not in stems:
-                    count += 1
-                break
-    return count
+    return _count_directory_orphans(folder, {v.stem for v in videos})
 
 
 # Kept for backwards compatibility — a couple of callers (and tests) still
@@ -511,17 +486,11 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
         main = videos[0] if videos else None
         nfo_path = main.with_suffix(".nfo") if main else (folder / "movie.nfo")
         present = nfo_path.exists() if main else False
-        foreign = False
-        if present:
-            try:
-                head = nfo_path.read_text(errors="ignore")[:2000]
-                foreign = PROVENANCE_TAG not in head
-            except Exception:
-                pass
+        movie_foreign = present and not _has_provenance(nfo_path)
         out["movie_nfo"] = {
             "path": str(nfo_path) if main else None,
             "present": bool(present),
-            "foreign": bool(foreign),
+            "foreign": bool(movie_foreign),
         }
         if not main:
             out["status"] = "none"
@@ -529,11 +498,11 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
         elif not present:
             out["status"] = "none"
             out["reasons"].append(f"No NFO next to {main.name}.")
-        elif foreign:
+        elif movie_foreign:
             out["status"] = "foreign"
             out["reasons"].append(
                 f"NFO for {main.name} was not written by plex-nfo-builder "
-                "(missing provenance comment). Use Force rebuild to overwrite it."
+                "(missing provenance comment). Enable foreign NFO overwrite in Settings to replace it."
             )
         else:
             out["status"] = "complete"
@@ -543,12 +512,7 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
     # Series ---------------------------------------------------------------
     show_nfo = folder / "tvshow.nfo"
     show_present = show_nfo.exists()
-    show_foreign = False
-    if show_present:
-        try:
-            show_foreign = PROVENANCE_TAG not in show_nfo.read_text(errors="ignore")[:2000]
-        except Exception:
-            pass
+    show_foreign = show_present and not _has_provenance(show_nfo)
     out["show_nfo"] = {
         "path": str(show_nfo),
         "present": bool(show_present),
@@ -561,14 +525,15 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
     season_entries: list[dict] = []
 
     season_dirs = list(detect_season_dirs(folder))
-    for sd in season_dirs:
-        snum = season_number_from_dir(sd.name)
+    root_eps = list_season_episodes(folder)
+    for sd in season_dirs + ([folder] if root_eps else []):
+        snum = 0 if sd == folder else season_number_from_dir(sd.name)
         eps = list_season_episodes(sd)
-        # Map every video stem -> True so we can detect orphan NFOs / missing NFOs.
+        # Match using native filesystem casing rules.
         video_stems: dict[str, str] = {}
         for parsed in eps:
             try:
-                video_stems[parsed.path.stem] = parsed.path.name
+                video_stems[os.path.normcase(parsed.path.stem)] = parsed.path.name
             except Exception:
                 continue
         nfo_files: list[Path] = []
@@ -582,63 +547,44 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
 
         # season.nfo is a sidecar, never an episode NFO.
         season_nfo = next((f for f in nfo_files if f.name.lower() == "season.nfo"), None)
-        episode_nfos = [f for f in nfo_files if f.name.lower() != "season.nfo"]
+        episode_nfos = [f for f in nfo_files
+                        if f.name.lower() not in {"season.nfo", "tvshow.nfo", "movie.nfo"}
+                        and os.path.normcase(f.stem) in video_stems]
 
-        nfo_stems = {f.stem: f for f in episode_nfos}
+        nfo_stems = {os.path.normcase(f.stem): f for f in episode_nfos}
         missing: list[str] = []
         for stem, video_name in video_stems.items():
             if stem not in nfo_stems:
                 missing.append(video_name)
-        foreign: list[str] = []  # type: ignore[no-redef]
-        for stem, f in nfo_stems.items():
-            try:
-                head = f.read_text(errors="ignore")[:2000]
-                if PROVENANCE_TAG not in head:
-                    foreign.append(f.name)  # type: ignore[attr-defined]
-            except Exception:
-                pass
+        foreign = [f.name for f in nfo_stems.values() if not _has_provenance(f)]
 
         season_entries.append({
             "season": int(snum),
             "folder": str(sd),
             "video_count": len(eps),
             "nfo_count": len(episode_nfos),
-            "foreign_nfo_count": len(foreign),  # type: ignore[arg-type]
+            "foreign_nfo_count": len(foreign),
             "missing": sorted(missing)[:50],          # cap to keep payload small
             "missing_total": len(missing),
-            "foreign": sorted(foreign)[:50],  # type: ignore[call-overload]
-            "foreign_total": len(foreign),  # type: ignore[arg-type]
+            "foreign": sorted(foreign)[:50],
+            "foreign_total": len(foreign),
             "season_nfo": season_nfo is not None,
         })
         total_videos += len(eps)
         total_nfos += len(episode_nfos)
-        total_foreign_nfos += len(foreign)  # type: ignore[arg-type]
+        total_foreign_nfos += len(foreign)
 
     # Loose root videos (anime/OVAs sitting at the series root, no Season XX).
-    root_eps = list_season_episodes(folder)
     if root_eps:
         out["orphan_root_videos"] = [p.path.name for p in root_eps][:50]
-        total_videos += len(root_eps)
 
     out["seasons"] = sorted(season_entries, key=lambda s: s["season"])
     out["video_count"] = total_videos
     out["nfo_count"] = total_nfos
     out["foreign_nfo_count"] = total_foreign_nfos
 
-    # Replay the bucketing logic so the exposed "status" matches what the
-    # library list shows. Keep this in sync with _scan_nfo_state above.
-    if not show_present and total_nfos == 0:
-        status = "none"
-    elif show_present and total_nfos == total_videos and total_videos > 0 and (not show_foreign or total_foreign_nfos == 0):
-        status = "complete"
-    elif not show_present and total_foreign_nfos == total_nfos and total_nfos > 0:
-        status = "foreign"
-    elif show_present and total_nfos < total_videos:
-        status = "partial"
-    elif show_present and total_nfos > 0:
-        status = "mixed"
-    else:
-        status = "partial"
+    status = _series_status(show_present, show_present and not show_foreign,
+                            total_nfos, total_foreign_nfos, total_videos)
     out["status"] = status
 
     # Friendly reasons.
@@ -648,7 +594,7 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
     elif show_foreign:
         reasons.append(
             "tvshow.nfo exists but was not written by plex-nfo-builder "
-            "(no provenance comment). Use Force rebuild to overwrite it."
+            "(no provenance comment). Enable foreign NFO overwrite in Settings to replace it."
         )
     if total_videos == 0:
         reasons.append("No episode video files found under any Season folder.")
@@ -660,7 +606,7 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
     if total_foreign_nfos > 0:
         reasons.append(
             f"{total_foreign_nfos} episode NFO{'s' if total_foreign_nfos != 1 else ''} "
-            "were not written by plex-nfo-builder. Force rebuild to overwrite them."
+            "were not written by plex-nfo-builder. Enable foreign NFO overwrite in Settings to replace them."
         )
     for s in out["seasons"]:
         if s["video_count"] > 0 and s["nfo_count"] < s["video_count"]:
@@ -716,12 +662,14 @@ def folder_has_media(folder: Path) -> bool:
                 return True
             for entry in entries:
                 try:
-                    if entry.is_symlink():
+                    if entry.is_symlink() or entry.is_junction():
                         # Don't traverse symlinks to avoid loops, but if the
                         # link points at a video file we still count it as
                         # media so users keeping their videos behind a
                         # symlink farm aren't surprised by a prune.
                         if entry.suffix.lower() and is_video(entry):
+                            return True
+                        if entry.is_dir():
                             return True
                         continue
                     if entry.is_file():

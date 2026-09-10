@@ -15,6 +15,8 @@ import json
 import re
 import shutil
 import subprocess
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -119,9 +121,9 @@ def _ffprobe_bin() -> Optional[str]:
     return found or None
 
 
-# Cache by (path, mtime). Bounded loosely by the number of files in your
-# library; a probe is cheap (~50ms) so a stale cache miss is not painful.
-_CACHE: dict[tuple[str, int], MediaInfo] = {}
+# Keep repeated previews cheap without retaining every historic library path.
+_CACHE: OrderedDict[tuple[str, int, int], MediaInfo] = OrderedDict()
+_CACHE_LOCK = threading.Lock()
 
 
 def probe_file(path: Path | str) -> MediaInfo:
@@ -135,13 +137,15 @@ def probe_file(path: Path | str) -> MediaInfo:
     if not bin_ or not p.exists():
         return MediaInfo()
     try:
-        mtime = int(p.stat().st_mtime)
+        stat = p.stat()
     except OSError:
         return MediaInfo()
-    key = (str(p), mtime)
-    cached = _CACHE.get(key)
-    if cached is not None:
-        return cached
+    key = (str(p), stat.st_mtime_ns, stat.st_size)
+    with _CACHE_LOCK:
+        cached = _CACHE.get(key)
+        if cached is not None:
+            _CACHE.move_to_end(key)
+            return cached
     try:
         proc = subprocess.run(
             [
@@ -157,13 +161,17 @@ def probe_file(path: Path | str) -> MediaInfo:
     except Exception as e:  # noqa: BLE001 - never let probing crash a rename
         logger.debug("ffprobe failed for {}: {}", p, e)
         mi = MediaInfo()
-    _CACHE[key] = mi
+    with _CACHE_LOCK:
+        _CACHE[key] = mi
+        if len(_CACHE) > 512:
+            _CACHE.popitem(last=False)
     return mi
 
 
 def clear_cache() -> None:
     """Forget every cached probe. Cheap; mostly for tests."""
-    _CACHE.clear()
+    with _CACHE_LOCK:
+        _CACHE.clear()
 
 
 # ---- ffprobe JSON parsing --------------------------------------------------

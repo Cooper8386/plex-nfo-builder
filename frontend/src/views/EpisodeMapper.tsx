@@ -1,7 +1,8 @@
+import { errorMessage } from "../lib/errors";
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, RenamePlanItem, TvdbEpisode } from "../lib/api";
-import { useConfirm } from "../components/ConfirmDialog";
+import { api, TvdbEpisode } from "../lib/api";
+import RenameModal from "./RenameModal";
 
 /** Episode mapping & rename UI. v0.10.0:
  *
@@ -27,11 +28,29 @@ export default function EpisodeMapper({ path }: { path: string }) {
   const [msg, setMsg] = useState<string | null>(null);
   const [seasonFilter, setSeasonFilter] = useState<number | "all">("all");
   const [showRename, setShowRename] = useState(false);
+  const [allSeasonsFor, setAllSeasonsFor] = useState<string | null>(null);
 
   const provider = data.data?.provider ?? "tvdb";
   const providerLabel = provider === "tmdb" ? "TMDB" : "TVDB";
-  const provEpisodes = data.data?.tvdb_episodes ?? [];
-  const locals = data.data?.locals ?? [];
+  const provEpisodes = useMemo(
+    () => data.data?.tvdb_episodes ?? [],
+    [data.data?.tvdb_episodes],
+  );
+  const episodesBySeason = useMemo(() => {
+    const grouped = new Map<number, TvdbEpisode[]>();
+    for (const episode of provEpisodes) {
+      const season = episode.season ?? 0;
+      const group = grouped.get(season) ?? [];
+      group.push(episode);
+      grouped.set(season, group);
+    }
+    return grouped;
+  }, [provEpisodes]);
+  const episodesById = useMemo(
+    () => new Map(provEpisodes.map((episode) => [episode.id, episode])),
+    [provEpisodes],
+  );
+  const locals = useMemo(() => data.data?.locals ?? [], [data.data?.locals]);
 
   const seasonOptions = useMemo(() => {
     const set = new Set<number>();
@@ -53,9 +72,7 @@ export default function EpisodeMapper({ path }: { path: string }) {
     return <div className="text-sm text-slate-500">Loading episodes…</div>;
   if (data.error)
     return (
-      <div className="text-sm text-amber-400">
-        {(data.error as any).message ?? "Failed to load episodes"}
-      </div>
+      <div className="text-sm text-amber-400">{errorMessage(data.error)}</div>
     );
 
   /** Persist a per-file override and refresh the table. */
@@ -79,8 +96,8 @@ export default function EpisodeMapper({ path }: { path: string }) {
       });
       setMsg(successMsg);
       await qc.invalidateQueries({ queryKey: ["episodes", path] });
-    } catch (e: any) {
-      setMsg(e?.message ?? String(e));
+    } catch (e: unknown) {
+      setMsg(errorMessage(e));
     } finally {
       setBusyKey(null);
     }
@@ -88,7 +105,7 @@ export default function EpisodeMapper({ path }: { path: string }) {
 
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-3 mb-3">
+      <div className="panel p-3 flex flex-wrap items-center gap-3 mb-3">
         <span className="text-xs text-slate-500">
           {locals.length} local file{locals.length === 1 ? "" : "s"} ·{" "}
           {provEpisodes.length} {providerLabel} episodes
@@ -115,23 +132,27 @@ export default function EpisodeMapper({ path }: { path: string }) {
         </label>
         <button
           onClick={() => setShowRename(true)}
-          className="text-xs px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded disabled:opacity-50"
+          className="btn"
           disabled={!locals.length}
           title="Rename files on disk to match your scheme."
         >
-          Rename to scheme…
+          Preview rename…
         </button>
       </div>
-      {msg && <div className="text-xs text-slate-400 mb-2">{msg}</div>}
+      {msg && (
+        <div role="status" className="text-xs text-slate-400 mb-2">
+          {msg}
+        </div>
+      )}
       {filtered.length === 0 ? (
         <div className="text-sm text-slate-500">
           No local episode files detected. Make sure your folder layout has
-          Season folders with video files inside, or drop episodes at the
-          show root for short series / OVAs.
+          Season folders with video files inside, or drop episodes at the show
+          root for short series / OVAs.
         </div>
       ) : (
-        <div className="border border-slate-800 rounded overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="panel overflow-auto">
+          <table className="w-full text-sm min-w-[720px]">
             <thead className="bg-slate-900 text-slate-400 text-left">
               <tr>
                 <th className="p-2 w-32">Local</th>
@@ -149,6 +170,17 @@ export default function EpisodeMapper({ path }: { path: string }) {
                 const isUnmatched = !l.matched_episode_id;
                 const effSeason = l.effective_season;
                 const effEpisode = l.effective_episode;
+                const seasonEpisodes =
+                  episodesBySeason.get(effSeason ?? l.parsed_season) ?? [];
+                const currentMatch = episodesById.get(
+                  l.matched_episode_id ?? "",
+                );
+                const choices =
+                  allSeasonsFor === key
+                    ? provEpisodes
+                    : currentMatch && !seasonEpisodes.includes(currentMatch)
+                      ? [...seasonEpisodes, currentMatch]
+                      : seasonEpisodes;
                 const showInlineSE = l.unparsed; // only ask for s/e on unparsed rows
                 return (
                   <tr
@@ -164,9 +196,10 @@ export default function EpisodeMapper({ path }: { path: string }) {
                     <td className="p-2 font-mono text-xs text-slate-300 align-top">
                       {showInlineSE ? (
                         <InlineSEPicker
+                          key={`${key}-${effSeason}-${effEpisode}`}
                           season={effSeason}
                           episode={effEpisode}
-                          disabled={busyKey === key}
+                          disabled={busyKey !== null}
                           onChange={(s, ep) =>
                             setFileOverride(
                               l.file_path,
@@ -201,9 +234,14 @@ export default function EpisodeMapper({ path }: { path: string }) {
                     </td>
                     <td className="p-2 align-top">
                       <select
+                        aria-label={`Provider episode for ${l.file_name}`}
                         value={l.matched_episode_id ?? ""}
-                        disabled={busyKey === key}
+                        disabled={busyKey !== null}
                         onChange={(e) => {
+                          if (e.target.value === "__all_seasons__") {
+                            setAllSeasonsFor(key);
+                            return;
+                          }
                           const val = e.target.value || null;
                           setFileOverride(
                             l.file_path,
@@ -223,17 +261,23 @@ export default function EpisodeMapper({ path }: { path: string }) {
                         className="bg-slate-800 px-2 py-1 rounded text-xs border border-slate-700 w-full"
                       >
                         <option value="">— unmatched —</option>
-                        {provEpisodes.map((ep) => (
+                        {choices.map((ep) => (
                           <option key={ep.id} value={ep.id}>
                             {labelEp(ep)}
                           </option>
                         ))}
+                        {allSeasonsFor !== key &&
+                          choices.length < provEpisodes.length && (
+                            <option value="__all_seasons__">
+                              Browse all seasons…
+                            </option>
+                          )}
                       </select>
                     </td>
                     <td className="p-2 text-right align-top">
                       {(isOverride || l.has_file_override) && (
                         <button
-                          disabled={busyKey === key}
+                          disabled={busyKey !== null}
                           onClick={() =>
                             setFileOverride(
                               l.file_path,
@@ -268,8 +312,12 @@ export default function EpisodeMapper({ path }: { path: string }) {
   );
 }
 
-function formatSE(s: number | null | undefined, e: number | null | undefined): string {
-  if (s === null || s === undefined || e === null || e === undefined) return "—";
+function formatSE(
+  s: number | null | undefined,
+  e: number | null | undefined,
+): string {
+  if (s === null || s === undefined || e === null || e === undefined)
+    return "—";
   return `S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")}`;
 }
 
@@ -292,7 +340,9 @@ function InlineSEPicker({
   onChange: (s: number, e: number) => void;
 }) {
   const [s, setS] = useState<string>(season != null ? String(season) : "1");
-  const [e, setE] = useState<string>(episode != null ? String(episode ?? "") : "");
+  const [e, setE] = useState<string>(
+    episode != null ? String(episode ?? "") : "",
+  );
   const commit = () => {
     const sn = parseInt(s, 10);
     const en = parseInt(e, 10);
@@ -304,6 +354,8 @@ function InlineSEPicker({
     <span className="inline-flex items-center gap-1 font-mono text-[11px]">
       S
       <input
+        aria-label="Season number"
+        inputMode="numeric"
         value={s}
         disabled={disabled}
         onChange={(ev) => setS(ev.target.value.replace(/[^0-9]/g, ""))}
@@ -318,6 +370,8 @@ function InlineSEPicker({
       />
       E
       <input
+        aria-label="Episode number"
+        inputMode="numeric"
         value={e}
         disabled={disabled}
         onChange={(ev) => setE(ev.target.value.replace(/[^0-9]/g, ""))}
@@ -332,332 +386,5 @@ function InlineSEPicker({
         className="w-12 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-center placeholder:text-slate-600"
       />
     </span>
-  );
-}
-
-function RenameModal({
-  path,
-  onClose,
-  onApplied,
-}: {
-  path: string;
-  onClose: () => void;
-  onApplied: () => Promise<void>;
-}) {
-  const confirmDlg = useConfirm();
-  const [items, setItems] = useState<RenamePlanItem[] | null>(null);
-  const [template, setTemplate] = useState<string>("");
-  const [seriesType, setSeriesType] = useState<
-    "auto" | "standard" | "daily" | "anime"
-  >("auto");
-  // v0.11.7 — manual release-group override. Anime fansub layouts often use
-  // bracket patterns the auto-detector can't safely guess (e.g.
-  // ``[Group A][Group B]Title``), so the {Release Group} token comes out
-  // empty in their template. Typing a value here forces it for every plan
-  // item until cleared.
-  const [releaseGroup, setReleaseGroup] = useState<string>("");
-  const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  const load = async (
-    overrideTemplate?: string,
-    overrideSeriesType?: "auto" | "standard" | "daily" | "anime",
-    overrideReleaseGroup?: string,
-  ) => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const rgArg = overrideReleaseGroup ?? releaseGroup;
-      const r = await api.episodes.rename.preview({
-        folder_path: path,
-        template: overrideTemplate || undefined,
-        series_type: overrideSeriesType ?? seriesType,
-        release_group: rgArg.trim() ? rgArg.trim() : undefined,
-      });
-      setItems(r.items);
-      setTemplate(r.template);
-      // Default-check every safe rename that actually changes the name.
-      const next: Record<string, boolean> = {};
-      for (const it of r.items) {
-        if (!it.unchanged && !it.conflict) next[it.src] = true;
-      }
-      setSelected(next);
-    } catch (e: any) {
-      setMsg(e?.message ?? String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Eager-load on first mount.
-  useMemo(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const apply = async () => {
-    if (!items) return;
-    const only_src = Object.entries(selected)
-      .filter(([, v]) => v)
-      .map(([k]) => k);
-    if (only_src.length === 0) {
-      setMsg("Nothing selected.");
-      return;
-    }
-    const ok = await confirmDlg({
-      title: `Rename ${only_src.length} file${only_src.length === 1 ? "" : "s"} on disk?`,
-      message:
-        `This cannot be undone automatically — but per-file overrides and bindings are carried along to the new names.`,
-      confirmLabel: "Rename",
-      tone: "danger",
-    });
-    if (!ok) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      const r = await api.episodes.rename.apply({
-        folder_path: path,
-        template: template || undefined,
-        series_type: seriesType,
-        only_src,
-        release_group: releaseGroup.trim() ? releaseGroup.trim() : undefined,
-      });
-      const renamed = r.renamed.length;
-      const skipped = r.skipped.length;
-      const failed = r.failed.length;
-      setMsg(
-        `Renamed ${renamed} · skipped ${skipped} · failed ${failed}.${
-          failed
-            ? ` First failure: ${r.failed[0]?.reason}`
-            : ""
-        }`,
-      );
-      await onApplied();
-      await load(template, seriesType, releaseGroup); // re-preview to show the new state
-    } catch (e: any) {
-      setMsg(e?.message ?? String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const toRenameCount = items
-    ? items.filter((it) => !it.unchanged && !it.conflict && selected[it.src])
-        .length
-    : 0;
-
-  return (
-    <div
-      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center px-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-slate-900 border border-slate-700 rounded-lg shadow-xl w-full max-w-4xl max-h-[80vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="p-4 border-b border-slate-800 flex items-center gap-3">
-          <h3 className="text-base font-semibold flex-1">Rename files to scheme</h3>
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-white text-sm"
-            title="Close"
-          >
-            ✕
-          </button>
-        </div>
-        <div className="p-4 border-b border-slate-800 space-y-2">
-          <div className="flex items-center gap-3">
-            <label className="text-xs uppercase tracking-wide text-slate-500">
-              Series type
-            </label>
-            <select
-              className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs"
-              value={seriesType}
-              disabled={busy}
-              onChange={(e) => {
-                const next = e.target.value as
-                  | "auto"
-                  | "standard"
-                  | "daily"
-                  | "anime";
-                setSeriesType(next);
-                // Re-preview with the new mode and the user's current
-                // ad-hoc template (if any).
-                load(template || undefined, next, releaseGroup);
-              }}
-            >
-              <option value="auto">Auto-detect</option>
-              <option value="standard">Standard</option>
-              <option value="daily">Daily</option>
-              <option value="anime">Anime</option>
-            </select>
-            <span className="text-[11px] text-slate-500">
-              Auto: anime fansub names → anime template, files with an air-date → daily, otherwise standard.
-            </span>
-          </div>
-          {/* v0.11.7 — manual release group override. Useful for anime
-              where the auto-detector can't read the fansub bracket layout. */}
-          <div className="flex items-center gap-3">
-            <label className="text-xs uppercase tracking-wide text-slate-500">
-              Release group
-            </label>
-            <input
-              value={releaseGroup}
-              disabled={busy}
-              onChange={(e) => setReleaseGroup(e.target.value)}
-              onBlur={() => load(template || undefined, seriesType, releaseGroup)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  load(template || undefined, seriesType, releaseGroup);
-                }
-              }}
-              className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs w-44 font-mono"
-              placeholder="e.g. SubsPlease"
-              spellCheck={false}
-            />
-            {releaseGroup && (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setReleaseGroup("");
-                  load(template || undefined, seriesType, "");
-                }}
-                className="text-[11px] text-slate-400 hover:text-white"
-                title="Clear override and go back to auto-detection"
-              >
-                clear
-              </button>
-            )}
-            <span className="text-[11px] text-slate-500 leading-snug">
-              Optional. Force the {"{Release Group}"} token to this value for every file. Mainly for anime fansub layouts the auto-detector misses.
-            </span>
-          </div>
-          <label className="text-xs uppercase tracking-wide text-slate-500">
-            Template (overrides Settings for this run)
-          </label>
-          <div className="flex gap-2">
-            <input
-              value={template}
-              onChange={(e) => setTemplate(e.target.value)}
-              className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm font-mono"
-              placeholder="{Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} {[Quality Full]}{-Release Group}"
-              spellCheck={false}
-            />
-            <button
-              onClick={() => load(template)}
-              className="px-3 py-1 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded"
-              disabled={busy}
-            >
-              Preview
-            </button>
-          </div>
-          <p className="text-[11px] text-slate-500 leading-snug">
-            Sonarr/Radarr token grammar. Common tokens:{" "}
-            <code>{"{Series TitleYear}"}</code>{" "}
-            <code>{"{Episode CleanTitle}"}</code>{" "}
-            <code>{"{season:00}"}</code> <code>{"{episode:00}"}</code>{" "}
-            <code>{"{Air-Date}"}</code> <code>{"{Quality Full}"}</code>{" "}
-            <code>{"{MediaInfo VideoCodec}"}</code>{" "}
-            <code>{"{[MediaInfo VideoDynamicRangeType]}"}</code>{" "}
-            <code>{"{-Release Group}"}</code>. Conditional groups{" "}
-            <code>{"{[Token]}"}</code> wrap in [..] when present and drop
-            otherwise. Old <code>{"{title}"}</code>-style tokens still work.
-          </p>
-        </div>
-        <div className="flex-1 overflow-auto">
-          {!items ? (
-            <div className="p-6 text-sm text-slate-500">Building preview…</div>
-          ) : items.length === 0 ? (
-            <div className="p-6 text-sm text-slate-500">
-              No renameable files — all rows are unparsed or have no override.
-            </div>
-          ) : (
-            <table className="w-full text-xs">
-              <thead className="bg-slate-900 text-slate-400 sticky top-0">
-                <tr>
-                  <th className="p-2 w-8"></th>
-                  <th className="p-2">From</th>
-                  <th className="p-2">To</th>
-                  <th className="p-2 w-24">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((it) => {
-                  const isUnchanged = it.unchanged;
-                  const isConflict = !!it.conflict;
-                  const checked = !!selected[it.src];
-                  return (
-                    <tr
-                      key={it.src}
-                      className={`border-t border-slate-800 ${
-                        isConflict
-                          ? "bg-rose-900/10"
-                          : isUnchanged
-                            ? "opacity-50"
-                            : ""
-                      }`}
-                    >
-                      <td className="p-2 text-center">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={isUnchanged || isConflict}
-                          onChange={(e) =>
-                            setSelected({ ...selected, [it.src]: e.target.checked })
-                          }
-                        />
-                      </td>
-                      <td className="p-2 font-mono text-slate-400 break-all">
-                        {it.src_name}
-                      </td>
-                      <td className="p-2 font-mono text-slate-100 break-all">
-                        {it.dst_name}
-                      </td>
-                      <td className="p-2">
-                        {isUnchanged ? (
-                          <span className="text-[10px] uppercase text-slate-500">
-                            no change
-                          </span>
-                        ) : isConflict ? (
-                          <span className="text-[10px] uppercase text-rose-300">
-                            {it.conflict}
-                          </span>
-                        ) : (
-                          <span className="text-[10px] uppercase text-emerald-300">
-                            ready
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-        <div className="p-4 border-t border-slate-800 flex items-center gap-3">
-          <span className="text-xs text-slate-400 flex-1">
-            {msg ?? `${toRenameCount} file${toRenameCount === 1 ? "" : "s"} selected.`}
-          </span>
-          <button
-            onClick={onClose}
-            disabled={busy}
-            className="px-3 py-1.5 text-sm bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={apply}
-            disabled={busy || toRenameCount === 0}
-            className="px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 rounded disabled:opacity-50"
-          >
-            Rename {toRenameCount}
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }

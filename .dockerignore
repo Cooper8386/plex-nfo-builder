@@ -3,4 +3,17 @@
 **/.venv
 config/
 .env
+.env.*
+compose.yaml
+compose.yml
+docker-compose.yaml
+docker-compose.yml
 .git
+.qa
+.npm-cache
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+frontend/dist
+frontend/test-results
+frontend/playwright-report

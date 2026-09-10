@@ -5,10 +5,10 @@
 # ($BUILDPLATFORM) so npm runs natively on the GitHub runner instead of
 # under QEMU emulation — Node + QEMU + arm64 reliably segfaults
 # ("Illegal instruction") during npm install on large dependency trees.
-FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
@@ -21,7 +21,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends tini ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt ./
-RUN pip install -r requirements.txt
+RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY backend/ ./
 COPY --from=frontend /app/dist /app/static
 

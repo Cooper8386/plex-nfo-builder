@@ -13,6 +13,7 @@ from loguru import logger
 
 from ..config import effective_tvdb_credentials, get_user_settings
 from ..db import cache_get, cache_set
+from .provider_http import retry_delay
 
 API_BASE = "https://api4.thetvdb.com/v4"
 
@@ -47,7 +48,7 @@ class TVDBClient:
         logger.info("Logging in to TVDB v4 (pin={})", "yes" if pin else "no")
         r = await self._client.post("/login", json=body)
         if r.status_code != 200:
-            raise TVDBError(f"TVDB login failed: {r.status_code} {r.text[:200]}")
+            raise TVDBError(f"TVDB login failed: {r.status_code}")
         token = r.json().get("data", {}).get("token")
         if not token:
             raise TVDBError("TVDB login returned no token")
@@ -80,7 +81,7 @@ class TVDBClient:
                     path, params=params, headers={"Authorization": f"Bearer {token}"}
                 )
             except httpx.HTTPError as e:
-                logger.warning("TVDB GET {} attempt {} failed: {}", path, attempt + 1, e)
+                logger.warning("TVDB GET {} attempt {} failed: {}", path, attempt + 1, type(e).__name__)
                 await asyncio.sleep(1.5 * (attempt + 1))
                 continue
             if r.status_code == 401:
@@ -89,17 +90,22 @@ class TVDBClient:
                 token = await self._ensure_token()
                 continue
             if r.status_code == 429:
-                wait = int(r.headers.get("retry-after", "5"))
+                wait = retry_delay(r.headers.get("retry-after"))
                 logger.warning("TVDB rate-limited; sleeping {}s", wait)
                 await asyncio.sleep(wait)
                 continue
             if 500 <= r.status_code < 600:
-                logger.warning("TVDB {} {}: {}", r.status_code, path, r.text[:200])
+                logger.warning("TVDB {} {}", r.status_code, path)
                 await asyncio.sleep(1.5 * (attempt + 1))
                 continue
             if r.status_code != 200:
-                raise TVDBError(f"TVDB GET {path} failed {r.status_code}: {r.text[:300]}")
-            data = r.json()
+                raise TVDBError(f"TVDB GET {path} failed {r.status_code}")
+            try:
+                data = r.json()
+            except ValueError as error:
+                raise TVDBError("Provider returned invalid JSON") from error
+            if not isinstance(data, dict):
+                raise TVDBError("Provider returned an unexpected response shape")
             if ttl != 0:
                 cache_set(key, data, ttl=ttl)
             return data
@@ -268,3 +274,11 @@ def get_client() -> TVDBClient:
     if _singleton is None:
         _singleton = TVDBClient()
     return _singleton
+
+
+async def close_client() -> None:
+    """Release the process client so the next lifespan can create a fresh one."""
+    global _singleton
+    client, _singleton = _singleton, None
+    if client is not None:
+        await client.aclose()

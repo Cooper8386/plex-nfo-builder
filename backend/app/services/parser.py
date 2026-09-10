@@ -38,7 +38,7 @@ FOLDER_RE = re.compile(
 
 # Episode patterns supported (anywhere in name):
 #   SxxExx, sxxexx, SxxExxExx (multi-ep), then optional title up to first bracket [
-EP_RE = re.compile(r"S(?P<s>\d{1,2})E(?P<e>\d{1,3})(?:[-E](?P<e2>\d{1,3}))?", re.IGNORECASE)
+EP_RE = re.compile(r"S(?P<s>\d{1,2})E(?P<e>\d{1,3})(?:(?:-?E|-)(?P<e2>\d{1,3}))?", re.IGNORECASE)
 
 # Sonarr daily-format: "Title (YYYY) - YYYY-MM-DD - Episode CleanTitle ...".
 # We require an isolated YYYY-MM-DD anchored by spaces/dashes so we don't
@@ -258,6 +258,14 @@ def is_video(path: Path) -> bool:
     return path.suffix.lower() in VIDEO_EXT
 
 
+def is_within_folder(path: Path, folder: Path) -> bool:
+    """Check resolved containment, including directory symlinks and junctions."""
+    try:
+        return path.resolve().is_relative_to(folder.resolve())
+    except (OSError, RuntimeError):
+        return False
+
+
 def list_season_episodes(season_dir: Path) -> list[ParsedEpisode]:
     """Return all video files under ``season_dir`` as ParsedEpisode objects.
 
@@ -282,7 +290,7 @@ def detect_season_dirs(series_dir: Path) -> list[Path]:
         return []
     out: list[Path] = []
     for d in sorted(series_dir.iterdir()):
-        if not d.is_dir():
+        if not d.is_dir() or not is_within_folder(d, series_dir):
             continue
         n = d.name.lower()
         if (

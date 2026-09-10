@@ -4,16 +4,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+from collections import deque
 from pathlib import Path
-from typing import Optional
-from urllib.parse import urlparse
+from typing import Literal, Optional
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from httpx import HTTPError
 from loguru import logger
 from pydantic import BaseModel
 
-from .. import __version__
 from .. import db
 from ..config import (
     CUSTOM_ARTWORK_DIR,
@@ -21,12 +21,14 @@ from ..config import (
     MEDIA_ROOT,
     UserSettings,
     effective_fanart_credentials,
+    effective_tvdb_credentials,
     effective_metadata_source,
     effective_tmdb_credentials,
-    effective_tvdb_credentials,
     get_user_settings,
     save_user_settings,
 )
+from ..services.async_io import run_in_thread
+from ..services.artwork_download import MAX_IMAGE_BYTES, image_type, uploaded_file, validate_artwork_url
 from ..services import artwork as artwork_svc
 from ..services import builder as build_svc
 from ..services import cleaner as cleaner_svc
@@ -46,159 +48,14 @@ from ..services.parser import (
     season_number_from_dir,
 )
 from ..services.tmdb import (
+    TMDBError,
     get_client as get_tmdb_client,
     image_url as tmdb_image_url,
     apply_tmdb_image_language_filter,
 )
-from ..services.tvdb import get_client
+from ..services.tvdb import TVDBError, get_client
 
 router = APIRouter(prefix="/api")
-
-
-# ---- Settings & health -----------------------------------------------------
-
-@router.get("/health")
-async def health():
-    api_key, _ = effective_tvdb_credentials()
-    s = get_user_settings()
-    return {
-        "ok": True,
-        "version": __version__,
-        "media_root": str(MEDIA_ROOT),
-        "tvdb_configured": bool(api_key),
-        "tmdb_configured": bool(effective_tmdb_credentials()),
-        "fanart_configured": bool(effective_fanart_credentials()),
-        "metadata_source": (s.metadata_source or "tvdb"),
-        "plex_configured": bool(s.plex_url and s.plex_token),
-        "plex_auto_refresh": bool(s.plex_auto_refresh),
-    }
-
-
-@router.get("/version")
-async def version():
-    """Return the running app version.
-
-    Useful when you're pinning the Docker image to ``:latest`` and want the
-    UI to surface exactly which release is currently in flight. Cheap call;
-    safe to poll.
-    """
-    return {
-        "version": __version__,
-        "name": "plex-nfo-builder",
-        "repo": "https://github.com/Cooper8386/plex-nfo-builder",
-    }
-
-
-@router.get("/settings")
-async def get_settings():
-    s = get_user_settings()
-    payload = s.model_dump()
-    # Never echo secret values back to the UI; surface a hint instead.
-    for key in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "fanart_api_key", "plex_token"):
-        had = bool(payload.get(key))
-        payload.pop(key, None)
-        payload[f"{key}_configured"] = had
-    return payload
-
-
-class SettingsIn(BaseModel):
-    preferred_language: Optional[str] = None
-    fallback_languages: Optional[list[str]] = None
-    include_original_title: Optional[bool] = None
-    cache_ttl_hours: Optional[int] = None
-    overwrite_foreign_nfo: Optional[bool] = None
-    tvdb_api_key: Optional[str] = None
-    tvdb_pin: Optional[str] = None
-    auto_match_threshold: Optional[int] = None
-    metadata_source: Optional[str] = None
-    tmdb_api_key: Optional[str] = None
-    fanart_api_key: Optional[str] = None
-    fanart_enabled: Optional[bool] = None
-    tmdb_artwork_enabled: Optional[bool] = None
-    preferred_artwork_source: Optional[str] = None
-    # v0.6.0 Plex integration
-    plex_url: Optional[str] = None
-    plex_token: Optional[str] = None
-    plex_auto_refresh: Optional[bool] = None
-    plex_refresh_delay_seconds: Optional[int] = None
-    plex_path_mappings: Optional[list[dict]] = None
-    # v0.10.0 file rename templates
-    rename_episode_template: Optional[str] = None
-    rename_movie_template: Optional[str] = None
-    rename_enabled: Optional[bool] = None
-    # v0.11.0 Sonarr/Radarr-compatible rename templates
-    rename_daily_template: Optional[str] = None
-    rename_anime_template: Optional[str] = None
-    rename_series_folder_template: Optional[str] = None
-    rename_season_folder_template: Optional[str] = None
-    rename_movie_folder_template: Optional[str] = None
-    # v0.11.10 orphan-companion sweeper
-    auto_sweep_orphans: Optional[bool] = None
-    # v0.11.12 artwork language filtering (per provider)
-    tvdb_artwork_languages: Optional[list[str]] = None
-    tvdb_artwork_allow_null_language: Optional[bool] = None
-    tmdb_artwork_languages: Optional[list[str]] = None
-    tmdb_artwork_allow_null_language: Optional[bool] = None
-    # v0.12.0 filesystem watcher
-    watcher_enabled: Optional[bool] = None
-    watcher_debounce_seconds: Optional[int] = None
-
-
-@router.post("/settings")
-async def update_settings(payload: SettingsIn):
-    s = get_user_settings()
-    data = s.model_dump()
-    for k, v in payload.model_dump(exclude_unset=True).items():
-        # Treat empty-string secret fields as 'leave unchanged' rather than wiping.
-        if k in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "fanart_api_key", "plex_token") and v == "":
-            continue
-        if k == "plex_path_mappings" and v is not None:
-            cleaned = []
-            for m in v:
-                if not isinstance(m, dict):
-                    continue
-                src = (m.get("from") or "").strip()
-                dst = (m.get("to") or "").strip()
-                if not src and not dst:
-                    continue
-                cleaned.append({"from": src, "to": dst})
-            v = cleaned
-        if k == "plex_url" and isinstance(v, str):
-            v = v.strip().rstrip("/") or None
-        if k == "plex_refresh_delay_seconds" and v is not None:
-            try:
-                v = max(0, min(600, int(v)))
-            except (TypeError, ValueError):
-                v = 5
-        if k in ("tvdb_artwork_languages", "tmdb_artwork_languages") and v is not None:
-            # Normalise to a deduped, lowercase list of non-empty codes.
-            seen: set[str] = set()
-            cleaned_codes: list[str] = []
-            for code in v if isinstance(v, list) else []:
-                if not isinstance(code, str):
-                    continue
-                c = code.strip().lower()
-                if not c or c in seen:
-                    continue
-                seen.add(c)
-                cleaned_codes.append(c)
-            v = cleaned_codes
-        data[k] = v
-    if data.get("metadata_source") not in ("tvdb", "tmdb"):
-        data["metadata_source"] = "tvdb"
-    if data.get("preferred_artwork_source") not in ("auto", "tvdb", "tmdb"):
-        data["preferred_artwork_source"] = "auto"
-    new = UserSettings(**data)
-    save_user_settings(new)
-    # v0.12.0: if anything touched the watcher knobs, ask the watcher to
-    # re-evaluate immediately so the user doesn't have to restart the app.
-    try:
-        touched = payload.model_dump(exclude_unset=True)
-        if "watcher_enabled" in touched or "watcher_debounce_seconds" in touched:
-            _watcher.reload()
-    except Exception as e:
-        logger.warning("watcher reload after settings update failed: {}", e)
-    return {"ok": True}
 
 
 # ---- Browse ----------------------------------------------------------------
@@ -209,14 +66,19 @@ def _safe_under_root(path: str, must_exist: bool = True) -> Path:
     if not (p == root or root in p.parents):
         raise HTTPException(status_code=400, detail="Path outside MEDIA_ROOT")
     if must_exist and not p.exists():
-        # Endpoints that read live files still raise; the new "forget" endpoints
-        # opt out via must_exist=False.
-        pass
+        raise HTTPException(status_code=404, detail="Path not found")
+    return p
+
+
+def _safe_item_folder(path: str) -> Path:
+    p = _safe_under_root(path)
+    if len(p.relative_to(MEDIA_ROOT.resolve()).parts) < 2 or not p.is_dir():
+        raise HTTPException(status_code=400, detail="Choose a media item folder inside a library")
     return p
 
 
 @router.get("/browse")
-async def browse(path: Optional[str] = None):
+def browse(path: Optional[str] = None):
     p = _safe_under_root(path) if path else MEDIA_ROOT
     if not p.exists():
         raise HTTPException(status_code=404, detail="Path not found")
@@ -238,7 +100,7 @@ async def browse(path: Optional[str] = None):
 
 @router.post("/libraries/detect")
 async def libraries_detect():
-    libs = scanner.detect_libraries()
+    libs = await run_in_thread(scanner.detect_libraries)
     # v0.12.0: a new library means a new path to watch.
     try:
         _watcher.reload()
@@ -248,7 +110,7 @@ async def libraries_detect():
 
 
 @router.get("/libraries")
-async def libraries_list():
+def libraries_list():
     libs: list[dict] = []
     for r in db.list_libraries():
         d = dict(r)
@@ -311,23 +173,22 @@ async def libraries_delete(name: str):
 
 
 @router.post("/libraries/{name}/scan")
-async def library_scan(name: str, background: BackgroundTasks):
-    def _run():
-        try:
-            scanner.scan_library(name)
-        except Exception as e:
-            logger.exception("Library scan failed: {}", e)
-    background.add_task(_run)
-    return {"ok": True, "scheduled": True}
+async def library_scan(name: str):
+    if db.get_library(name) is None:
+        raise HTTPException(status_code=404, detail="Library not found")
+    count = await run_in_thread(scanner.scan_library, name)
+    return {"ok": True, "scheduled": False, "scanned": count}
 
 
 # ---- Items -----------------------------------------------------------------
 
 @router.get("/items")
-async def items_list(library: Optional[str] = None,
+def items_list(library: Optional[str] = None,
                      status: Optional[str] = None,
                      q: Optional[str] = None,
-                     hide_organized: bool = False):
+                     hide_organized: bool = False,
+                     limit: int = Query(default=5000, ge=1, le=5000),
+                     offset: int = Query(default=0, ge=0)):
     """List items in a library.
 
     v0.11.4: the UI ships a 3-way "All / Needs work / Complete" pill that
@@ -345,8 +206,8 @@ async def items_list(library: Optional[str] = None,
     # only to throw the completes away in Python.
     if hide_organized and not statuses:
         statuses = ["none", "partial", "stale", "foreign", "mixed"]
-    rows = db.list_item_state(library=library, statuses=statuses, title_q=q)
-    return {"items": [dict(r) for r in rows]}
+    rows = db.list_item_state(library=library, statuses=statuses, title_q=q, limit=limit, offset=offset)
+    return {"items": [dict(r) for r in rows], "total": db.count_item_state(library, statuses, q), "offset": offset, "limit": limit}
 
 
 # ---- Custom tags (v0.8.0) --------------------------------------------------
@@ -357,8 +218,8 @@ class TagIn(BaseModel):
 
 
 @router.post("/items/tags")
-async def items_add_tag(payload: TagIn):
-    p = _safe_under_root(payload.folder_path)
+def items_add_tag(payload: TagIn):
+    p = _safe_item_folder(payload.folder_path)
     inserted = db.add_custom_tag(str(p), payload.tag)
     # Persist to sidecar so the tag survives a wipe/restore.
     try:
@@ -369,7 +230,7 @@ async def items_add_tag(payload: TagIn):
 
 
 @router.delete("/items/tags")
-async def items_remove_tag(folder_path: str, tag: str):
+def items_remove_tag(folder_path: str, tag: str):
     p = _safe_under_root(folder_path)
     removed = db.remove_custom_tag(str(p), tag)
     try:
@@ -391,7 +252,7 @@ class ItemCleanIn(BaseModel):
 
 
 @router.post("/items/clean")
-async def items_clean(payload: ItemCleanIn):
+def items_clean(payload: ItemCleanIn):
     """Wipe generated NFOs and artwork from a folder.
 
     Leaves season folders and media files alone. The .plex-nfo-builder.json
@@ -401,7 +262,7 @@ async def items_clean(payload: ItemCleanIn):
     With `dry_run=true`, returns the list of files that would be deleted
     without modifying anything.
     """
-    p = _safe_under_root(payload.folder_path)
+    p = _safe_item_folder(payload.folder_path)
     if payload.dry_run:
         return {"ok": True, "dry_run": True, "files": cleaner_svc.preview_clean(p)}
     summary = cleaner_svc.clean_folder(p, keep_sidecar=payload.keep_sidecar)
@@ -423,7 +284,7 @@ async def items_clean(payload: ItemCleanIn):
 
 
 @router.post("/items/remove")
-async def items_remove(payload: ItemRemoveIn):
+def items_remove(payload: ItemRemoveIn):
     """Forget an item from the database.
 
     Removes the row from item_state plus all related bindings, artwork
@@ -442,7 +303,7 @@ class ItemsPruneIn(BaseModel):
 
 
 @router.post("/items/prune")
-async def items_prune(payload: ItemsPruneIn):
+def items_prune(payload: ItemsPruneIn):
     """Find every tracked folder whose path no longer exists on disk and forget it.
 
     Pass `dry_run=true` to preview which folders would be removed.
@@ -463,7 +324,10 @@ async def items_prune(payload: ItemsPruneIn):
     removed = 0
     if not payload.dry_run:
         for m in missing:
-            removed += db.delete_item_state(m["folder_path"])
+            # Imports can land while a large library's preview is collected.
+            p = _safe_under_root(m["folder_path"], must_exist=False)
+            if not p.exists():
+                removed += db.delete_item_state(str(p))
     return {
         "ok": True,
         "checked": len(rows),
@@ -487,7 +351,7 @@ class ItemsPruneEmptyIn(BaseModel):
 
 
 @router.post("/items/prune-empty")
-async def items_prune_empty(payload: ItemsPruneEmptyIn):
+def items_prune_empty(payload: ItemsPruneEmptyIn):
     """Forget tracked folders that exist on disk but contain no media files.
 
     The classic case: a show folder with ``tvshow.nfo`` + posters but no
@@ -586,7 +450,7 @@ class LibraryWipeIn(BaseModel):
 
 
 @router.post("/libraries/{name}/wipe-nfo")
-async def library_wipe_nfo(name: str, payload: LibraryWipeIn):
+def library_wipe_nfo(name: str, payload: LibraryWipeIn):
     """Wipe generated NFOs and artwork from EVERY tracked folder in ``name``.
 
     For each folder this is the same operation as `/items/clean`. Sidecar
@@ -678,7 +542,7 @@ async def library_wipe_nfo(name: str, payload: LibraryWipeIn):
 
 
 @router.post("/libraries/{name}/wipe-sidecars")
-async def library_wipe_sidecars(name: str, payload: LibraryWipeIn):
+def library_wipe_sidecars(name: str, payload: LibraryWipeIn):
     """Delete every ``.plex-nfo-builder.json`` sidecar in ``name``.
 
     The sidecar is the only on-disk record of bindings + overrides, so this
@@ -803,7 +667,7 @@ async def items_orphans_preview(path: str):
         kind_hint = None
         if row is not None and row["kind"]:
             kind_hint = "series" if row["kind"] == "series" else "movie"
-        summary = await asyncio.to_thread(
+        summary = await run_in_thread(
             _orphans_for_folder, p, dry_run=True, kind_hint=kind_hint,
         )
     except FileNotFoundError:
@@ -831,7 +695,7 @@ async def items_orphans_sweep(payload: ItemOrphansSweepIn):
     and every video/subtitle/audio file are always preserved. Pass
     ``dry_run=true`` for a preview that doesn't touch disk.
     """
-    p = _safe_under_root(payload.folder_path)
+    p = _safe_item_folder(payload.folder_path)
     # v0.11.11: O(1) state lookup; sweep runs in a worker thread so it doesn't
     # block the event loop on a slow share.
     state_row = db.get_item_state(str(p))
@@ -839,7 +703,7 @@ async def items_orphans_sweep(payload: ItemOrphansSweepIn):
     if state_row is not None and state_row["kind"]:
         kind_hint = "series" if state_row["kind"] == "series" else "movie"
     try:
-        summary = await asyncio.to_thread(
+        summary = await run_in_thread(
             _orphans_for_folder, p, dry_run=payload.dry_run, kind_hint=kind_hint,
         )
     except FileNotFoundError:
@@ -850,9 +714,9 @@ async def items_orphans_sweep(payload: ItemOrphansSweepIn):
             kind = state_row["kind"] if state_row else None
             library = (state_row["library"] if state_row else "") or ""
             if kind == "movie":
-                await asyncio.to_thread(scanner.scan_movie_folder, p, library=library)
+                await run_in_thread(scanner.scan_movie_folder, p, library=library)
             else:
-                await asyncio.to_thread(scanner.scan_series_folder, p, library=library)
+                await run_in_thread(scanner.scan_series_folder, p, library=library)
         except Exception as e:  # noqa: BLE001
             logger.warning("post-orphan-sweep rescan failed for {}: {}", p, e)
     elif not payload.dry_run:
@@ -922,7 +786,7 @@ async def library_orphans_sweep(name: str, payload: LibraryOrphansSweepIn):
     # Process folders sequentially in a single worker thread so we don't
     # hammer the share with N parallel iterdir() calls.
     for p, kind, _cached in candidates:
-        summary = await asyncio.to_thread(_do_one, p, kind)
+        summary = await run_in_thread(_do_one, p, kind)
         if summary is None:
             continue
         if isinstance(summary, dict) and summary.get("__error"):
@@ -943,9 +807,9 @@ async def library_orphans_sweep(name: str, payload: LibraryOrphansSweepIn):
             if not payload.dry_run and payload.rescan:
                 try:
                     if kind == "movie":
-                        await asyncio.to_thread(scanner.scan_movie_folder, p, library=name)
+                        await run_in_thread(scanner.scan_movie_folder, p, library=name)
                     else:
-                        await asyncio.to_thread(scanner.scan_series_folder, p, library=name)
+                        await run_in_thread(scanner.scan_series_folder, p, library=name)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("library orphan sweep: rescan failed for {}: {}", p, e)
         else:
@@ -1081,7 +945,7 @@ async def item_detail(path: str):
 
 
 @router.get("/items/nfo-explain")
-async def items_nfo_explain(path: str):
+def items_nfo_explain(path: str):
     """Return a structured \"why does this folder have this status?\" payload.
 
     The library list only carries the bucketed status (none/partial/foreign/
@@ -1200,16 +1064,31 @@ async def match_search(q: str, type: str = "series", year: Optional[int] = None,
                         language: Optional[str] = None,
                         provider: Optional[str] = None,
                         library: Optional[str] = None):
-    return {
-        "results": await matcher.manual_search(q, type_=type, year=year, language=language,
-                                                provider=provider, library=library),
-        "provider": provider or effective_metadata_source(library),
-    }
+    source = provider or effective_metadata_source(library)
+    try:
+        # Let the provider read its cache before requiring credentials.
+        results = await matcher.manual_search(q, type_=type, year=year, language=language,
+                                             provider=source, library=library)
+    except (TVDBError, TMDBError, HTTPError) as error:
+        configured = (bool(effective_tmdb_credentials()) if source == "tmdb"
+                      else bool(effective_tvdb_credentials()[0]))
+        name = "TMDB" if source == "tmdb" else "TVDB"
+        logger.warning("{} manual search failed ({})", name, error.__class__.__name__)
+        if not configured:
+            raise HTTPException(
+                status_code=503,
+                detail=f"{name} API key is not configured. Add it in Settings > Providers and retry.",
+            ) from error
+        raise HTTPException(
+            status_code=502,
+            detail=f"{name} search is unavailable. Check credentials in Settings > Providers or retry later.",
+        ) from error
+    return {"results": results, "provider": source}
 
 
 class BindIn(BaseModel):
     folder_path: str
-    kind: str  # series | movie
+    kind: Literal["series", "movie"]
     provider: str = "tvdb"
     external_id: str
     title: Optional[str] = None
@@ -1221,8 +1100,8 @@ class BindIn(BaseModel):
 
 
 @router.post("/match/bind")
-async def match_bind(payload: BindIn):
-    p = _safe_under_root(payload.folder_path)
+def match_bind(payload: BindIn):
+    p = _safe_item_folder(payload.folder_path)
     if payload.provider not in ("tvdb", "tmdb"):
         raise HTTPException(status_code=400, detail="provider must be 'tvdb' or 'tmdb'")
     db.upsert_binding(str(p), payload.kind, payload.provider, payload.external_id,
@@ -1248,13 +1127,13 @@ class SourceIn(BaseModel):
     provider: str             # 'tvdb' | 'tmdb'
     external_id: Optional[str] = None
     locked: bool = True
-    kind: Optional[str] = None
+    kind: Optional[Literal["series", "movie"]] = None
     title: Optional[str] = None
     year: Optional[int] = None
 
 
 @router.post("/match/source")
-async def match_set_source(payload: SourceIn):
+def match_set_source(payload: SourceIn):
     """Switch the metadata provider for a single folder, optionally locking it.
 
     If `external_id` is omitted, the existing binding's id is reused (so the
@@ -1262,8 +1141,10 @@ async def match_set_source(payload: SourceIn):
     """
     if payload.provider not in ("tvdb", "tmdb"):
         raise HTTPException(status_code=400, detail="provider must be 'tvdb' or 'tmdb'")
-    p = _safe_under_root(payload.folder_path)
+    p = _safe_item_folder(payload.folder_path)
     existing = db.get_binding(str(p))
+    if existing and payload.provider != existing["provider"] and not payload.external_id:
+        raise HTTPException(status_code=400, detail="Choose a match from the new provider before switching source")
     eid = payload.external_id or (existing["external_id"] if existing else None)
     if not eid:
         raise HTTPException(
@@ -1300,7 +1181,7 @@ class SecondaryIn(BaseModel):
 
 
 @router.post("/match/secondary")
-async def match_set_secondary(payload: SecondaryIn):
+def match_set_secondary(payload: SecondaryIn):
     """Attach (or clear) a manual secondary provider id on a folder.
 
     Use this when you've matched a folder to one provider (e.g. TVDB) but
@@ -1310,7 +1191,7 @@ async def match_set_secondary(payload: SecondaryIn):
     ``<uniqueid type="...">`` row — even when the providers don't link
     each other.
     """
-    p = _safe_under_root(payload.folder_path)
+    p = _safe_item_folder(payload.folder_path)
     binding = db.get_binding(str(p))
     if not binding:
         raise HTTPException(
@@ -1340,7 +1221,7 @@ async def match_set_secondary(payload: SecondaryIn):
 
 
 @router.post("/match/unbind")
-async def match_unbind(folder_path: str):
+def match_unbind(folder_path: str):
     p = _safe_under_root(folder_path)
     db.delete_binding(str(p))
     try:
@@ -1357,7 +1238,7 @@ _OVR_SCOPE_RE = re.compile(r"^(series|movie|season-\d{2}|episode-[A-Za-z0-9_\-]+
 
 
 @router.get("/overrides")
-async def overrides_get(path: str):
+def overrides_get(path: str):
     p = _safe_under_root(path)
     return {"path": str(p), "overrides": db.get_nfo_overrides(str(p))}
 
@@ -1370,8 +1251,8 @@ class OverrideIn(BaseModel):
 
 
 @router.post("/overrides")
-async def overrides_set(payload: OverrideIn):
-    p = _safe_under_root(payload.folder_path)
+def overrides_set(payload: OverrideIn):
+    p = _safe_item_folder(payload.folder_path)
     if payload.field not in _ALLOWED_OVR_FIELDS:
         raise HTTPException(status_code=400, detail=f"field must be one of {sorted(_ALLOWED_OVR_FIELDS)}")
     if not _OVR_SCOPE_RE.match(payload.scope or ""):
@@ -1407,8 +1288,8 @@ class OverrideClearIn(BaseModel):
 
 
 @router.post("/overrides/clear")
-async def overrides_clear(payload: OverrideClearIn):
-    p = _safe_under_root(payload.folder_path)
+def overrides_clear(payload: OverrideClearIn):
+    p = _safe_item_folder(payload.folder_path)
     n = db.clear_nfo_override(str(p), scope=payload.scope, field=payload.field)
     # v0.11.4: if the cleared override was a sorttitle, fall back to the
     # auto-derived sort title so the library list re-orders right away.
@@ -1438,12 +1319,12 @@ async def overrides_clear(payload: OverrideClearIn):
 
 class BuildIn(BaseModel):
     folder_path: str
-    kind: Optional[str] = None  # series | movie (autodetected if omitted)
+    kind: Optional[Literal["series", "movie"]] = None
     force: bool = False
     language: Optional[str] = None
 
 
-def _detect_kind(p: Path) -> str:
+def _detect_kind(p: Path) -> Literal["series", "movie"]:
     """Decide whether a folder is a series or a movie.
 
     v0.9.0: per-folder content trumps the library declaration. Anime
@@ -1466,8 +1347,8 @@ def _detect_kind(p: Path) -> str:
 
 @router.post("/build")
 async def build_endpoint(payload: BuildIn):
-    p = _safe_under_root(payload.folder_path)
-    kind = payload.kind or _detect_kind(p)
+    p = _safe_item_folder(payload.folder_path)
+    kind: str = payload.kind if payload.kind is not None else await run_in_thread(_detect_kind, p)
     job_id = build_svc.start_build(p, kind, force=payload.force, language=payload.language)
     return {"ok": True, "job": job_id}
 
@@ -1504,9 +1385,9 @@ def _resolve_bulk_paths(payload: BulkIn, *, default_only_unmatched: bool = False
     legacy unmatched-only behaviour pass ``only_unmatched=true``.
     """
     paths: list[Path] = []
-    if payload.folder_paths:
+    if payload.folder_paths is not None:
         for fp in payload.folder_paths:
-            paths.append(_safe_under_root(fp))
+            paths.append(_safe_item_folder(fp))
     elif payload.library:
         rows = db.list_item_state(library=payload.library)
         for r in rows:
@@ -1516,7 +1397,7 @@ def _resolve_bulk_paths(payload: BulkIn, *, default_only_unmatched: bool = False
             if payload.only_unbuilt and d.get("nfo_status") == "complete":
                 continue
             try:
-                paths.append(_safe_under_root(d["folder_path"]))
+                paths.append(_safe_item_folder(d["folder_path"]))
             except HTTPException:
                 continue
     else:
@@ -1526,12 +1407,12 @@ def _resolve_bulk_paths(payload: BulkIn, *, default_only_unmatched: bool = False
 
 @router.post("/match/auto-bulk")
 async def match_auto_bulk(payload: BulkIn):
-    paths = _filter_locked(_resolve_bulk_paths(payload))
+    paths = await run_in_thread(lambda: _filter_locked(_resolve_bulk_paths(payload)))
     settings = get_user_settings()
     lang = payload.language or settings.preferred_language
 
     async def _run_one(p: Path) -> dict:
-        kind = _detect_kind(p)
+        kind = await run_in_thread(_detect_kind, p)
         # v0.7.0: pick the metadata source per the folder's library, falling
         # back to the global setting when the library has no override.
         source = effective_metadata_source(p.parent.name)
@@ -1556,13 +1437,13 @@ async def match_auto_bulk(payload: BulkIn):
             if data:
                 try:
                     if kind == "series":
-                        scanner.scan_series_folder(p, library=p.parent.name)
+                        await run_in_thread(scanner.scan_series_folder, p, library=p.parent.name)
                     else:
-                        scanner.scan_movie_folder(p, library=p.parent.name)
+                        await run_in_thread(scanner.scan_movie_folder, p, library=p.parent.name)
                 except Exception as se:
                     logger.warning("post-match rescan of {} failed: {}", p, se)
                 try:
-                    sidecar_svc.write_sidecar(p)
+                    await run_in_thread(sidecar_svc.write_sidecar, p)
                 except Exception as se:
                     logger.warning("sidecar after auto-match {}: {}", p, se)
             name = data.get("name") or data.get("title") if data else None
@@ -1591,22 +1472,22 @@ async def match_auto_bulk(payload: BulkIn):
 
 @router.post("/build/bulk")
 async def build_bulk(payload: BulkIn):
-    paths = _resolve_bulk_paths(payload)
+    paths = await run_in_thread(_resolve_bulk_paths, payload)
     jobs: list[dict] = []
     for p in paths:
-        kind = _detect_kind(p)
+        kind = await run_in_thread(_detect_kind, p)
         jid = build_svc.start_build(p, kind, force=payload.force, language=payload.language)
         jobs.append({"folder_path": str(p), "kind": kind, "job": jid})
     return {"ok": True, "queued": len(jobs), "jobs": jobs}
 
 
 @router.get("/jobs")
-async def jobs_list():
+def jobs_list():
     return {"jobs": build_svc.list_jobs()}
 
 
 @router.get("/jobs/{job_id}")
-async def jobs_get(job_id: str):
+def jobs_get(job_id: str):
     j = build_svc.get_job(job_id)
     if not j:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -1614,7 +1495,9 @@ async def jobs_get(job_id: str):
 
 
 @router.get("/jobs/{job_id}/log")
-async def jobs_log(job_id: str):
+def jobs_log(job_id: str):
+    if not re.fullmatch(r"[a-f0-9]{12}", job_id):
+        raise HTTPException(status_code=404, detail="No log")
     p = LOG_DIR / "jobs" / f"{job_id}.log"
     if not p.exists():
         raise HTTPException(status_code=404, detail="No log")
@@ -1624,11 +1507,16 @@ async def jobs_log(job_id: str):
 # ---- Artwork ---------------------------------------------------------------
 
 @router.get("/artwork/file")
-async def artwork_file(path: str):
+def artwork_file(path: str):
     p = _safe_under_root(path)
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Not found")
-    return FileResponse(p)
+    try:
+        with p.open("rb") as image:
+            _, content_type = image_type(image.read(16))
+    except ValueError as error:
+        raise HTTPException(status_code=415, detail="File is not supported raster artwork") from error
+    return FileResponse(p, media_type=content_type)
 
 
 # ---- Artwork picker (v0.4.0) -----------------------------------------------
@@ -1958,6 +1846,13 @@ def _tmdb_to_candidates(images: list[dict], season_number: Optional[int] = None)
     return out
 
 
+async def _validate_artwork_input(url: str) -> None:
+    try:
+        await validate_artwork_url(url)
+    except (ValueError, OSError) as error:
+        raise HTTPException(status_code=400, detail="Artwork URL must identify an uploaded image or a public HTTP(S) image.") from error
+
+
 class ArtworkSelectIn(BaseModel):
     folder_path: str
     slot: str
@@ -1968,7 +1863,8 @@ class ArtworkSelectIn(BaseModel):
 
 @router.post("/artwork/select")
 async def artwork_select(payload: ArtworkSelectIn):
-    p = _safe_under_root(payload.folder_path)
+    p = _safe_item_folder(payload.folder_path)
+    await _validate_artwork_input(payload.url)
     db.set_artwork_selection(str(p), payload.slot, payload.url,
                              language=payload.language, score=payload.score)
     return {"ok": True}
@@ -1980,28 +1876,13 @@ class ArtworkClearIn(BaseModel):
 
 
 @router.post("/artwork/clear")
-async def artwork_clear(payload: ArtworkClearIn):
-    p = _safe_under_root(payload.folder_path)
+def artwork_clear(payload: ArtworkClearIn):
+    p = _safe_item_folder(payload.folder_path)
     n = db.clear_artwork_selection(str(p), slot=payload.slot)
     return {"ok": True, "cleared": n}
 
 
 # ---- Custom artwork (uploads + remote URLs) --------------------------------
-
-_ALLOWED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
-_ALLOWED_IMAGE_TYPES = {
-    "image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp", "image/tiff",
-}
-
-
-def _ext_from_content_type(ct: Optional[str]) -> str:
-    m = {
-        "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
-        "image/webp": ".webp", "image/gif": ".gif", "image/bmp": ".bmp",
-        "image/tiff": ".tiff",
-    }
-    return m.get((ct or "").lower(), ".jpg")
-
 
 @router.post("/artwork/upload")
 async def artwork_upload(
@@ -2011,18 +1892,16 @@ async def artwork_upload(
 ):
     """Upload an image file as custom artwork for the given folder."""
     p = _safe_under_root(folder_path)
-    raw = await file.read()
+    raw = await file.read(MAX_IMAGE_BYTES + 1)
     if not raw:
         raise HTTPException(status_code=400, detail="Empty file")
     if len(raw) > 50 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
-    ct = (file.content_type or "").lower()
     name = (file.filename or "upload").strip()
-    ext = Path(name).suffix.lower()
-    if ct and ct not in _ALLOWED_IMAGE_TYPES and ext not in _ALLOWED_IMAGE_EXTS:
-        raise HTTPException(status_code=400, detail=f"Unsupported image type: {ct or ext}")
-    if not ext or ext not in _ALLOWED_IMAGE_EXTS:
-        ext = _ext_from_content_type(ct)
+    try:
+        ext, ct = image_type(raw)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Unsupported image content") from error
     art_id = hashlib.sha1(raw + str(p).encode("utf-8")).hexdigest()
     CUSTOM_ARTWORK_DIR.mkdir(parents=True, exist_ok=True)
     dest = CUSTOM_ARTWORK_DIR / f"{art_id}{ext}"
@@ -2060,11 +1939,9 @@ class ArtworkUrlIn(BaseModel):
 @router.post("/artwork/custom-url")
 async def artwork_custom_url(payload: ArtworkUrlIn):
     """Register a remote image URL as a custom artwork candidate."""
-    p = _safe_under_root(payload.folder_path)
+    p = _safe_item_folder(payload.folder_path)
     url = (payload.url or "").strip()
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise HTTPException(status_code=400, detail="URL must be http(s)")
+    await _validate_artwork_input(url)
     art_id = hashlib.sha1(f"{p}|{url}".encode("utf-8")).hexdigest()
     db.add_custom_artwork(
         art_id,
@@ -2085,28 +1962,39 @@ async def artwork_custom_url(payload: ArtworkUrlIn):
 
 
 @router.get("/artwork/custom/{art_id}")
-async def artwork_custom_get(art_id: str):
+def artwork_custom_get(art_id: str):
     row = db.get_custom_artwork(art_id)
     if not row:
         raise HTTPException(status_code=404, detail="Not found")
     d = dict(row)
     if d.get("source") != "upload":
         raise HTTPException(status_code=400, detail="Not an uploaded asset; URL is already public")
-    fp = Path(d.get("file_path") or "")
-    if not fp.exists() or not fp.is_file():
+    try:
+        fp = uploaded_file(f"/api/artwork/custom/{art_id}")
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail="File missing on disk") from error
+    if fp is None:
         raise HTTPException(status_code=404, detail="File missing on disk")
-    return FileResponse(fp, media_type=d.get("content_type") or "image/jpeg")
+    try:
+        with fp.open("rb") as image:
+            _, content_type = image_type(image.read(16))
+    except ValueError as error:
+        raise HTTPException(status_code=415, detail="Uploaded file is not supported raster artwork") from error
+    return FileResponse(fp, media_type=content_type)
 
 
 @router.delete("/artwork/custom/{art_id}")
-async def artwork_custom_delete(art_id: str):
+def artwork_custom_delete(art_id: str):
     row = db.get_custom_artwork(art_id)
     if not row:
         return {"ok": True, "deleted": 0}
     d = dict(row)
     if d.get("source") == "upload":
-        fp = Path(d.get("file_path") or "")
-        if fp.exists() and fp.is_file():
+        try:
+            fp = uploaded_file(f"/api/artwork/custom/{art_id}")
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Invalid artwork storage path") from error
+        if fp is not None:
             try:
                 fp.unlink()
             except Exception as e:
@@ -2116,7 +2004,7 @@ async def artwork_custom_delete(art_id: str):
 
 
 @router.get("/artwork/custom")
-async def artwork_custom_list(folder_path: str):
+def artwork_custom_list(folder_path: str):
     p = _safe_under_root(folder_path)
     rows = db.list_custom_artwork(str(p))
     return {"items": [dict(r) for r in rows]}
@@ -2332,8 +2220,8 @@ class EpisodeOverrideIn(BaseModel):
 
 
 @router.post("/episodes/override")
-async def episodes_override(payload: EpisodeOverrideIn):
-    p = _safe_under_root(payload.folder_path)
+def episodes_override(payload: EpisodeOverrideIn):
+    p = _safe_item_folder(payload.folder_path)
     if payload.tvdb_episode_id:
         db.set_episode_override(str(p), payload.season, payload.episode, payload.tvdb_episode_id)
     else:
@@ -2360,8 +2248,8 @@ class EpisodeFileOverrideIn(BaseModel):
 
 
 @router.post("/episodes/override-file")
-async def episodes_override_file(payload: EpisodeFileOverrideIn):
-    p = _safe_under_root(payload.folder_path)
+def episodes_override_file(payload: EpisodeFileOverrideIn):
+    p = _safe_item_folder(payload.folder_path)
     fp = _safe_under_root(payload.file_path)
     if not str(fp).startswith(str(p)):
         raise HTTPException(
@@ -2530,12 +2418,13 @@ class EpisodeThumbSelectIn(BaseModel):
 
 @router.post("/episodes/thumb-select")
 async def episodes_thumb_select(payload: EpisodeThumbSelectIn):
-    p = _safe_under_root(payload.folder_path)
+    p = _safe_item_folder(payload.folder_path)
     binding = db.get_binding(str(p))
     if not binding or binding["kind"] != "series":
         raise HTTPException(status_code=400, detail="Folder is not bound to a series")
     slot = f"episode-thumb-{payload.external_id}"
     if payload.url:
+        await _validate_artwork_input(payload.url)
         db.set_artwork_selection(str(p), slot, payload.url, language=None, score=None)
     else:
         db.clear_artwork_selection(str(p), slot)
@@ -2629,6 +2518,7 @@ async def _build_episodes_index(binding: dict, lang: Optional[str]) -> dict[tupl
                     "seasonNumber": ep.get("season_number"),
                     "number": ep.get("episode_number"),
                     "name": ep.get("name"),
+                    "aired": ep.get("air_date"),
                 })
     else:
         client = get_client()
@@ -2648,7 +2538,7 @@ async def _build_episodes_index(binding: dict, lang: Optional[str]) -> dict[tupl
 @router.post("/episodes/rename/preview")
 async def episodes_rename_preview(payload: RenamePreviewIn):
     """Return a dry-run rename plan. The filesystem is not touched."""
-    p = _safe_under_root(payload.folder_path)
+    p = _safe_item_folder(payload.folder_path)
     binding = db.get_binding(str(p))
     if not binding:
         raise HTTPException(
@@ -2676,7 +2566,7 @@ async def episodes_rename_preview(payload: RenamePreviewIn):
         daily_t = (payload.daily_template or "").strip() or settings.rename_daily_template
         anime_t = (payload.anime_template or "").strip() or settings.rename_anime_template
         localized_title, _ = await _resolve_localized_title(dict(binding), lang, fallbacks)
-        plan = renamer_svc.plan_series_rename(
+        plan = await run_in_thread(renamer_svc.plan_series_rename,
             p,
             standard_template=template,
             daily_template=daily_t,
@@ -2697,7 +2587,7 @@ async def episodes_rename_preview(payload: RenamePreviewIn):
         tmdb_id = ext_id if provider == "tmdb" else None
         tvdb_id = ext_id if provider == "tvdb" else None
         localized_title, _ = await _resolve_localized_title(dict(binding), lang, fallbacks)
-        plan = renamer_svc.plan_movie_rename(
+        plan = await run_in_thread(renamer_svc.plan_movie_rename,
             p,
             template=template,
             title=(localized_title or binding["title"] or Path(str(p)).name),
@@ -2726,6 +2616,11 @@ async def episodes_rename_preview(payload: RenamePreviewIn):
     }
 
 
+class ExpectedRename(BaseModel):
+    src: str
+    dst: str
+
+
 class RenameApplyIn(BaseModel):
     folder_path: str
     template: Optional[str] = None
@@ -2735,13 +2630,14 @@ class RenameApplyIn(BaseModel):
     # Restrict the apply to a subset of source paths (per-row checkbox UI).
     # If empty/null, every plan item that's safe to rename is applied.
     only_src: Optional[list[str]] = None
+    expected_plan: Optional[list[ExpectedRename]] = None
     # v0.11.7: same release-group override the preview accepted.
     release_group: Optional[str] = None
 
 
 @router.post("/episodes/rename/apply")
 async def episodes_rename_apply(payload: RenameApplyIn):
-    p = _safe_under_root(payload.folder_path)
+    p = _safe_item_folder(payload.folder_path)
     binding = db.get_binding(str(p))
     if not binding:
         raise HTTPException(status_code=400, detail="Folder is not matched")
@@ -2763,7 +2659,7 @@ async def episodes_rename_apply(payload: RenameApplyIn):
         daily_t = (payload.daily_template or "").strip() or settings.rename_daily_template
         anime_t = (payload.anime_template or "").strip() or settings.rename_anime_template
         localized_title, _ = await _resolve_localized_title(dict(binding), lang, fallbacks)
-        plan = renamer_svc.plan_series_rename(
+        plan = await run_in_thread(renamer_svc.plan_series_rename,
             p,
             standard_template=template,
             daily_template=daily_t,
@@ -2784,7 +2680,7 @@ async def episodes_rename_apply(payload: RenameApplyIn):
         tmdb_id = ext_id if provider == "tmdb" else None
         tvdb_id = ext_id if provider == "tvdb" else None
         localized_title, _ = await _resolve_localized_title(dict(binding), lang, fallbacks)
-        plan = renamer_svc.plan_movie_rename(
+        plan = await run_in_thread(renamer_svc.plan_movie_rename,
             p,
             template=template,
             title=(localized_title or binding["title"] or Path(str(p)).name),
@@ -2793,10 +2689,19 @@ async def episodes_rename_apply(payload: RenameApplyIn):
             tvdb_id=tvdb_id,
             release_group_override=payload.release_group,
         )
-    if payload.only_src:
+    if payload.only_src is not None:
         wanted = set(payload.only_src)
         plan = [it for it in plan if it.src in wanted]
-    summary = renamer_svc.apply_rename_plan(plan)
+    if payload.expected_plan is not None:
+        expected = {item.src: item.dst for item in payload.expected_plan}
+        actual = {item.src: item.dst for item in plan}
+        if (
+            len(expected) != len(payload.expected_plan) or expected != actual
+            or any(item.conflict for item in plan)
+            or (payload.only_src is not None and set(payload.only_src) != set(expected))
+        ):
+            raise HTTPException(status_code=409, detail="Rename preview changed. Review a fresh preview before applying.")
+    summary = await run_in_thread(renamer_svc.apply_rename_plan, plan)
     if summary["renamed"]:
         sidecar_svc.sync_sidecar_from_db(p)
     return {"ok": True, **summary}
@@ -2805,12 +2710,12 @@ async def episodes_rename_apply(payload: RenameApplyIn):
 # ---- Logs ------------------------------------------------------------------
 
 @router.get("/logs/app")
-async def logs_app(tail: int = 500):
+def logs_app(tail: int = Query(default=500, ge=1, le=5000)):
     p = LOG_DIR / "app.log"
     if not p.exists():
         return {"lines": []}
-    lines = p.read_text(errors="ignore").splitlines()[-tail:]
-    return {"lines": lines}
+    with p.open(encoding="utf-8", errors="replace") as source:
+        return {"lines": [line.rstrip("\r\n") for line in deque(source, maxlen=tail)]}
 
 
 # ---- TVDB metadata helpers (used by Grid view to fetch posters) ------------
@@ -2828,7 +2733,7 @@ async def tvdb_movie(movie_id: str):
 
 
 @router.post("/tvdb/cache/clear")
-async def tvdb_cache_clear():
+def tvdb_cache_clear():
     n = db.cache_clear()
     return {"cleared": n}
 
@@ -2977,12 +2882,12 @@ def _validate_schedule(cron: Optional[str], action: Optional[str]) -> None:
 
 
 @router.get("/schedules")
-async def schedules_list():
+def schedules_list():
     return {"schedules": [dict(r) for r in db.list_schedules()]}
 
 
 @router.post("/schedules")
-async def schedules_create(payload: ScheduleIn):
+def schedules_create(payload: ScheduleIn):
     _validate_schedule(payload.cron, payload.action)
     library = payload.library or None
     sched_id = db.insert_schedule(
@@ -2996,14 +2901,14 @@ async def schedules_create(payload: ScheduleIn):
 
 
 @router.patch("/schedules/{sched_id}")
-async def schedules_update(sched_id: int, payload: ScheduleUpdate):
+def schedules_update(sched_id: int, payload: ScheduleUpdate):
     row = db.get_schedule(sched_id)
     if not row:
         raise HTTPException(status_code=404, detail="schedule not found")
     _validate_schedule(payload.cron, payload.action)
     db.update_schedule(
         sched_id,
-        library=payload.library if payload.library is not None else None,
+        library=(payload.library or "") if "library" in payload.model_fields_set else None,
         cron=payload.cron,
         action=payload.action,
         enabled=payload.enabled,
@@ -3013,7 +2918,7 @@ async def schedules_update(sched_id: int, payload: ScheduleUpdate):
 
 
 @router.delete("/schedules/{sched_id}")
-async def schedules_delete(sched_id: int):
+def schedules_delete(sched_id: int):
     n = db.delete_schedule(sched_id)
     if not n:
         raise HTTPException(status_code=404, detail="schedule not found")
@@ -3030,7 +2935,7 @@ async def schedules_run(sched_id: int):
 # ---- Filesystem watcher (v0.12.0) -----------------------------------------
 
 @router.get("/watcher/status")
-async def watcher_status():
+def watcher_status():
     """Return the runtime state of the filesystem watcher."""
     return _watcher.status()
 
@@ -3054,13 +2959,13 @@ async def watcher_toggle(payload: WatcherToggleIn):
 
 
 @router.get("/watcher/events")
-async def watcher_events(limit: int = 200):
+def watcher_events(limit: int = 200):
     """Return the most recent in-memory watcher events (newest first)."""
     return {"events": _watcher.recent_events(limit=limit)}
 
 
 @router.get("/watcher/review")
-async def watcher_review_list(library: Optional[str] = None):
+def watcher_review_list(library: Optional[str] = None):
     """Return the manual-review queue, optionally scoped to one library."""
     rows = db.list_watcher_review(library=library)
     return {"items": [dict(r) for r in rows]}
@@ -3071,7 +2976,7 @@ class WatcherReviewResolveIn(BaseModel):
 
 
 @router.post("/watcher/review/resolve")
-async def watcher_review_resolve(payload: WatcherReviewResolveIn):
+def watcher_review_resolve(payload: WatcherReviewResolveIn):
     """Drop a single folder from the review queue.
 
     Use this when the user has manually matched the show via the existing
@@ -3089,29 +2994,19 @@ async def watcher_review_retry(payload: WatcherReviewResolveIn):
     TMDB/TVDB id to the folder name. The folder must still exist on disk
     and must live under a configured library.
     """
-    p = Path(payload.folder_path)
-    if not p.exists() or not p.is_dir():
-        raise HTTPException(status_code=400, detail="folder does not exist on disk")
-    try:
-        rel = p.resolve().relative_to(MEDIA_ROOT.resolve())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="folder is outside MEDIA_ROOT")
-    parts = rel.parts
-    if not parts:
-        raise HTTPException(status_code=400, detail="folder is the library root itself")
-    library = parts[0]
-    # Re-arm the debounce path so all the normal stability + activity
-    # plumbing fires; this also dedupes against an in-flight run.
-    try:
-        _watcher._schedule_debounce(library, p.resolve(), str(p), True)  # type: ignore[attr-defined]
-    except Exception as e:
-        logger.warning("watcher manual retry {} failed: {}", p, e)
-        raise HTTPException(status_code=500, detail=str(e))
+    p = _safe_item_folder(payload.folder_path)
+    library = p.relative_to(MEDIA_ROOT.resolve()).parts[0]
+    row = db.get_library(library)
+    if row is None or not row["enabled"]:
+        raise HTTPException(status_code=400, detail="Enable the item's library before retrying")
+    if not _watcher.status()["running"]:
+        raise HTTPException(status_code=409, detail="Enable the filesystem watcher before retrying")
+    _watcher._schedule_debounce(library, p, str(p), True)
     return {"ok": True, "library": library, "folder_path": str(p)}
 
 
 @router.delete("/watcher/review")
-async def watcher_review_clear(library: Optional[str] = None):
+def watcher_review_clear(library: Optional[str] = None):
     """Drop every queued review entry (optionally scoped to one library)."""
     n = db.clear_watcher_review(library=library)
     return {"ok": True, "cleared": n}

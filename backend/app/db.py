@@ -5,13 +5,36 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from .config import DB_PATH
 
 _lock = threading.RLock()
 _conn: Optional[sqlite3.Connection] = None
+
+
+@contextmanager
+def transaction() -> Iterator[sqlite3.Connection]:
+    """Serialize a group of changes and roll it back together on failure.
+
+    Savepoints allow sidecar recovery to compose existing repository methods
+    without committing half a binding/override restore.
+    """
+    with _lock:
+        connection = conn()
+        name = "operation_" + uuid.uuid4().hex
+        connection.execute(f"SAVEPOINT {name}")
+        try:
+            yield connection
+        except BaseException:
+            connection.execute(f"ROLLBACK TO {name}")
+            connection.execute(f"RELEASE {name}")
+            raise
+        else:
+            connection.execute(f"RELEASE {name}")
 
 
 # v0.11.4: leading-article stripping for the auto-computed sort title. Plex,
@@ -47,16 +70,31 @@ def compute_sort_title(title: Optional[str], override: Optional[str]) -> str:
 
 def conn() -> sqlite3.Connection:
     global _conn
-    if _conn is None:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA synchronous=NORMAL")
-        _conn.execute("PRAGMA foreign_keys=ON")
-        _init_schema(_conn)
-        _migrate(_conn)
-    return _conn
+    with _lock:
+        if _conn is None:
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None, timeout=30)
+            try:
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA synchronous=NORMAL")
+                connection.execute("PRAGMA foreign_keys=ON")
+                _init_schema(connection)
+                _migrate(connection)
+            except Exception:
+                connection.close()
+                raise
+            _conn = connection
+        return _conn
+
+
+def close() -> None:
+    """Release SQLite after all background workers have drained."""
+    global _conn
+    with _lock:
+        if _conn is not None:
+            _conn.close()
+            _conn = None
 
 
 def _init_schema(c: sqlite3.Connection) -> None:
@@ -450,6 +488,10 @@ def upsert_binding(folder_path: str, kind: str, provider: str, external_id: str,
                 kind=excluded.kind, provider=excluded.provider, external_id=excluded.external_id,
                 title=excluded.title, year=excluded.year, language=excluded.language,
                 source_locked=excluded.source_locked,
+                secondary_provider=CASE WHEN bindings.provider=excluded.provider
+                    AND bindings.external_id=excluded.external_id THEN bindings.secondary_provider ELSE NULL END,
+                secondary_external_id=CASE WHEN bindings.provider=excluded.provider
+                    AND bindings.external_id=excluded.external_id THEN bindings.secondary_external_id ELSE NULL END,
                 updated_at=excluded.updated_at
             """,
             (folder_path, kind, provider, external_id, title, year, language, locked, now, now),
@@ -582,7 +624,7 @@ def delete_item_state(folder_path: str) -> int:
     Returns the number of item_state rows removed (0 or 1).
     """
     c = conn()
-    with _lock:
+    with transaction():
         c.execute("DELETE FROM bindings WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM artwork_selections WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM episode_overrides WHERE folder_path = ?", (folder_path,))
@@ -590,6 +632,8 @@ def delete_item_state(folder_path: str) -> int:
         c.execute("DELETE FROM active_artwork WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM custom_artwork WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM nfo_overrides WHERE folder_path = ?", (folder_path,))
+        c.execute("DELETE FROM custom_tags WHERE folder_path = ?", (folder_path,))
+        c.execute("DELETE FROM watcher_review WHERE folder_path = ?", (folder_path,))
         cur = c.execute("DELETE FROM item_state WHERE folder_path = ?", (folder_path,))
         return cur.rowcount
 
@@ -608,12 +652,8 @@ def get_item_state(folder_path: str) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
-def list_item_state(library: Optional[str] = None,
-                    statuses: Optional[list[str]] = None,
-                    title_q: Optional[str] = None,
-                    limit: int = 5000) -> list[sqlite3.Row]:
-    c = conn()
-    sql = "SELECT * FROM item_state WHERE 1=1"
+def _item_state_filter(library: Optional[str], statuses: Optional[list[str]], title_q: Optional[str]) -> tuple[str, list[Any]]:
+    sql = " WHERE 1=1"
     args: list[Any] = []
     if library:
         sql += " AND library = ?"
@@ -624,16 +664,32 @@ def list_item_state(library: Optional[str] = None,
     if title_q:
         sql += " AND title LIKE ? COLLATE NOCASE"
         args.append(f"%{title_q}%")
-    # v0.11.4: order by sort_title (Plex/Sonarr-style), falling back to the
-    # display title when sort_title is NULL or empty. NOCASE so "the matrix"
-    # and "The Matrix" sort the same.
-    sql += (
+    return sql, args
+
+
+def list_item_state(library: Optional[str] = None,
+                    statuses: Optional[list[str]] = None,
+                    title_q: Optional[str] = None,
+                    limit: Optional[int] = None, offset: int = 0) -> list[sqlite3.Row]:
+    """Internal callers process every item; HTTP callers provide page bounds."""
+    c = conn()
+    where, args = _item_state_filter(library, statuses, title_q)
+    sql = "SELECT * FROM item_state" + where + (
         " ORDER BY COALESCE(NULLIF(sort_title, ''), title) COLLATE NOCASE,"
-        " title COLLATE NOCASE LIMIT ?"
+        " title COLLATE NOCASE, folder_path COLLATE NOCASE LIMIT ? OFFSET ?"
     )
-    args.append(limit)
+    args.extend([limit if limit is not None else -1, offset])
     with _lock:
         return c.execute(sql, args).fetchall()
+
+
+def count_item_state(library: Optional[str] = None,
+                     statuses: Optional[list[str]] = None,
+                     title_q: Optional[str] = None) -> int:
+    c = conn()
+    where, args = _item_state_filter(library, statuses, title_q)
+    with _lock:
+        return int(c.execute("SELECT COUNT(*) FROM item_state" + where, args).fetchone()[0])
 
 
 # ---- Libraries --------------------------------------------------------------
@@ -698,27 +754,20 @@ def delete_library(name: str) -> dict:
     """
     c = conn()
     summary = {"items": 0, "bindings": 0}
-    with _lock:
-        # Find all folder paths attributed to this library.
-        rows = c.execute(
-            "SELECT folder_path FROM item_state WHERE library = ?", (name,)
-        ).fetchall()
-        folders = [r["folder_path"] for r in rows]
-        if folders:
-            placeholders = ",".join(["?"] * len(folders))
-            for table in (
-                "bindings",
-                "nfo_overrides",
-                "artwork_selections",
-                "episode_overrides",
-                "episode_file_overrides",
-            ):
-                cur = c.execute(
-                    f"DELETE FROM {table} WHERE folder_path IN ({placeholders})",
-                    folders,
-                )
-                if table == "bindings":
-                    summary["bindings"] = cur.rowcount
+    with transaction():
+        # A subquery avoids SQLite's parameter limit for large libraries.
+        for table in (
+            "bindings", "nfo_overrides", "artwork_selections", "episode_overrides",
+            "episode_file_overrides", "active_artwork", "custom_artwork", "custom_tags", "watcher_review",
+        ):
+            cur = c.execute(
+                f"DELETE FROM {table} WHERE folder_path IN (SELECT folder_path FROM item_state WHERE library = ?)",
+                (name,),
+            )
+            if table == "bindings":
+                summary["bindings"] = cur.rowcount
+        c.execute("DELETE FROM watcher_review WHERE library = ?", (name,))
+        c.execute("DELETE FROM schedules WHERE library = ?", (name,))
         cur = c.execute("DELETE FROM item_state WHERE library = ?", (name,))
         summary["items"] = cur.rowcount
         c.execute("DELETE FROM libraries WHERE name = ?", (name,))
@@ -893,7 +942,7 @@ def rename_episode_file_override(folder_path: str,
     if old_file_path == new_file_path:
         return
     c = conn()
-    with _lock:
+    with transaction():
         c.execute(
             "DELETE FROM episode_file_overrides WHERE folder_path = ? AND file_path = ?",
             (folder_path, new_file_path),
@@ -966,7 +1015,7 @@ def bulk_set_nfo_overrides(folder_path: str,
     """Replace all overrides for a folder with the given map. Used by sidecar restore."""
     c = conn()
     now = int(time.time())
-    with _lock:
+    with transaction():
         c.execute("DELETE FROM nfo_overrides WHERE folder_path = ?", (folder_path,))
         for scope, fields in (overrides or {}).items():
             if not isinstance(fields, dict):
@@ -1077,7 +1126,7 @@ def bulk_set_custom_tags(folder_path: str, tags: list[str]) -> None:
     c = conn()
     now = int(time.time())
     seen: set[str] = set()
-    with _lock:
+    with transaction():
         c.execute("DELETE FROM custom_tags WHERE folder_path = ?", (folder_path,))
         for raw in tags or []:
             name = str(raw or "").strip()
@@ -1132,11 +1181,7 @@ def update_schedule(sched_id: int, *, library: Optional[str] = None,
     c = conn()
     fields: list[str] = []
     args: list[Any] = []
-    if library is not None or library is None:
-        # library may be intentionally set to NULL (all-libraries). Distinguish
-        # "no change" by passing the sentinel `__unset__` instead of None.
-        pass
-    # Build dynamic SET clause; treat None as "no change".
+    # None leaves the library unchanged; an empty string selects all libraries.
     if library is not None:
         fields.append("library = ?")
         args.append(library if library != "" else None)

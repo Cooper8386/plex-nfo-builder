@@ -6,6 +6,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote
 
 from loguru import logger
 
@@ -16,14 +17,28 @@ _initialized = False
 
 # Redact the API token from uvicorn's access log, which otherwise records the
 # full request line including the ``api_token`` query param used by <img> loads.
-_TOKEN_QS = re.compile(r"(api_token=)[^&\s\"]+", re.IGNORECASE)
+_TOKEN_QS = re.compile(r"([\w%.-]+)=([^&\s\"']+)")
+_SECRET_KEYS = {"api_token", "api_key", "apikey", "x-plex-token", "token", "pin"}
+
+
+def redact_tokens(message: str) -> str:
+    return _TOKEN_QS.sub(
+        lambda match: f"{match[1]}=REDACTED" if unquote(match[1]).lower() in _SECRET_KEYS else match[0],
+        message,
+    )
+
+
+def _redact_log_record(record) -> None:
+    record["message"] = redact_tokens(record["message"])
 
 
 class _RedactTokenFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact_tokens(record.msg)
         if isinstance(record.args, tuple):
             record.args = tuple(
-                _TOKEN_QS.sub(r"\1REDACTED", a) if isinstance(a, str) else a
+                redact_tokens(a) if isinstance(a, str) else a
                 for a in record.args
             )
         return True
@@ -35,6 +50,7 @@ def setup_logging() -> None:
         return
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     logger.remove()
+    logger.configure(patcher=_redact_log_record)
     fmt = (
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
         "<level>{level:<8}</level> | "

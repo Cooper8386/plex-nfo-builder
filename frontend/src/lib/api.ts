@@ -21,6 +21,16 @@ export type Library = {
 
 export type ArtworkProvider = "tvdb" | "tmdb" | "fanart" | "custom";
 
+export type MatchResult = {
+  provider?: "tvdb" | "tmdb";
+  id?: string | number | null;
+  tvdb_id?: string | number | null;
+  name: string | null;
+  year?: number | null;
+  image_url?: string | null;
+  overview?: string | null;
+};
+
 export type ArtworkCandidate = {
   id: number | string | null;
   url: string;
@@ -178,7 +188,14 @@ export type Item = {
   year: number | null;
   external_id: string | null;
   provider: string | null;
-  nfo_status: "none" | "partial" | "complete" | "stale" | "foreign" | "mixed" | null;
+  nfo_status:
+    | "none"
+    | "partial"
+    | "complete"
+    | "stale"
+    | "foreign"
+    | "mixed"
+    | null;
   episode_count_local: number | null;
   episode_count_tvdb: number | null;
   poster_path: string | null;
@@ -193,15 +210,51 @@ export type Item = {
   season_count_local?: number | null;
 };
 
-const J = <T,>(p: Promise<Response>): Promise<T> =>
+export type BuildJob = {
+  id: string;
+  kind: string;
+  folder: string;
+  status: string;
+  progress: number;
+  total: number;
+  started_at: number | null;
+  finished_at: number | null;
+  messages: string[];
+};
+
+const J = <T>(p: Promise<Response>): Promise<T> =>
   p.then(async (r) => {
-    if (!r.ok) throw new Error(await r.text());
+    if (!r.ok) {
+      const text = await r.text();
+      let message = text;
+      try {
+        const body: { detail?: unknown } = JSON.parse(text);
+        if (typeof body.detail === "string") message = body.detail;
+        else if (Array.isArray(body.detail))
+          message = body.detail
+            .map(
+              (issue: { msg?: string; loc?: string[] }) =>
+                `${issue.loc?.slice(1).join(".") || "Input"}: ${issue.msg ?? "Invalid value"}`,
+            )
+            .join("; ");
+      } catch {
+        /* Non-JSON responses retain the server message. */
+      }
+      throw new Error(message || `Request failed (${r.status})`);
+    }
     return r.json() as Promise<T>;
   });
 
 export const api = {
-  health: () => J<{ ok: boolean; tvdb_configured: boolean; version?: string }>(fetch("/api/health")),
-  version: () => J<{ version: string; name: string; repo: string }>(fetch("/api/version")),
+  health: () =>
+    J<{
+      ok: boolean;
+      tvdb_configured: boolean;
+      plex_configured?: boolean;
+      version?: string;
+    }>(fetch("/api/health")),
+  version: () =>
+    J<{ version: string; name: string; repo: string }>(fetch("/api/version")),
   settings: {
     get: () => J<any>(fetch("/api/settings")),
     set: (body: any) =>
@@ -210,33 +263,46 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
   },
   browse: (path?: string) =>
     J<{ path: string; parent: string | null; items: any[] }>(
-      fetch(`/api/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`)
+      fetch(`/api/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
     ),
   libraries: {
     list: () => J<{ libraries: Library[] }>(fetch("/api/libraries")),
-    detect: () => J<{ libraries: any[] }>(fetch("/api/libraries/detect", { method: "POST" })),
+    detect: () =>
+      J<{ libraries: any[] }>(
+        fetch("/api/libraries/detect", { method: "POST" }),
+      ),
     update: (name: string, body: any) =>
       J(
         fetch(`/api/libraries/${encodeURIComponent(name)}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     scan: (name: string) =>
-      J(fetch(`/api/libraries/${encodeURIComponent(name)}/scan`, { method: "POST" })),
+      J(
+        fetch(`/api/libraries/${encodeURIComponent(name)}/scan`, {
+          method: "POST",
+        }),
+      ),
     remove: (name: string) =>
       J<{ ok: true; items: number; bindings: number }>(
-        fetch(`/api/libraries/${encodeURIComponent(name)}`, { method: "DELETE" })
+        fetch(`/api/libraries/${encodeURIComponent(name)}`, {
+          method: "DELETE",
+        }),
       ),
     wipeNfo: (
       name: string,
-      body: { dry_run?: boolean; keep_sidecar?: boolean; rescan?: boolean } = {}
+      body: {
+        dry_run?: boolean;
+        keep_sidecar?: boolean;
+        rescan?: boolean;
+      } = {},
     ) =>
       J<{
         ok: true;
@@ -254,7 +320,7 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ library: name, ...body }),
-        })
+        }),
       ),
     wipeSidecars: (name: string, body: { dry_run?: boolean } = {}) =>
       J<{
@@ -270,7 +336,7 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ library: name, ...body }),
-        })
+        }),
       ),
     /**
      * v0.11.10 — sweep orphaned NFO + thumb sidecars left behind by a
@@ -278,7 +344,7 @@ export const api = {
      */
     sweepOrphans: (
       name: string,
-      body: { dry_run?: boolean; rescan?: boolean } = {}
+      body: { dry_run?: boolean; rescan?: boolean } = {},
     ) =>
       J<{
         ok: true;
@@ -300,11 +366,11 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ library: name, ...body }),
-        })
+        }),
       ),
   },
   items: {
-    list: (params: {
+    list: async (params: {
       library?: string;
       q?: string;
       status?: string;
@@ -315,11 +381,23 @@ export const api = {
       if (params.q) qs.set("q", params.q);
       if (params.status) qs.set("status", params.status);
       if (params.hide_organized) qs.set("hide_organized", "1");
-      return J<{ items: Item[] }>(fetch(`/api/items?${qs}`));
+      const items: Item[] = [];
+      let total: number;
+      do {
+        qs.set("offset", String(items.length));
+        const page = await J<{ items: Item[]; total?: number }>(
+          fetch(`/api/items?${qs}`),
+        );
+        items.push(...page.items);
+        total = page.total ?? items.length;
+        if (!page.items.length) break;
+      } while (items.length < total);
+      return { items };
     },
     detail: (path: string) =>
       J<{
         path: string;
+        library_kind: string | null;
         binding: any;
         state: any;
         artwork_files: string[];
@@ -330,7 +408,7 @@ export const api = {
       }>(fetch(`/api/items/detail?path=${encodeURIComponent(path)}`)),
     nfoExplain: (path: string) =>
       J<NfoExplain>(
-        fetch(`/api/items/nfo-explain?path=${encodeURIComponent(path)}`)
+        fetch(`/api/items/nfo-explain?path=${encodeURIComponent(path)}`),
       ),
     tags: {
       add: (folder_path: string, tag: string) =>
@@ -339,14 +417,14 @@ export const api = {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ folder_path, tag }),
-          })
+          }),
         ),
       remove: (folder_path: string, tag: string) =>
         J<{ ok: true; removed: number; tags: string[] }>(
           fetch(
             `/api/items/tags?folder_path=${encodeURIComponent(folder_path)}&tag=${encodeURIComponent(tag)}`,
-            { method: "DELETE" }
-          )
+            { method: "DELETE" },
+          ),
         ),
     },
     remove: (folder_path: string) =>
@@ -355,7 +433,7 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ folder_path }),
-        })
+        }),
       ),
     clean: (body: {
       folder_path: string;
@@ -375,7 +453,7 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     prune: (body: { library?: string; dry_run?: boolean }) =>
       J<{
@@ -383,13 +461,17 @@ export const api = {
         checked: number;
         missing: number;
         removed: number;
-        items: { folder_path: string; library: string | null; title: string | null }[];
+        items: {
+          folder_path: string;
+          library: string | null;
+          title: string | null;
+        }[];
       }>(
         fetch("/api/items/prune", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     /**
      * v0.11.5 — forget tracked folders that exist on disk but contain no
@@ -431,7 +513,7 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     pruneEmpty: (body: {
       library?: string;
@@ -460,7 +542,7 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
   },
   match: {
@@ -469,13 +551,15 @@ export const api = {
       type: "series" | "movie",
       year?: number,
       language?: string,
-      provider?: "tvdb" | "tmdb"
+      provider?: "tvdb" | "tmdb",
     ) => {
       const qs = new URLSearchParams({ q, type });
       if (year) qs.set("year", String(year));
       if (language) qs.set("language", language);
       if (provider) qs.set("provider", provider);
-      return J<{ results: any[]; provider: string }>(fetch(`/api/match/search?${qs}`));
+      return J<{ results: MatchResult[]; provider: "tvdb" | "tmdb" }>(
+        fetch(`/api/match/search?${qs}`),
+      );
     },
     bind: (body: any) =>
       J(
@@ -483,7 +567,7 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     setSource: (body: {
       folder_path: string;
@@ -499,7 +583,7 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     autoBulk: (body: {
       folder_paths?: string[];
@@ -512,28 +596,37 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     setSecondary: (body: {
       folder_path: string;
       provider: "tvdb" | "tmdb" | null;
       external_id: string | null;
     }) =>
-      J<{ ok: true; secondary_provider: string | null; secondary_external_id: string | null }>(
+      J<{
+        ok: true;
+        secondary_provider: string | null;
+        secondary_external_id: string | null;
+      }>(
         fetch("/api/match/secondary", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
   },
-  build: (folder_path: string, kind?: "series" | "movie", force = false, language?: string) =>
+  build: (
+    folder_path: string,
+    kind?: "series" | "movie",
+    force = false,
+    language?: string,
+  ) =>
     J<{ ok: true; job: string }>(
       fetch("/api/build", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ folder_path, kind, force, language }),
-      })
+      }),
     ),
   buildBulk: (body: {
     folder_paths?: string[];
@@ -547,10 +640,16 @@ export const api = {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
-      })
+      }),
     ),
   jobs: {
-    list: () => J<{ jobs: any[] }>(fetch("/api/jobs")),
+    list: () => J<{ jobs: BuildJob[] }>(fetch("/api/jobs")),
+    get: async (id: string): Promise<BuildJob | null> => {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(id)}`);
+      return response.status === 404
+        ? null
+        : J<BuildJob>(Promise.resolve(response));
+    },
   },
   artwork: {
     fileUrl: (path: string) =>
@@ -560,20 +659,29 @@ export const api = {
         path: string;
         kind: string;
         slots: Record<string, ArtworkCandidate[]>;
-        selections: Record<string, { url: string; language: string | null; score: number | null }>;
+        selections: Record<
+          string,
+          { url: string; language: string | null; score: number | null }
+        >;
         binding_provider?: string;
       }>(
         fetch(
-          `/api/artwork/candidates?path=${encodeURIComponent(path)}&kind=${kind}`
-        )
+          `/api/artwork/candidates?path=${encodeURIComponent(path)}&kind=${kind}`,
+        ),
       ),
-    select: (body: { folder_path: string; slot: string; url: string; language?: string; score?: number }) =>
+    select: (body: {
+      folder_path: string;
+      slot: string;
+      url: string;
+      language?: string;
+      score?: number;
+    }) =>
       J<{ ok: true }>(
         fetch("/api/artwork/select", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     clear: (body: { folder_path: string; slot?: string }) =>
       J<{ ok: true; cleared: number }>(
@@ -581,16 +689,21 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     upload: (folder_path: string, file: File, slot?: string) => {
       const fd = new FormData();
       fd.append("folder_path", folder_path);
       if (slot) fd.append("slot", slot);
       fd.append("file", file);
-      return J<{ ok: true; id: string; url: string; slot: string | null; origin: string; size: number }>(
-        fetch("/api/artwork/upload", { method: "POST", body: fd })
-      );
+      return J<{
+        ok: true;
+        id: string;
+        url: string;
+        slot: string | null;
+        origin: string;
+        size: number;
+      }>(fetch("/api/artwork/upload", { method: "POST", body: fd }));
     },
     addUrl: (body: { folder_path: string; url: string; slot?: string }) =>
       J<{ ok: true; id: string; url: string; slot: string | null }>(
@@ -598,15 +711,19 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     deleteCustom: (id: string) =>
       J<{ ok: true; deleted: number }>(
-        fetch(`/api/artwork/custom/${encodeURIComponent(id)}`, { method: "DELETE" })
+        fetch(`/api/artwork/custom/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+        }),
       ),
     listCustom: (folder_path: string) =>
       J<{ items: any[] }>(
-        fetch(`/api/artwork/custom?folder_path=${encodeURIComponent(folder_path)}`)
+        fetch(
+          `/api/artwork/custom?folder_path=${encodeURIComponent(folder_path)}`,
+        ),
       ),
     languages: () =>
       J<{
@@ -633,7 +750,7 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     /** v0.10.0 — per-file override anchored to the actual file path. */
     overrideFile: (body: {
@@ -649,7 +766,7 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     /** v0.11.9 — per-episode thumbnail picker (TMDB ships multiple stills). */
     thumbCandidates: (path: string, season: number, episode: number) =>
@@ -704,7 +821,7 @@ export const api = {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(body),
-          })
+          }),
         ),
       apply: (body: {
         folder_path: string;
@@ -713,6 +830,7 @@ export const api = {
         anime_template?: string;
         series_type?: "auto" | "standard" | "daily" | "anime";
         only_src?: string[];
+        expected_plan?: { src: string; dst: string }[];
         release_group?: string;
       }) =>
         J<{
@@ -725,22 +843,27 @@ export const api = {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(body),
-          })
+          }),
         ),
     },
   },
   overrides: {
     get: (path: string) =>
       J<{ path: string; overrides: Record<string, Record<string, string>> }>(
-        fetch(`/api/overrides?path=${encodeURIComponent(path)}`)
+        fetch(`/api/overrides?path=${encodeURIComponent(path)}`),
       ),
-    set: (body: { folder_path: string; scope: string; field: string; value: string }) =>
+    set: (body: {
+      folder_path: string;
+      scope: string;
+      field: string;
+      value: string;
+    }) =>
       J<{ ok: true }>(
         fetch("/api/overrides", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     clear: (body: { folder_path: string; scope?: string; field?: string }) =>
       J<{ ok: true; cleared: number }>(
@@ -748,35 +871,47 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
   },
   schedules: {
-    list: () =>
-      J<{ schedules: Schedule[] }>(fetch("/api/schedules")),
-    create: (body: { library?: string | null; cron: string; action: ScheduleAction; enabled?: boolean }) =>
+    list: () => J<{ schedules: Schedule[] }>(fetch("/api/schedules")),
+    create: (body: {
+      library?: string | null;
+      cron: string;
+      action: ScheduleAction;
+      enabled?: boolean;
+    }) =>
       J<{ ok: true; schedule: Schedule }>(
         fetch("/api/schedules", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
-    update: (id: number, body: { library?: string | null; cron?: string; action?: ScheduleAction; enabled?: boolean }) =>
+    update: (
+      id: number,
+      body: {
+        library?: string | null;
+        cron?: string;
+        action?: ScheduleAction;
+        enabled?: boolean;
+      },
+    ) =>
       J<{ ok: true; schedule: Schedule }>(
         fetch(`/api/schedules/${id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }),
       ),
     remove: (id: number) =>
       J<{ ok: true; deleted: number }>(
-        fetch(`/api/schedules/${id}`, { method: "DELETE" })
+        fetch(`/api/schedules/${id}`, { method: "DELETE" }),
       ),
     run: (id: number) =>
       J<{ ok: true; started: boolean }>(
-        fetch(`/api/schedules/${id}/run`, { method: "POST" })
+        fetch(`/api/schedules/${id}/run`, { method: "POST" }),
       ),
   },
   logs: () => J<{ lines: string[] }>(fetch("/api/logs/app?tail=400")),
@@ -788,11 +923,11 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ enabled }),
-        })
+        }),
       ),
     events: (limit = 200) =>
       J<{ events: WatcherEvent[] }>(
-        fetch(`/api/watcher/events?limit=${limit}`)
+        fetch(`/api/watcher/events?limit=${limit}`),
       ),
     review: {
       list: (library?: string) =>
@@ -800,8 +935,8 @@ export const api = {
           fetch(
             `/api/watcher/review${
               library ? `?library=${encodeURIComponent(library)}` : ""
-            }`
-          )
+            }`,
+          ),
         ),
       retry: (folder_path: string) =>
         J<{ ok: true; library: string; folder_path: string }>(
@@ -809,7 +944,7 @@ export const api = {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ folder_path }),
-          })
+          }),
         ),
       resolve: (folder_path: string) =>
         J<{ ok: true; removed: number }>(
@@ -817,7 +952,7 @@ export const api = {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ folder_path }),
-          })
+          }),
         ),
       clear: (library?: string) =>
         J<{ ok: true; cleared: number }>(
@@ -825,14 +960,16 @@ export const api = {
             `/api/watcher/review${
               library ? `?library=${encodeURIComponent(library)}` : ""
             }`,
-            { method: "DELETE" }
-          )
+            { method: "DELETE" },
+          ),
         ),
     },
   },
   tvdb: {
-    series: (id: string) => J<any>(fetch(`/api/tvdb/series/${encodeURIComponent(id)}`)),
-    movie: (id: string) => J<any>(fetch(`/api/tvdb/movie/${encodeURIComponent(id)}`)),
+    series: (id: string) =>
+      J<any>(fetch(`/api/tvdb/series/${encodeURIComponent(id)}`)),
+    movie: (id: string) =>
+      J<any>(fetch(`/api/tvdb/movie/${encodeURIComponent(id)}`)),
     clearCache: () => J(fetch("/api/tvdb/cache/clear", { method: "POST" })),
   },
   plex: {
@@ -840,13 +977,29 @@ export const api = {
       J<{
         ok: boolean;
         error?: string;
-        identity?: { friendly_name?: string; version?: string; machine_identifier?: string };
-        sections?: { id: string; key: string; title: string; type: string; locations: string[] }[];
+        identity?: {
+          friendly_name?: string;
+          version?: string;
+          machine_identifier?: string;
+        };
+        sections?: {
+          id: string;
+          key: string;
+          title: string;
+          type: string;
+          locations: string[];
+        }[];
       }>(fetch("/api/plex/test")),
     sections: () =>
-      J<{ sections: { id: string; key: string; title: string; type: string; locations: string[] }[] }>(
-        fetch("/api/plex/sections")
-      ),
+      J<{
+        sections: {
+          id: string;
+          key: string;
+          title: string;
+          type: string;
+          locations: string[];
+        }[];
+      }>(fetch("/api/plex/sections")),
     refresh: (path: string, delay_seconds = 0) =>
       J<{
         requested_local_path: string;
@@ -863,7 +1016,7 @@ export const api = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ path, delay_seconds }),
-        })
+        }),
       ),
   },
 };

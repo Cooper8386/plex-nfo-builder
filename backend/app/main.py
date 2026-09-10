@@ -16,16 +16,15 @@ from loguru import logger
 
 from . import __version__
 from . import db
-from .config import CONFIG_DIR, MEDIA_ROOT, env
+from .config import CONFIG_DIR, MEDIA_ROOT, SettingsError, env
 from .logging_setup import setup_logging
 from .routes.api import router as api_router
+from .routes.settings import router as settings_router
 from .services import scanner
+from .services import builder
+from .services.async_io import run_in_thread
 from .services.scheduler import scheduler
 from .services.watcher import watcher
-
-setup_logging()
-db.conn()  # init sqlite
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,6 +37,8 @@ async def lifespan(app: FastAPI):
     fresh library set.
     """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    setup_logging()
+    await run_in_thread(db.conn)
     logger.info(
         "plex-nfo-builder v{} starting (media={}, config={})",
         __version__, MEDIA_ROOT, CONFIG_DIR,
@@ -47,7 +48,7 @@ async def lifespan(app: FastAPI):
 
     async def _detect_libraries_bg() -> None:
         try:
-            libs = await asyncio.to_thread(scanner.detect_libraries)
+            libs = await run_in_thread(scanner.detect_libraries)
             logger.info("Detected libraries: {}", [lib["name"] for lib in libs])
         except Exception as e:
             logger.warning("Initial library detection failed: {}", e)
@@ -57,7 +58,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("Watcher failed to start: {}", e)
 
-    asyncio.create_task(_detect_libraries_bg())
+    detection = asyncio.create_task(_detect_libraries_bg())
 
     try:
         scheduler.start()
@@ -67,16 +68,26 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Detection must not start a fresh watcher after shutdown has begun.
+        detection.cancel()
+        await asyncio.gather(detection, return_exceptions=True)
         # Stop the watcher first so it doesn't keep spawning build jobs
         # after the rest of the app has begun tearing down.
         try:
-            watcher.stop()
+            await watcher.aclose()
         except Exception as e:
             logger.warning("Watcher failed to stop cleanly: {}", e)
         try:
             await scheduler.stop()
         except Exception as e:
             logger.warning("Scheduler failed to stop cleanly: {}", e)
+        await builder.shutdown_builds()
+        from .services import tvdb, tmdb, fanart
+        try:
+            for provider in (tvdb, tmdb, fanart):
+                await provider.close_client()
+        finally:
+            db.close()
 
 
 app = FastAPI(title="Plex NFO Builder", version=__version__, lifespan=lifespan)
@@ -94,20 +105,13 @@ if not _API_TOKEN:
 # Host header allowlist (DNS-rebinding defense). Outermost so a spoofed Host
 # is rejected before anything else runs. Empty allowlist => accept any host.
 _trusted = [h.strip() for h in env.trusted_hosts.split(",") if h.strip()]
-if _trusted:
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_trusted)
 
 # CORS is opt-in and off by default: the bundled SPA is same-origin. Only
 # configured origins are allowed — never a wildcard on these file-mutating
 # routes.
 _origins = [o.strip() for o in env.cors_allow_origins.split(",") if o.strip()]
-if _origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_origins,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+if "*" in _origins:
+    raise ValueError("CORS_ALLOW_ORIGINS must list explicit origins, not '*'")
 
 
 def _request_token(request: Request) -> Optional[str]:
@@ -119,7 +123,8 @@ def _request_token(request: Request) -> Optional[str]:
     auth = request.headers.get("authorization")
     if auth and auth[:7].lower() == "bearer ":
         return auth[7:].strip()
-    return request.query_params.get("api_token")
+    # Image/download links need query tokens; mutations require a header.
+    return request.query_params.get("api_token") if request.method in {"GET", "HEAD"} else None
 
 
 # The auto-generated schema/docs leak the full endpoint surface, so they're
@@ -147,10 +152,29 @@ async def _require_token(request: Request, call_next):
                 provided.encode("utf-8", "ignore"), _API_TOKEN.encode("utf-8")
             ):
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-    return await call_next(request)
+    response = await call_next(request)
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    if path.startswith("/api/") or path in _PROTECTED_EXACT:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+# CORS must wrap auth so browsers can read 401/503 responses too. TrustedHost
+# is outermost, rejecting spoofed Host headers before either middleware.
+if _origins:
+    app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_methods=["*"], allow_headers=["*"])
+if _trusted:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_trusted)
+
+
+@app.exception_handler(SettingsError)
+async def settings_unavailable(request: Request, error: SettingsError):
+    return JSONResponse({"detail": str(error)}, status_code=503)
 
 
 app.include_router(api_router)
+app.include_router(settings_router)
 
 
 # Serve the built frontend if present

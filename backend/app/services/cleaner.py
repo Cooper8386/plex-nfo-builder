@@ -22,12 +22,12 @@ What is NEVER removed:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from typing import Iterator
 
 from loguru import logger
 
 from .artwork import is_season_poster_filename
-from .scanner import detect_season_dirs, is_video
+from .parser import detect_season_dirs, is_video, is_within_folder
 
 
 # Top-level artwork filenames Plex / nfo-builder writes.
@@ -69,81 +69,51 @@ def clean_folder(folder: Path, *, keep_sidecar: bool = True) -> dict:
     if not folder.is_dir():
         raise FileNotFoundError(str(folder))
 
-    summary = {
+    summary: dict = {
         "nfo_deleted": 0,
         "artwork_deleted": 0,
         "sidecar_deleted": 0,
         "files": [],  # list[str]
+        "failed": [],
     }
 
-    def _remove(p: Path, kind: str) -> None:
+    for p, kind in _clean_candidates(folder, keep_sidecar=keep_sidecar):
         try:
+            if not is_within_folder(p.parent, folder):
+                raise ValueError("cleanup target outside media folder")
             p.unlink()
-            summary[f"{kind}_deleted"] += 1  # type: ignore[operator]
-            summary["files"].append(str(p.relative_to(folder)))  # type: ignore[attr-defined]
+            summary[f"{kind}_deleted"] += 1
+            summary["files"].append(str(p.relative_to(folder)))
         except FileNotFoundError:
             pass
-        except Exception as e:
+        except (OSError, ValueError) as e:
+            summary["failed"].append({"path": str(p.relative_to(folder)), "reason": str(e)})
             logger.warning("clean: could not delete {}: {}", p, e)
-
-    # 1. Folder-level NFOs (tvshow.nfo + movie .nfo files) and movie thumbs.
-    for f in folder.iterdir():
-        if not f.is_file():
-            continue
-        if is_video(f):
-            continue
-        if f.suffix.lower() == ".nfo":
-            _remove(f, "nfo")
-        elif f.name in SHOW_ARTWORK:
-            _remove(f, "artwork")
-        elif is_season_poster_filename(f.name):
-            _remove(f, "artwork")
-        elif _is_thumb_filename(f.name):
-            _remove(f, "artwork")
-        elif keep_sidecar is False and f.name == ".plex-nfo-builder.json":
-            _remove(f, "sidecar")
-
-    # 2. Season folders: episode .nfo + season.nfo + season-level artwork
-    #    + per-episode ``<stem>-thumb.{jpg,jpeg,png}`` thumbnails.
-    for sd in detect_season_dirs(folder):
-        for f in sd.iterdir():
-            if not f.is_file():
-                continue
-            if is_video(f):
-                continue
-            if f.suffix.lower() == ".nfo":
-                _remove(f, "nfo")
-            elif f.name.lower() in SEASON_ARTWORK:
-                _remove(f, "artwork")
-            elif _is_thumb_filename(f.name):
-                _remove(f, "artwork")
 
     return summary
 
 
-def preview_clean(folder: Path) -> list[str]:
+def _clean_candidates(folder: Path, *, keep_sidecar: bool = True) -> Iterator[tuple[Path, str]]:
+    """Use the same file classification for previews and execution."""
+    for directory in [folder, *detect_season_dirs(folder)]:
+        artwork = SHOW_ARTWORK if directory == folder else SEASON_ARTWORK
+        for entry in directory.iterdir():
+            if not entry.is_file() or is_video(entry):
+                continue
+            if entry.suffix.lower() == ".nfo":
+                yield entry, "nfo"
+            elif (entry.name.lower() in artwork or _is_thumb_filename(entry.name)
+                  or (directory == folder and is_season_poster_filename(entry.name))):
+                yield entry, "artwork"
+            elif not keep_sidecar and directory == folder and entry.name == ".plex-nfo-builder.json":
+                yield entry, "sidecar"
+
+
+def preview_clean(folder: Path, *, keep_sidecar: bool = True) -> list[str]:
     """Return relative paths that would be deleted by clean_folder()."""
     if not folder.is_dir():
         return []
-    out: list[str] = []
-    for f in folder.iterdir():
-        if not f.is_file() or is_video(f):
-            continue
-        if f.suffix.lower() == ".nfo" or f.name in SHOW_ARTWORK:
-            out.append(f.name)
-        elif is_season_poster_filename(f.name):
-            out.append(f.name)
-        elif _is_thumb_filename(f.name):
-            out.append(f.name)
-    for sd in detect_season_dirs(folder):
-        for f in sd.iterdir():
-            if not f.is_file() or is_video(f):
-                continue
-            if f.suffix.lower() == ".nfo" or f.name.lower() in SEASON_ARTWORK:
-                out.append(str(f.relative_to(folder)))
-            elif _is_thumb_filename(f.name):
-                out.append(str(f.relative_to(folder)))
-    return out
+    return [str(path.relative_to(folder)) for path, _ in _clean_candidates(folder, keep_sidecar=keep_sidecar)]
 
 
-__all__: Iterable[str] = ("clean_folder", "preview_clean")  # type: ignore[misc]
+__all__ = ("clean_folder", "preview_clean")

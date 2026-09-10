@@ -16,6 +16,7 @@ from loguru import logger
 
 from ..config import effective_fanart_credentials, get_user_settings
 from ..db import cache_get, cache_set
+from .provider_http import retry_delay
 
 API_BASE = "https://webservice.fanart.tv/v3"
 
@@ -72,7 +73,7 @@ class FanartClient:
             try:
                 r = await self._client.get(path, params=params)
             except httpx.HTTPError as e:
-                logger.warning("fanart GET {} attempt {} failed: {}", path, attempt + 1, e)
+                logger.warning("fanart GET {} attempt {} failed: {}", path, attempt + 1, type(e).__name__)
                 await asyncio.sleep(1.5 * (attempt + 1))
                 continue
             if r.status_code == 404:
@@ -81,16 +82,21 @@ class FanartClient:
                 cache_set(key, {}, ttl=min(ttl, 3600))
                 return {}
             if r.status_code == 429:
-                wait = int(r.headers.get("retry-after", "5"))
+                wait = retry_delay(r.headers.get("retry-after"))
                 await asyncio.sleep(wait)
                 continue
             if 500 <= r.status_code < 600:
-                logger.warning("fanart {} {}: {}", r.status_code, path, r.text[:200])
+                logger.warning("fanart {} {}", r.status_code, path)
                 await asyncio.sleep(1.5 * (attempt + 1))
                 continue
             if r.status_code != 200:
-                raise FanartError(f"fanart GET {path} failed {r.status_code}: {r.text[:200]}")
-            data = r.json()
+                raise FanartError(f"fanart GET {path} failed {r.status_code}:")
+            try:
+                data = r.json()
+            except ValueError as error:
+                raise FanartError("Provider returned invalid JSON") from error
+            if not isinstance(data, dict):
+                raise FanartError("Provider returned an unexpected response shape")
             if ttl != 0:
                 cache_set(key, data, ttl=ttl)
             return data
@@ -214,3 +220,11 @@ def normalise_movie_artwork(payload: dict) -> dict[str, list[dict]]:
     for k, lst in out.items():
         lst.sort(key=lambda c: -c["score"])
     return out
+
+
+async def close_client() -> None:
+    """Release the process client so the next lifespan can create a fresh one."""
+    global _singleton
+    client, _singleton = _singleton, None
+    if client is not None:
+        await client.aclose()

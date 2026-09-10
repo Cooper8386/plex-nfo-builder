@@ -61,12 +61,10 @@ def test_multi_episode():
     assert ep.end_episode == 3
 
 
-def test_multi_episode_prefixed_range_not_captured():
-    # NOTE: pins current behavior — Sonarr's prefixed-range "S01E02-E03" is not
-    # matched by EP_RE's single-char [-E] class; end_episode stays None.
-    # Known gap, tracked separately.
+def test_multi_episode_prefixed_range_is_captured():
+    # Sonarr's prefixed range keeps both episode numbers through a rename.
     ep = parse_episode_filename(Path("Show - S01E02-E03.mkv"))
-    assert (ep.episode, ep.end_episode) == (2, None)
+    assert (ep.episode, ep.end_episode) == (2, 3)
 
 
 def test_sxxexx_case_insensitive():

@@ -13,6 +13,10 @@ env/
 
 # --- Node / frontend -----------------------------------------------------
 node_modules/
+.npm-cache/
+.qa/
+frontend/test-results/
+frontend/playwright-report/
 frontend/dist/
 frontend/.vite/
 npm-debug.log*
@@ -28,6 +32,11 @@ logs/
 .env
 .env.local
 .env.*.local
+/.env.example
+/compose.yaml
+/compose.yml
+/docker-compose.yaml
+/docker-compose.yml
 
 # --- OS / editor ---------------------------------------------------------
 .DS_Store

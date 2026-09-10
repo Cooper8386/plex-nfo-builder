@@ -13,11 +13,11 @@ const qc = new QueryClient({
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={qc}>
-      <ConfirmProvider>
-        <AuthGate>
+      <AuthGate>
+        <ConfirmProvider>
           <App />
-        </AuthGate>
-      </ConfirmProvider>
+        </ConfirmProvider>
+      </AuthGate>
     </QueryClientProvider>
-  </React.StrictMode>
+  </React.StrictMode>,
 );

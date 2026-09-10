@@ -36,6 +36,7 @@ sweeper only removes sidecars whose paired media has already been deleted.
 from __future__ import annotations
 
 from pathlib import Path
+import os
 from typing import Iterable, Optional
 
 from loguru import logger
@@ -44,6 +45,8 @@ from .parser import (
     detect_season_dirs,
     folder_root_videos,
     list_season_episodes,
+    is_video,
+    is_within_folder,
 )
 
 
@@ -77,11 +80,26 @@ def _empty_summary() -> dict:
     }
 
 
+def orphan_kind(name: str, video_stems: set[str]) -> Optional[str]:
+    """One classifier shared by live sweeps, previews, and scanner counts."""
+    low = name.lower()
+    if low in {"tvshow.nfo", "season.nfo", "movie.nfo"}:
+        return None
+    if low.endswith(".nfo"):
+        return "nfo" if os.path.normcase(name[:-4]) not in video_stems else None
+    stem = _strip_thumb_suffix(name)
+    if stem is not None and os.path.normcase(stem) not in video_stems:
+        return "thumb"
+    return None
+
+
 def _record_remove(summary: dict, folder: Path, target: Path, kind: str,
                    *, dry_run: bool) -> None:
     """Register ``target`` as a removal in ``summary``. Performs the unlink
     when ``dry_run`` is False; otherwise just records what *would* be removed.
     """
+    if not is_within_folder(target.parent, folder):
+        return
     try:
         rel = str(target.relative_to(folder))
     except ValueError:
@@ -97,7 +115,7 @@ def _record_remove(summary: dict, folder: Path, target: Path, kind: str,
         target.unlink()
     except FileNotFoundError:
         return
-    except Exception as e:  # noqa: BLE001
+    except OSError as e:
         logger.warning("orphans: could not delete {}: {}", target, e)
         return
     summary["files"].append(rel)
@@ -121,30 +139,23 @@ def _sweep_directory(folder: Path, season_dir: Path,
         in ``video_stems``
     """
     try:
+        if not is_within_folder(season_dir, folder):
+            return
         entries = list(season_dir.iterdir())
     except (PermissionError, OSError) as e:
         logger.warning("orphans: cannot read {} ({}); skipping", season_dir, e)
         return
+    # A provider download may have landed since the caller enumerated videos.
+    video_stems = {os.path.normcase(s) for s in video_stems}
+    video_stems.update(os.path.normcase(f.stem) for f in entries if f.is_file() and is_video(f))
+    if not video_stems:
+        return
     for f in entries:
         if not f.is_file():
             continue
-        name = f.name
-        low = name.lower()
-        # Episode .nfo? — anything ending in .nfo, except season.nfo.
-        if low.endswith(".nfo"):
-            if low == "season.nfo":
-                continue
-            stem = f.stem  # filename without the trailing ".nfo"
-            if stem in video_stems:
-                continue
-            _record_remove(summary, folder, f, "nfo", dry_run=dry_run)
-            continue
-        # Episode thumbnail companion?
-        thumb_stem = _strip_thumb_suffix(name)
-        if thumb_stem is not None:
-            if thumb_stem in video_stems:
-                continue
-            _record_remove(summary, folder, f, "thumb", dry_run=dry_run)
+        kind = orphan_kind(f.name, video_stems)
+        if kind:
+            _record_remove(summary, folder, f, kind, dry_run=dry_run)
 
 
 def sweep_series_orphans(folder: Path, *, dry_run: bool = False) -> dict:
@@ -170,15 +181,9 @@ def sweep_series_orphans(folder: Path, *, dry_run: bool = False) -> dict:
 
     summary = _empty_summary()
     season_dirs = detect_season_dirs(folder)
-    if not season_dirs:
-        # Some series (anime, OVAs) keep their videos at the show root. Still
-        # honour that layout — the sweep should reach those companions too.
-        roots = folder_root_videos(folder)
-        if roots:
-            video_stems: set[str] = {p.stem for p in roots}
-            _sweep_directory(folder, folder, video_stems, summary,
-                             dry_run=dry_run)
-        return summary
+    roots = folder_root_videos(folder)
+    if roots:
+        _sweep_directory(folder, folder, {p.stem for p in roots}, summary, dry_run=dry_run)
 
     for sd in season_dirs:
         eps = list_season_episodes(sd)
@@ -228,40 +233,22 @@ def preview_movie_orphans(folder: Path) -> dict:
 
 
 def _count_directory_orphans(season_dir: Path, video_stems: set[str]) -> int:
+    if not video_stems:
+        return 0
     try:
         entries = list(season_dir.iterdir())
     except (PermissionError, OSError):
         return 0
-    count = 0
-    for f in entries:
-        if not f.is_file():
-            continue
-        name = f.name
-        low = name.lower()
-        if low.endswith(".nfo"):
-            if low == "season.nfo":
-                continue
-            if f.stem in video_stems:
-                continue
-            count += 1
-            continue
-        thumb_stem = _strip_thumb_suffix(name)
-        if thumb_stem is not None and thumb_stem not in video_stems:
-            count += 1
-    return count
+    stems = {os.path.normcase(s) for s in video_stems}
+    return sum(1 for f in entries if f.is_file() and orphan_kind(f.name, stems))
 
 
 def count_series_orphans(folder: Path) -> int:
     if not folder.is_dir():
         return 0
     season_dirs = detect_season_dirs(folder)
-    if not season_dirs:
-        roots = folder_root_videos(folder)
-        if not roots:
-            return 0
-        stems = {p.stem for p in roots}
-        return _count_directory_orphans(folder, stems)
-    total = 0
+    roots = folder_root_videos(folder)
+    total = _count_directory_orphans(folder, {p.stem for p in roots}) if roots else 0
     for sd in season_dirs:
         eps = list_season_episodes(sd)
         stems = {ep.path.stem for ep in eps}

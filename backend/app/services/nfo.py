@@ -11,6 +11,7 @@ serves as a robust fallback).
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from typing import Any, Optional
 from xml.dom import minidom
@@ -21,11 +22,14 @@ from .artwork import absolutize_tvdb_url, movie_image_urls, series_image_urls
 from .tmdb import image_url as _tmdb_image
 
 
+_INVALID_XML = re.compile(r"[^\x09\x0a\x0d\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
+
+
 def _el(parent: ET.Element, tag: str, text: Optional[Any] = None,
         attrib: Optional[dict] = None) -> ET.Element:
     e = ET.SubElement(parent, tag, attrib or {})
     if text is not None and text != "":
-        e.text = str(text)
+        e.text = _INVALID_XML.sub("", str(text))
     return e
 
 
@@ -59,11 +63,12 @@ def _pretty(root: ET.Element, provenance: dict) -> str:
     pretty = dom.toprettyxml(indent="  ", encoding="utf-8").decode("utf-8")
     body = pretty.split("?>", 1)[1].lstrip() if "?>" in pretty else pretty
     body_hash = "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
+    source_id = re.sub(r"-{2,}", "- -", _INVALID_XML.sub("", str(provenance.get("tvdb_id", ""))))
     header = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
         f"<!-- plex-nfo-builder version={__version__} "
         f"generated_at={int(time.time())} "
-        f"tvdb_id={provenance.get('tvdb_id', '')} "
+        f"tvdb_id={source_id} "
         f"content_hash={body_hash} -->\n"
     )
     return header + body

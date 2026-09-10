@@ -18,10 +18,10 @@ from typing import Iterable, Optional
 from urllib.parse import urlparse
 
 import httpx
-from loguru import logger
 
 from .. import db
 from ..config import get_user_settings
+from .artwork_download import download_image
 
 
 # TVDB serves artwork from a CDN host that's separate from the API host.
@@ -248,37 +248,10 @@ def best_artwork_url(artworks: Iterable[dict], type_id: int,
     return absolutize_tvdb_url(candidates[0].get("image") or candidates[0].get("url"))
 
 
-async def _download(client: httpx.AsyncClient, url: str, dest: Path,
-                    *, force: bool = False) -> bool:
-    """Download `url` to `dest`. Atomic via .part rename. Returns True on success.
-
-    As of v0.5.1 we always overwrite an existing file when this function runs —
-    the build pipeline now treats every build as a refresh of the on-disk
-    artwork. ``force`` is kept for API compatibility but is no longer required
-    to replace a stale image.
-    """
-    abs_url = absolutize_tvdb_url(url)
-    if not abs_url:
-        logger.debug("Skipping artwork with empty URL -> {}", dest)
-        return False
-    # Note: ``force`` is intentionally ignored. Re-running a build always
-    # replaces the on-disk artwork so users do not have to delete files first.
-    _ = force  # silence unused-arg linter
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        async with client.stream("GET", abs_url, timeout=60.0) as r:
-            if r.status_code != 200:
-                logger.warning("Artwork {} -> HTTP {}", abs_url, r.status_code)
-                return False
-            tmp = dest.with_suffix(dest.suffix + ".part")
-            with tmp.open("wb") as f:
-                async for chunk in r.aiter_bytes():
-                    f.write(chunk)
-            tmp.replace(dest)
-        return True
-    except Exception as e:
-        logger.warning("Artwork download failed for {}: {}", abs_url, e)
-        return False
+async def _download(client: httpx.AsyncClient, url: str, dest: Path, *, force: bool = False) -> bool:
+    """Resolve provider-relative paths and use the shared safe downloader."""
+    resolved = url if url.startswith("/api/artwork/custom/") else absolutize_tvdb_url(url)
+    return await download_image(client, resolved, dest) if resolved else False
 
 
 def _ext_from_url(url: str, default: str = ".jpg") -> str:
@@ -310,7 +283,7 @@ async def download_series_canonical(folder: Path, series: dict,
     """
     artworks_list = list(artworks or [])
     manifest: dict[str, str] = {}
-    async with httpx.AsyncClient(headers={"User-Agent": "plex-nfo-builder/0.3"}) as http:
+    async with httpx.AsyncClient(headers={"User-Agent": "plex-nfo-builder/0.3"}, trust_env=False) as http:
         tasks: list[asyncio.Task] = []
 
         async def _grab(url: Optional[str], dest: Path, key: str) -> None:
@@ -327,7 +300,7 @@ async def download_series_canonical(folder: Path, series: dict,
             sel = selections.get(slot)
             if sel and sel.get("url"):
                 return sel["url"]
-            return default_url
+            return (preferred_overrides or {}).get(slot) or default_url
 
         # Series poster
         poster_url = _pick(
@@ -443,7 +416,7 @@ async def download_movie_canonical(folder: Path, movie: dict,
     """
     artworks_list = list(artworks or [])
     manifest: dict[str, str] = {}
-    async with httpx.AsyncClient(headers={"User-Agent": "plex-nfo-builder/0.3"}) as http:
+    async with httpx.AsyncClient(headers={"User-Agent": "plex-nfo-builder/0.3"}, trust_env=False) as http:
         async def _grab(url: Optional[str], dest: Path, key: str) -> None:
             if not url:
                 return

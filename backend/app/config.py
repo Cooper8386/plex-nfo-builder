@@ -1,12 +1,13 @@
 """Application configuration via env vars and a JSON settings file in /config."""
 from __future__ import annotations
 
-import json
 import os
+import tempfile
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,6 +46,10 @@ class EnvSettings(BaseSettings):
     watcher_debounce_seconds: int = Field(default=30)
 
 
+class SettingsError(RuntimeError):
+    """Persisted settings cannot be read safely; never replace them with defaults."""
+
+
 class UserSettings(BaseModel):
     """User-editable settings persisted to /config/settings.json."""
 
@@ -57,7 +62,7 @@ class UserSettings(BaseModel):
     tvdb_pin: Optional[str] = None
     tmdb_api_key: Optional[str] = None  # overrides env
     fanart_api_key: Optional[str] = None  # overrides env
-    auto_match_threshold: int = 85
+    auto_match_threshold: int = Field(default=85, ge=0, le=100)
     # v0.5.0: alternate metadata + artwork sources
     metadata_source: str = "tvdb"   # tvdb | tmdb — primary source for matching/NFOs
     fanart_enabled: bool = True
@@ -68,8 +73,8 @@ class UserSettings(BaseModel):
     plex_url: Optional[str] = None
     plex_token: Optional[str] = None
     plex_auto_refresh: bool = False
-    plex_refresh_delay_seconds: int = 5
-    plex_path_mappings: List[dict] = []
+    plex_refresh_delay_seconds: int = Field(default=5, ge=0, le=600)
+    plex_path_mappings: List[dict[str, str]] = []
     # v0.11.0: Sonarr/Radarr-compatible file-rename templates.
     rename_episode_template: str = (
         "{Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} "
@@ -116,18 +121,37 @@ class UserSettings(BaseModel):
     watcher_enabled: Optional[bool] = None
     watcher_debounce_seconds: Optional[int] = None
 
+    @field_validator("plex_url")
+    @classmethod
+    def validate_plex_url(cls, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Plex URL must be HTTP(S), without embedded credentials")
+        return value.strip().rstrip("/")
+
     @classmethod
     def load(cls, path: Path) -> "UserSettings":
-        if path.exists():
-            try:
-                return cls(**json.loads(path.read_text()))
-            except Exception:
-                pass
-        return cls()
+        try:
+            return cls.model_validate_json(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return cls()
+        except (OSError, UnicodeError, ValidationError) as error:
+            raise SettingsError("Settings file is unreadable or invalid. Restore settings.json before saving changes.") from error
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.model_dump_json(indent=2))
+        descriptor, filename = tempfile.mkstemp(prefix=".settings.", suffix=".tmp", dir=path.parent)
+        temporary = Path(filename)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                output.write(self.model_dump_json(indent=2))
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 env = EnvSettings()

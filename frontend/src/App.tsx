@@ -1,14 +1,21 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+} from "react";
 import Sidebar from "./components/Sidebar";
 import Topbar from "./components/Topbar";
+import { useConfirm } from "./components/confirm";
 import LibraryView from "./views/LibraryView";
-import DetailView from "./views/DetailView";
-import SettingsView from "./views/SettingsView";
-import LogsView from "./views/LogsView";
-import JobsView from "./views/JobsView";
-import HelpView from "./views/HelpView";
-import WatcherView from "./views/WatcherView";
-import { api } from "./lib/api";
+const DetailView = lazy(() => import("./views/DetailView"));
+const SettingsView = lazy(() => import("./views/SettingsView"));
+const LogsView = lazy(() => import("./views/LogsView"));
+const JobsView = lazy(() => import("./views/JobsView"));
+const HelpView = lazy(() => import("./views/HelpView"));
+const WatcherView = lazy(() => import("./views/WatcherView"));
 
 export type ViewMode = "grid" | "list";
 export type Route =
@@ -22,23 +29,31 @@ export type Route =
   | { name: "help" };
 
 function parseLocation(): Route {
-  const path = window.location.pathname || "/";
-  const search = new URLSearchParams(window.location.search);
-  if (path.startsWith("/library/")) {
-    const lib = decodeURIComponent(path.slice("/library/".length).replace(/\/$/, ""));
-    if (lib) return { name: "library", library: lib };
+  try {
+    const path = window.location.pathname || "/";
+    const search = new URLSearchParams(window.location.search);
+    if (path.startsWith("/library/")) {
+      const lib = decodeURIComponent(
+        path.slice("/library/".length).replace(/\/$/, ""),
+      );
+      if (lib) return { name: "library", library: lib };
+    }
+    if (path.startsWith("/detail/")) {
+      const lib = decodeURIComponent(
+        path.slice("/detail/".length).replace(/\/$/, ""),
+      );
+      const folder = search.get("path") || "";
+      if (lib && folder) return { name: "detail", library: lib, path: folder };
+    }
+    if (path === "/jobs") return { name: "jobs" };
+    if (path === "/logs") return { name: "logs" };
+    if (path === "/watcher") return { name: "watcher" };
+    if (path === "/settings") return { name: "settings" };
+    if (path === "/help") return { name: "help" };
+    return { name: "home" };
+  } catch {
+    return { name: "home" };
   }
-  if (path.startsWith("/detail/")) {
-    const lib = decodeURIComponent(path.slice("/detail/".length).replace(/\/$/, ""));
-    const folder = search.get("path") || "";
-    if (lib && folder) return { name: "detail", library: lib, path: folder };
-  }
-  if (path === "/jobs") return { name: "jobs" };
-  if (path === "/logs") return { name: "logs" };
-  if (path === "/watcher") return { name: "watcher" };
-  if (path === "/settings") return { name: "settings" };
-  if (path === "/help") return { name: "help" };
-  return { name: "home" };
 }
 
 function routeToUrl(r: Route): string {
@@ -83,12 +98,34 @@ function scrollKeyFor(r: Route): string {
 const SCROLL_HISTORY_LIMIT = 10;
 
 export default function App() {
+  const confirm = useConfirm();
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const navigationPending = useRef(false);
+  const allowNavigation = useCallback(async () => {
+    if (!settingsDirty) return true;
+    if (navigationPending.current) return false;
+    navigationPending.current = true;
+    try {
+      return await confirm({
+        title: "Leave unsaved settings?",
+        message:
+          "Your settings changes have not been saved. Leave this page and discard them?",
+        confirmLabel: "Discard changes",
+        tone: "danger",
+      });
+    } finally {
+      navigationPending.current = false;
+    }
+  }, [settingsDirty, confirm]);
   const [route, setRouteState] = useState<Route>(() => parseLocation());
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [search, setSearch] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem("pnb.sidebarCollapsed") === "1";
+      return (
+        window.matchMedia("(max-width: 640px)").matches ||
+        localStorage.getItem("pnb.sidebarCollapsed") === "1"
+      );
     } catch {
       return false;
     }
@@ -146,18 +183,26 @@ export default function App() {
   // updating state — popstate fires after the URL has already changed, so we
   // rely on prevRouteRef for the "from" route.
   useEffect(() => {
-    const onPop = () => {
+    const onPop = async () => {
       captureScrollFor(prevRouteRef.current);
       const next = parseLocation();
+      if (!(await allowNavigation())) {
+        window.history.pushState({}, "", routeToUrl(prevRouteRef.current));
+        return;
+      }
+      setSettingsDirty(false);
       prevRouteRef.current = next;
       setRouteState(next);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [captureScrollFor]);
+  }, [captureScrollFor, allowNavigation]);
 
   const navigate = useCallback(
-    (r: Route, replace = false) => {
+    async (r: Route, replace = false) => {
+      if (routeToUrl(r) === routeToUrl(prevRouteRef.current)) return;
+      if (!(await allowNavigation())) return;
+      setSettingsDirty(false);
       // Snapshot the *current* scroll for the route we're leaving before we
       // change anything else.
       captureScrollFor(prevRouteRef.current);
@@ -169,20 +214,18 @@ export default function App() {
       prevRouteRef.current = r;
       setRouteState(r);
     },
-    [captureScrollFor]
+    [captureScrollFor, allowNavigation],
   );
-
-  // First-load: detect libraries, but don't replace the URL if we are already on one.
-  useEffect(() => {
-    api.libraries.detect().catch(() => {});
-  }, []);
 
   // Reset main scroll to top whenever we land on a route that has *no* saved
   // position (e.g. clicking into a detail view, jumping to settings). Library
   // restore is handled separately via onItemsReady so we wait for the grid to
   // mount before scrolling.
   useEffect(() => {
-    if (route.name === "library") return;
+    if (route.name === "library") {
+      if (mainRef.current) mainRef.current.scrollTop = 0;
+      return;
+    }
     const el = mainRef.current;
     if (!el) return;
     const saved = consumeScrollFor(route);
@@ -203,7 +246,11 @@ export default function App() {
   }, [route, consumeScrollFor]);
 
   const activeLibrary =
-    route.name === "library" ? route.library : route.name === "detail" ? route.library : null;
+    route.name === "library"
+      ? route.library
+      : route.name === "detail"
+        ? route.library
+        : null;
   const topbarRoute =
     route.name === "library" || route.name === "home" || route.name === "detail"
       ? "library"
@@ -211,14 +258,17 @@ export default function App() {
 
   return (
     <div className="h-full flex flex-col">
+      <a href="#main-content" className="skip-link">
+        Skip to content
+      </a>
       <Topbar
-        viewMode={viewMode}
-        setViewMode={setViewMode}
-        search={search}
-        setSearch={setSearch}
         onNav={(r) => {
           if (r === "library") {
-            navigate(activeLibrary ? { name: "library", library: activeLibrary } : { name: "home" });
+            navigate(
+              activeLibrary
+                ? { name: "library", library: activeLibrary }
+                : { name: "home" },
+            );
           } else if (r === "jobs") navigate({ name: "jobs" });
           else if (r === "logs") navigate({ name: "logs" });
           else if (r === "watcher") navigate({ name: "watcher" });
@@ -226,54 +276,80 @@ export default function App() {
           else if (r === "help") navigate({ name: "help" });
         }}
         route={topbarRoute}
-        showLibraryControls={route.name === "library" || route.name === "home"}
       />
-      <div className="flex flex-1 min-h-0">
+      <div className="relative flex flex-1 min-h-0">
         <Sidebar
           activeLibrary={activeLibrary}
-          onSelectLibrary={(l) => navigate(l ? { name: "library", library: l } : { name: "home" })}
+          onSelectLibrary={(l) => {
+            navigate(l ? { name: "library", library: l } : { name: "home" });
+            setSearch("");
+            if (window.matchMedia("(max-width: 640px)").matches)
+              setSidebarCollapsed(true);
+          }}
           collapsed={sidebarCollapsed}
           onToggle={toggleSidebar}
         />
-        <main ref={mainRef} className="flex-1 min-h-0 overflow-auto">
-          {(route.name === "library" || route.name === "home") && (
-            <LibraryView
-              library={route.name === "library" ? route.library : null}
-              viewMode={viewMode}
-              search={search}
-              onOpenDetail={(p) =>
-                navigate({
-                  name: "detail",
-                  library: route.name === "library" ? route.library : "",
-                  path: p,
-                })
-              }
-              onItemsReady={onLibraryItemsReady}
-            />
-          )}
-          {route.name === "detail" && (
-            <DetailView
-              path={route.path}
-              onBack={() =>
-                navigate(
-                  route.library
-                    ? { name: "library", library: route.library }
-                    : { name: "home" }
-                )
-              }
-            />
-          )}
-          {route.name === "settings" && <SettingsView />}
-          {route.name === "logs" && <LogsView />}
-          {route.name === "jobs" && <JobsView />}
-          {route.name === "watcher" && (
-            <WatcherView
-              onOpenDetail={(library, path) =>
-                navigate({ name: "detail", library, path })
-              }
-            />
-          )}
-          {route.name === "help" && <HelpView />}
+        <main
+          id="main-content"
+          tabIndex={-1}
+          ref={mainRef}
+          className="flex-1 min-w-0 min-h-0 overflow-auto"
+        >
+          <Suspense
+            fallback={
+              <div className="page text-slate-400" role="status">
+                Loading workspace…
+              </div>
+            }
+          >
+            {(route.name === "library" || route.name === "home") && (
+              <LibraryView
+                key={route.name === "library" ? route.library : "home"}
+                library={route.name === "library" ? route.library : null}
+                viewMode={viewMode}
+                search={search}
+                onSearch={setSearch}
+                onViewMode={setViewMode}
+                onSelectLibrary={(library) =>
+                  navigate({ name: "library", library })
+                }
+                onOpenDetail={(p) =>
+                  navigate({
+                    name: "detail",
+                    library: route.name === "library" ? route.library : "",
+                    path: p,
+                  })
+                }
+                onItemsReady={onLibraryItemsReady}
+              />
+            )}
+            {route.name === "detail" && (
+              <DetailView
+                key={route.path}
+                path={route.path}
+                onBack={() =>
+                  navigate(
+                    route.library
+                      ? { name: "library", library: route.library }
+                      : { name: "home" },
+                  )
+                }
+              />
+            )}
+            {route.name === "settings" && (
+              <SettingsView onDirtyChange={setSettingsDirty} />
+            )}
+            {route.name === "logs" && <LogsView />}
+            {route.name === "jobs" && <JobsView />}
+            {route.name === "watcher" && (
+              <WatcherView
+                onOpenDetail={(library, path) =>
+                  navigate({ name: "detail", library, path })
+                }
+              />
+            )}
+            {route.name === "help" && <HelpView />}
+          </Suspense>
         </main>
       </div>
     </div>

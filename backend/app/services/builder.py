@@ -4,18 +4,23 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import tempfile
 import time
-import uuid
 from pathlib import Path
 from typing import Optional
 
 from loguru import logger
 
 from .. import db
-from ..config import effective_metadata_source, get_user_settings
+from ..config import MEDIA_ROOT, effective_metadata_source, get_user_settings
 from ..logging_setup import job_logger, close_job_logger
 from .artwork import absolutize_tvdb_url, download_movie_canonical, download_series_canonical, season_poster_filename
+from .artwork_download import download_image
+from .media_files import create_media_temp
+from .jobs import (
+    _jobs, new_job as _new_job, start as start_job, start_followup,
+    get_job as get_job, list_jobs as list_jobs,
+    shutdown_builds as shutdown_builds, wait_build as wait_build,
+)
 from .artwork_resolver import (
     resolve_preferred_artwork_movie,
     resolve_preferred_artwork_series,
@@ -43,7 +48,7 @@ from .parser import (
     list_season_episodes,
     season_number_from_dir,
 )
-from .scanner import scan_movie_folder, scan_series_folder
+from .scanner import _has_provenance, scan_movie_folder, scan_series_folder
 from .sidecar import write_sidecar
 from .tmdb import get_client as get_tmdb_client, image_url as tmdb_image_url
 from .tvdb import get_client
@@ -63,11 +68,14 @@ def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> Non
     POSIX (Unraid SHFS included), so any observer either sees the previous
     valid content or the new valid content, never a torn read.
     """
+    if not path.parent.resolve().is_relative_to(MEDIA_ROOT.resolve()):
+        raise ValueError("NFO destination is outside MEDIA_ROOT")
+    if path.exists() and not get_user_settings().overwrite_foreign_nfo:
+        if not path.resolve().is_relative_to(MEDIA_ROOT.resolve()) or not _has_provenance(path):
+            logger.warning("Preserving foreign NFO {}; enable overwrite in Settings to replace it", path)
+            return
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_str = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent),
-    )
-    tmp = Path(tmp_str)
+    fd, tmp = create_media_temp(path)
     try:
         with os.fdopen(fd, "w", encoding=encoding, newline="\n") as f:
             f.write(text)
@@ -363,47 +371,16 @@ async def _download_actor_portraits_tmdb(
     )
 
 
-_jobs: dict[str, dict] = {}
-
-
 def start_build(folder: Path, kind: str, *, force: bool = False,
                 language: Optional[str] = None) -> str:
-    """Create a job synchronously, schedule the build coroutine, return the job id.
-
-    The actual build runs in the background on the current event loop. Callers
-    can poll /api/jobs/{id} for status. Useful for bulk operations.
-    """
-    jid = _new_job(kind, str(folder))
-    if kind == "series":
-        coro = build_series(folder, force=force, language=language, _jid=jid)
-    else:
-        coro = build_movie(folder, force=force, language=language, _jid=jid)
-    asyncio.create_task(coro)
-    return jid
-
-
-def _new_job(kind: str, folder: str) -> str:
-    jid = uuid.uuid4().hex[:12]
-    _jobs[jid] = {
-        "id": jid,
-        "kind": kind,
-        "folder": folder,
-        "status": "running",
-        "progress": 0,
-        "total": 0,
-        "started_at": int(time.time()),
-        "finished_at": None,
-        "messages": [],
-    }
-    return jid
-
-
-def get_job(jid: str) -> Optional[dict]:
-    return _jobs.get(jid)
-
-
-def list_jobs() -> list[dict]:
-    return sorted(_jobs.values(), key=lambda j: j["started_at"], reverse=True)[:200]
+    """Queue one build per folder; share the global cap across all callers."""
+    folder = folder.resolve()
+    if not folder.is_relative_to(MEDIA_ROOT.resolve()) or not folder.is_dir():
+        raise ValueError("Build folder must exist within MEDIA_ROOT")
+    if kind not in {"series", "movie"}:
+        raise ValueError("Build kind must be series or movie")
+    operation = build_series if kind == "series" else build_movie
+    return start_job(folder, kind, lambda jid: operation(folder, force=force, language=language, _jid=jid))
 
 
 # ---- Series ----------------------------------------------------------------
@@ -430,12 +407,15 @@ async def build_series(folder: Path, *, force: bool = False,
         return await _build_series_tmdb(folder, None, settings, lang, fallbacks,
                                         force=force, jid=jid, log=log, job=job)
     try:
-        if binding and binding["provider"] == "tvdb" and not force:
+        if binding and binding["provider"] == "tvdb":
             client = get_client()
-            data = await client.series_extended(binding["external_id"], force=False)
+            data = await client.series_extended(binding["external_id"], force=force)
         else:
             data = await auto_match_series(folder, language=lang,  # type: ignore[assignment]
                                             threshold=settings.auto_match_threshold)
+            binding = db.get_binding(str(folder))
+            if binding and (binding["provider"] != "tvdb" or binding["kind"] != "series"):
+                return await _build_resolved_binding(folder, binding, force, lang, jid, log, job)
         if not data:
             job["status"] = "failed"
             job["messages"].append("No TVDB match. Use manual matching.")
@@ -518,18 +498,21 @@ async def build_series(folder: Path, *, force: bool = False,
 
         # Per-folder episode overrides: maps (season, episode) -> tvdb episode id.
         overrides = db.get_episode_overrides(str(folder))
+        file_overrides = db.get_episode_file_overrides(str(folder))
 
         # Local episode files by season — collect mapping for artwork pipeline.
         unmatched: list[str] = []
         episode_local_map: dict[int, dict] = {}  # tvdb episode id -> ep with _local_path
-        for sd in detect_season_dirs(folder):
-            snum = season_number_from_dir(sd.name)
+        episode_directories = [*detect_season_dirs(folder), folder]
+        job["total"] = 1 + sum(len(list_season_episodes(directory)) for directory in episode_directories)
+        for sd in episode_directories:
+            snum = season_number_from_dir(sd.name) if sd != folder else 0
             # Write a season.nfo if there's an override for it or TVDB returned
             # season metadata. Always overwrite.
             try:
                 tvs = tvdb_seasons_by_num.get(int(snum)) or {}
                 season_scope_key = f"season-{int(snum):02d}"
-                if (snum >= 0) and (nfo_overrides.get(season_scope_key) or tvs):
+                if sd != folder and (snum >= 0) and (nfo_overrides.get(season_scope_key) or tvs):
                     season_nfo = build_season_nfo(
                         int(snum),
                         base_title=tvs.get("name"),
@@ -545,19 +528,32 @@ async def build_series(folder: Path, *, force: bool = False,
                 # v0.9.0: list_season_episodes can return placeholder entries
                 # for video files we couldn't parse. Skip them in the builder
                 # so we don't try to look up bogus s00e00 metadata.
-                if not getattr(parsed, "parsed", True):
+                file_override = file_overrides.get(str(parsed.path)) or {}
+                manually_mapped = (file_override.get("external_id") or
+                                   (file_override.get("season") is not None and file_override.get("episode") is not None))
+                if not parsed.parsed and not manually_mapped:
                     unmatched.append(parsed.path.name)
                     job["progress"] += 1
                     continue
-                key = (snum, parsed.episode)
+                local_season = parsed.season if sd == folder else snum
+                mapped_season = file_override.get("season")
+                mapped_episode = file_override.get("episode")
+                key = (int(mapped_season) if mapped_season is not None else local_season,
+                       int(mapped_episode) if mapped_episode is not None else parsed.episode)
                 ep = None  # type: ignore[assignment]
-                if key in overrides:
+                if file_override.get("external_id"):
+                    ep = tvdb_by_id.get(str(file_override["external_id"]))  # type: ignore[assignment]
+                elif key in overrides:
                     ep = tvdb_by_id.get(str(overrides[key]))  # type: ignore[assignment]
                     if ep:
                         log.info("Override applied for s{:02d}e{:02d} -> tvdb ep {}",
                                  snum, parsed.episode, ep.get("id"))
-                if not ep:
+                if not ep and not file_override.get("external_id"):
                     ep = tvdb_index.get(key)  # type: ignore[assignment]
+                if not ep and parsed.air_date and not manually_mapped:
+                    daily = [candidate for candidate in episodes if candidate.get("aired") == parsed.air_date]
+                    if len(daily) == 1:
+                        ep = daily[0]
                 if not ep:
                     unmatched.append(parsed.path.name)
                     job["progress"] += 1
@@ -717,7 +713,7 @@ def _maybe_schedule_plex_refresh(folder: Path, settings, job: dict, log) -> None
             log.warning("Plex auto-refresh task crashed: {}", e)
 
     try:
-        asyncio.create_task(_do_refresh())
+        start_followup(_do_refresh())
     except RuntimeError:
         # No running loop (shouldn't happen — builder runs on the loop)
         log.warning("Plex auto-refresh: no running event loop, skipping")
@@ -751,6 +747,9 @@ async def build_movie(folder: Path, *, force: bool = False,
         else:
             data = await auto_match_movie(folder, language=lang,  # type: ignore[assignment]
                                           threshold=settings.auto_match_threshold)
+            binding = db.get_binding(str(folder))
+            if binding and (binding["provider"] != "tvdb" or binding["kind"] != "movie"):
+                return await _build_resolved_binding(folder, binding, force, lang, jid, log, job)
         if not data:
             job["status"] = "failed"
             job["messages"].append("No TVDB match. Use manual matching.")
@@ -848,31 +847,11 @@ import httpx as _httpx  # noqa: E402  # local alias to avoid touching top import
 
 
 async def _download_url(url: Optional[str], dest: Path, *, force: bool) -> bool:
-    """Download `url` to `dest`, always overwriting any existing file.
-
-    `force` is preserved on the signature for API compatibility but is no
-    longer required — every build refreshes the on-disk artwork so users
-    don't have to delete files manually.
-    """
-    _ = force
+    """Use the same bounded, atomic transfer for all providers and uploads."""
     if not url:
         return False
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        async with _httpx.AsyncClient(headers={"User-Agent": "plex-nfo-builder/0.5"}) as c:
-            async with c.stream("GET", url, timeout=60.0) as r:
-                if r.status_code != 200:
-                    logger.warning("Artwork {} -> HTTP {}", url, r.status_code)
-                    return False
-                tmp = dest.with_suffix(dest.suffix + ".part")
-                with tmp.open("wb") as f:
-                    async for chunk in r.aiter_bytes():
-                        f.write(chunk)
-                tmp.replace(dest)
-        return True
-    except Exception as e:
-        logger.warning("Artwork download failed for {}: {}", url, e)
-        return False
+    async with _httpx.AsyncClient(headers={"User-Agent": "plex-nfo-builder/0.5"}, trust_env=False) as client:
+        return await download_image(client, url, dest)
 
 
 def _selections_or(folder: Path, slot: str, fallback: Optional[str]) -> Optional[str]:
@@ -931,6 +910,9 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
         else:
             data = await auto_match_series_tmdb(folder, language=lang,  # type: ignore[assignment]
                                                 threshold=settings.auto_match_threshold)
+            binding = db.get_binding(str(folder))
+            if binding and (binding["provider"] != "tmdb" or binding["kind"] != "series"):
+                return await _build_resolved_binding(folder, binding, force, lang, jid, log, job)
         if not data:
             job["status"] = "failed"
             job["messages"].append("No TMDB match. Use manual matching.")
@@ -939,11 +921,32 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
 
         # Series NFO
         nfo_overrides = db.get_nfo_overrides(str(folder))
-        # We only fetch seasons whose folders exist locally.
+        file_overrides = db.get_episode_file_overrides(str(folder))
+        legacy_overrides = db.get_episode_overrides(str(folder))
+        known_seasons = [int(season["season_number"]) for season in data.get("seasons") or []
+                         if season.get("season_number") is not None]
+        first_season = next((number for number in known_seasons if number > 0), 1)
+        # Local root episodes and per-file mappings are first-class inputs.
         local_seasons: dict[int, list] = {}
-        for sd in detect_season_dirs(folder):
-            snum = season_number_from_dir(sd.name)
-            local_seasons[snum] = list(list_season_episodes(sd))
+        for directory in [*detect_season_dirs(folder), folder]:
+            for parsed in list_season_episodes(directory):
+                override = file_overrides.get(str(parsed.path)) or {}
+                snum = parsed.season if directory == folder else season_number_from_dir(directory.name)
+                if override.get("season") is not None:
+                    snum = int(override["season"])
+                elif parsed.air_date:
+                    year = int(parsed.air_date[:4])
+                    snum = year if year in known_seasons else first_season
+                elif not parsed.parsed and override.get("external_id"):
+                    snum = first_season
+                local_seasons.setdefault(snum, []).append(parsed)
+
+        season_cache: dict[int, dict] = {}
+
+        async def season_payload(number: int) -> dict:
+            if number not in season_cache:
+                season_cache[number] = await client.tv_season(data["id"], number, language=lang, force=force)
+            return season_cache[number]
         # v0.11.8: surface job progress for TMDB builds the same way the TVDB
         # path does. Total = 1 (tvshow.nfo) + every local episode file we'll
         # try to write a per-episode .nfo for. Without this the Jobs view
@@ -980,7 +983,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
         unmatched: list[str] = []
         for snum, parsed_list in local_seasons.items():
             try:
-                season_data = await client.tv_season(data["id"], snum, language=lang, force=force)
+                season_data = await season_payload(snum)
             except Exception as e:
                 log.warning("TMDB tv_season {}/{} failed: {}", data.get("id"), snum, e)
                 continue
@@ -1015,11 +1018,28 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
             for parsed in parsed_list:
                 # v0.9.0 parity: skip un-parseable placeholder rows but still
                 # advance progress so the Jobs view counter doesn't stall.
-                if not getattr(parsed, "parsed", True):
+                file_override = file_overrides.get(str(parsed.path)) or {}
+                mapped_episode = file_override.get("episode")
+                explicit_id = file_override.get("external_id") or legacy_overrides.get((snum, parsed.episode))
+                manually_mapped = (explicit_id or
+                                   (file_override.get("season") is not None and mapped_episode is not None))
+                if not parsed.parsed and not manually_mapped:
                     unmatched.append(parsed.path.name)
                     job["progress"] += 1
                     continue
-                ep = ep_by_num.get(int(parsed.episode))
+                ep = ep_by_num.get(int(mapped_episode) if mapped_episode is not None else int(parsed.episode))
+                if explicit_id or (parsed.air_date and mapped_episode is None):
+                    ep = None
+                    # Explicit IDs can refer to another season. Fetch extra
+                    # seasons only for these mappings, caching each payload.
+                    for candidate_season in [snum, *(number for number in known_seasons if number != snum)]:
+                        candidates = (await season_payload(candidate_season)).get("episodes") or []
+                        matching = [candidate for candidate in candidates
+                                    if (str(candidate.get("id")) == str(explicit_id) if explicit_id
+                                        else candidate.get("air_date") == parsed.air_date)]
+                        if len(matching) == 1:
+                            ep = matching[0]
+                            break
                 if not ep:
                     unmatched.append(parsed.path.name)
                     job["progress"] += 1
@@ -1086,7 +1106,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
                 await _download_url(pref_url, folder / season_poster_filename(snum, ".jpg"), force=force)
                 continue
             try:
-                season_data = await client.tv_season(data["id"], snum, language=lang, force=force)
+                season_data = await season_payload(snum)
             except Exception:
                 continue
             sp = season_data.get("poster_path")
@@ -1152,6 +1172,9 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
         else:
             data = await auto_match_movie_tmdb(folder, language=lang,  # type: ignore[assignment]
                                                threshold=settings.auto_match_threshold)
+            binding = db.get_binding(str(folder))
+            if binding and (binding["provider"] != "tmdb" or binding["kind"] != "movie"):
+                return await _build_resolved_binding(folder, binding, force, lang, jid, log, job)
         if not data:
             job["status"] = "failed"
             job["messages"].append("No TMDB match. Use manual matching.")
@@ -1225,3 +1248,12 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
         if sink:
             job["log_file"] = str(sink)
     return jid
+
+
+async def _build_resolved_binding(folder: Path, binding, force: bool, language: str,
+                                   jid: str, log, job: dict) -> str:
+    """Explicit tags can choose another provider or media kind during matching."""
+    close_job_logger(log)
+    job["kind"] = binding["kind"]
+    operation = build_series if binding["kind"] == "series" else build_movie
+    return await operation(folder, force=force, language=language, _jid=jid)

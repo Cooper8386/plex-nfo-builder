@@ -1,6 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, Library, Schedule, ScheduleAction } from "../lib/api";
-import { useConfirm } from "../components/ConfirmDialog";
+import type { Dispatch, SetStateAction } from "react";
+import { api } from "../lib/api";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Settings, UpdateSetting, settingsPatch } from "./settingsModel";
+import { WatcherPane, SchedulesSection } from "./AutomationSettings";
+import {
+  Card,
+  CardLabel,
+  PaneHeader,
+  SubHeader,
+  Divider,
+  Field,
+} from "./SettingsControls";
 
 type SectionKey =
   | "metadata"
@@ -10,24 +21,68 @@ type SectionKey =
   | "renaming"
   | "schedules"
   | "watcher"
+  | "security"
   | "about";
 
 const SECTIONS: { key: SectionKey; label: string; description: string }[] = [
-  { key: "metadata", label: "Metadata", description: "Source, language, matching" },
-  { key: "providers", label: "Providers", description: "TVDB, TMDB, fanart.tv keys" },
-  { key: "artwork", label: "Artwork", description: "Which provider's images win" },
-  { key: "plex", label: "Plex", description: "Server URL, token, auto-refresh" },
-  { key: "renaming", label: "Renaming", description: "Sonarr/Radarr-style templates" },
-  { key: "schedules", label: "Schedules", description: "Recurring scan/match/build" },
+  {
+    key: "metadata",
+    label: "Metadata",
+    description: "Source, language, matching",
+  },
+  {
+    key: "providers",
+    label: "Providers",
+    description: "TVDB, TMDB, fanart.tv keys",
+  },
+  {
+    key: "artwork",
+    label: "Artwork",
+    description: "Which provider's images win",
+  },
+  {
+    key: "plex",
+    label: "Plex",
+    description: "Server URL, token, auto-refresh",
+  },
+  {
+    key: "renaming",
+    label: "Renaming",
+    description: "Sonarr/Radarr-style templates",
+  },
+  {
+    key: "schedules",
+    label: "Schedules",
+    description: "Recurring scan/match/build",
+  },
   { key: "watcher", label: "Watcher", description: "Auto-build on new media" },
+  { key: "security", label: "Security", description: "Access and file safety" },
   { key: "about", label: "About", description: "Version & links" },
 ];
 
-export default function SettingsView() {
-  const [s, setS] = useState<any>(null);
+export default function SettingsView({
+  onDirtyChange,
+}: { onDirtyChange?: (dirty: boolean) => void } = {}) {
+  const qc = useQueryClient();
+  const settings = useQuery<Settings>({
+    queryKey: ["settings"],
+    queryFn: api.settings.get,
+  });
+  const [draft, setDraft] = useState<Settings | null>(null);
+  const [baseline, setBaseline] = useState<Settings | null>(null);
+  const s = draft ?? settings.data;
+  const setS = (next: SetStateAction<Settings>) => {
+    if (!s) return;
+    setBaseline((current) => current ?? settings.data ?? s);
+    setDraft((current) =>
+      typeof next === "function" ? next(current ?? s) : next,
+    );
+  };
   const [section, setSection] = useState<SectionKey>(() => {
     try {
-      const v = localStorage.getItem("pnb.settings.section") as SectionKey | null;
+      const v = localStorage.getItem(
+        "pnb.settings.section",
+      ) as SectionKey | null;
       if (v && SECTIONS.find((x) => x.key === v)) return v;
     } catch {}
     return "metadata";
@@ -43,31 +98,58 @@ export default function SettingsView() {
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    api.settings.get().then(setS);
-  }, []);
-
-  useEffect(() => {
     try {
       localStorage.setItem("pnb.settings.section", section);
     } catch {}
   }, [section]);
 
-  if (!s) return <div className="p-6 text-slate-500">Loading…</div>;
-
-  const update = (k: string, v: any) => setS({ ...s, [k]: v });
-
+  const patch =
+    s && settings.data ? settingsPatch(baseline ?? settings.data, s) : {};
   const dirty =
-    !!apiKey || !!pin || !!tmdbKey || !!fanartKey || !!plexToken; // settings object itself is always sent on Save
+    Object.keys(patch).length > 0 ||
+    !!apiKey ||
+    !!pin ||
+    !!tmdbKey ||
+    !!fanartKey ||
+    !!plexToken;
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+  useEffect(() => {
+    if (!dirty) return;
+    const preventLoss = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", preventLoss);
+    return () => window.removeEventListener("beforeunload", preventLoss);
+  }, [dirty]);
+  if (settings.error && !s)
+    return (
+      <div className="p-6">
+        <p role="alert" className="text-rose-300 mb-3">
+          Settings could not load: {settings.error.message}
+        </p>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => settings.refetch()}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  if (!s)
+    return (
+      <div role="status" className="p-6 text-slate-400">
+        Loading settings…
+      </div>
+    );
+  const update: UpdateSetting = (key, value) => setS({ ...s, [key]: value });
 
   const saveAll = async () => {
     setSaving(true);
     try {
-      const body: any = { ...s };
-      delete body.tvdb_api_key_configured;
-      delete body.tvdb_pin_configured;
-      delete body.tmdb_api_key_configured;
-      delete body.fanart_api_key_configured;
-      delete body.plex_token_configured;
+      const body: Partial<Settings> & Record<string, unknown> = { ...patch };
       if (apiKey) body.tvdb_api_key = apiKey;
       if (pin) body.tvdb_pin = pin;
       if (tmdbKey) body.tmdb_api_key = tmdbKey;
@@ -75,17 +157,20 @@ export default function SettingsView() {
       if (plexToken) body.plex_token = plexToken;
       await api.settings.set(body);
       const fresh = await api.settings.get();
-      setS(fresh);
+      qc.setQueryData(["settings"], fresh);
+      setDraft(null);
+      setBaseline(null);
+      await qc.invalidateQueries({ queryKey: ["health"] });
       setApiKey("");
       setPin("");
       setTmdbKey("");
       setFanartKey("");
       setPlexToken("");
       setSavedMsg("Saved.");
-      setTimeout(() => setSavedMsg(null), 1800);
-    } catch (e: any) {
-      setSavedMsg(`Save failed: ${e?.message || e}`);
-      setTimeout(() => setSavedMsg(null), 4000);
+    } catch (error) {
+      setSavedMsg(
+        `Save failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     } finally {
       setSaving(false);
     }
@@ -93,31 +178,41 @@ export default function SettingsView() {
 
   // Schedules and Watcher have their own UI and don't need the save bar.
   const showSaveBar =
-    section !== "schedules" && section !== "about" && section !== "watcher";
+    section !== "schedules" &&
+    section !== "about" &&
+    section !== "watcher" &&
+    section !== "security";
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex flex-col lg:flex-row min-h-full">
       {/* Left rail */}
-      <aside className="w-56 shrink-0 border-r border-slate-800 bg-slate-950/40 overflow-auto">
-        <div className="px-4 py-4">
+      <aside className="lg:w-52 shrink-0 border-b lg:border-b-0 lg:border-r border-slate-800 bg-slate-950/40">
+        <div className="p-3 lg:sticky lg:top-0">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-3">
             Settings
           </div>
-          <nav className="flex flex-col gap-1">
+          <nav
+            aria-label="Settings categories"
+            className="flex lg:flex-col gap-1 overflow-auto"
+          >
             {SECTIONS.map((sec) => {
               const active = sec.key === section;
               return (
                 <button
+                  type="button"
                   key={sec.key}
+                  aria-current={active ? "page" : undefined}
                   onClick={() => setSection(sec.key)}
-                  className={`text-left px-3 py-2 rounded-md transition border ${
+                  className={`shrink-0 text-left px-3 py-2 rounded-md transition border ${
                     active
                       ? "bg-indigo-600/15 border-indigo-600/50 text-white"
                       : "bg-transparent border-transparent text-slate-300 hover:bg-slate-900 hover:text-white"
                   }`}
                 >
                   <div className="text-sm font-medium">{sec.label}</div>
-                  <div className="text-[11px] text-slate-500">{sec.description}</div>
+                  <div className="hidden lg:block text-[11px] text-slate-400">
+                    {sec.description}
+                  </div>
                 </button>
               );
             })}
@@ -128,58 +223,100 @@ export default function SettingsView() {
       {/* Pane */}
       <div className="flex-1 min-w-0 flex flex-col">
         <div className="flex-1 min-h-0 overflow-auto">
-          <div className="p-6 max-w-3xl">
-            {section === "metadata" && (
-              <MetadataPane s={s} update={update} />
-            )}
-            {section === "providers" && (
-              <ProvidersPane
-                s={s}
-                update={update}
-                apiKey={apiKey}
-                setApiKey={setApiKey}
-                pin={pin}
-                setPin={setPin}
-                tmdbKey={tmdbKey}
-                setTmdbKey={setTmdbKey}
-                fanartKey={fanartKey}
-                setFanartKey={setFanartKey}
-                onClearCache={async () => {
-                  await api.tvdb.clearCache();
-                  setSavedMsg("Cache cleared.");
-                  setTimeout(() => setSavedMsg(null), 1500);
-                }}
-              />
-            )}
-            {section === "artwork" && <ArtworkPane s={s} update={update} />}
-            {section === "plex" && (
-              <PlexPane
-                s={s}
-                setS={setS}
-                update={update}
-                plexToken={plexToken}
-                setPlexToken={setPlexToken}
-              />
-            )}
-            {section === "renaming" && <RenamingPane s={s} setS={setS} update={update} />}
-            {section === "schedules" && <SchedulesSection />}
-            {section === "watcher" && <WatcherPane />}
-            {section === "about" && <AboutPane />}
-          </div>
+          <form
+            id="settings-form"
+            className="p-4 sm:p-6 max-w-5xl min-w-0"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (dirty && !saving) void saveAll();
+            }}
+          >
+            <fieldset disabled={saving} className="min-w-0">
+              {section === "metadata" && <MetadataPane s={s} update={update} />}
+              {section === "providers" && (
+                <ProvidersPane
+                  s={s}
+                  update={update}
+                  apiKey={apiKey}
+                  setApiKey={setApiKey}
+                  pin={pin}
+                  setPin={setPin}
+                  tmdbKey={tmdbKey}
+                  setTmdbKey={setTmdbKey}
+                  fanartKey={fanartKey}
+                  setFanartKey={setFanartKey}
+                  onClearCache={async () => {
+                    try {
+                      await api.tvdb.clearCache();
+                      setSavedMsg("Cache cleared.");
+                    } catch (cause) {
+                      setSavedMsg(
+                        `Save failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+                      );
+                    }
+                  }}
+                />
+              )}
+              {section === "artwork" && <ArtworkPane s={s} update={update} />}
+              {section === "plex" && (
+                <PlexPane
+                  s={s}
+                  setS={setS}
+                  update={update}
+                  plexToken={plexToken}
+                  setPlexToken={setPlexToken}
+                />
+              )}
+              {section === "renaming" && (
+                <RenamingPane s={s} setS={setS} update={update} />
+              )}
+              {section === "schedules" && <SchedulesSection />}
+              {section === "watcher" && <WatcherPane />}
+              {section === "security" && <SecurityPane />}
+              {section === "about" && <AboutPane />}
+            </fieldset>
+          </form>
         </div>
-        {showSaveBar && (
-          <div className="border-t border-slate-800 bg-slate-950/80 backdrop-blur px-6 py-3 flex items-center gap-3">
+        {(showSaveBar || dirty) && (
+          <div className="sticky bottom-0 border-t border-slate-800 bg-slate-950 px-4 sm:px-6 py-3 flex flex-wrap items-center gap-3">
             <button
-              onClick={saveAll}
-              disabled={saving}
-              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded text-sm disabled:opacity-50"
+              type="submit"
+              form="settings-form"
+              disabled={saving || !dirty}
+              className="btn btn-primary"
             >
               {saving ? "Saving…" : "Save changes"}
             </button>
             {dirty && !saving && (
-              <span className="text-xs text-amber-400">Unsaved secrets pending.</span>
+              <span className="text-xs text-amber-400">Unsaved changes</span>
             )}
-            {savedMsg && <span className="text-xs text-emerald-400">{savedMsg}</span>}
+            {dirty && (
+              <button
+                type="button"
+                className="btn"
+                disabled={saving}
+                onClick={() => {
+                  setDraft(null);
+                  setBaseline(null);
+                  setApiKey("");
+                  setPin("");
+                  setTmdbKey("");
+                  setFanartKey("");
+                  setPlexToken("");
+                  setSavedMsg(null);
+                }}
+              >
+                Discard changes
+              </button>
+            )}
+            {savedMsg && (
+              <span
+                role="status"
+                className={`text-xs ${savedMsg.startsWith("Save failed") ? "text-rose-300" : "text-slate-300"}`}
+              >
+                {savedMsg}
+              </span>
+            )}
             <div className="flex-1" />
             <span className="text-[11px] text-slate-500">
               Settings apply immediately to scans and builds after save.
@@ -198,16 +335,7 @@ export default function SettingsView() {
 
 /* ----------------------- Section panes ----------------------- */
 
-function PaneHeader({ title, subtitle }: { title: string; subtitle?: string }) {
-  return (
-    <div className="mb-5">
-      <h2 className="text-xl font-semibold">{title}</h2>
-      {subtitle && <p className="text-sm text-slate-500 mt-1">{subtitle}</p>}
-    </div>
-  );
-}
-
-function MetadataPane({ s, update }: { s: any; update: (k: string, v: any) => void }) {
+function MetadataPane({ s, update }: { s: Settings; update: UpdateSetting }) {
   return (
     <>
       <PaneHeader
@@ -238,7 +366,7 @@ function MetadataPane({ s, update }: { s: any; update: (k: string, v: any) => vo
           onChange={(e) =>
             update(
               "fallback_languages",
-              e.target.value.split(",").map((x: string) => x.trim())
+              e.target.value.split(",").map((x: string) => x.trim()),
             )
           }
         />
@@ -246,25 +374,40 @@ function MetadataPane({ s, update }: { s: any; update: (k: string, v: any) => vo
       <Field label="Cache TTL (hours)">
         <input
           type="number"
+          min={1}
+          max={87600}
           className="bg-slate-800 px-2 py-1 rounded w-24"
           value={s.cache_ttl_hours}
-          onChange={(e) => update("cache_ttl_hours", parseInt(e.target.value || "0"))}
+          onChange={(e) =>
+            update("cache_ttl_hours", parseInt(e.target.value || "0"))
+          }
         />
       </Field>
       <Field label="Auto-match threshold (0-100)">
         <input
           type="number"
+          min={0}
+          max={100}
           className="bg-slate-800 px-2 py-1 rounded w-24"
           value={s.auto_match_threshold}
-          onChange={(e) => update("auto_match_threshold", parseInt(e.target.value || "0"))}
+          onChange={(e) =>
+            update("auto_match_threshold", parseInt(e.target.value || "0"))
+          }
         />
       </Field>
       <Field label="Overwrite foreign NFOs">
-        <input
-          type="checkbox"
-          checked={!!s.overwrite_foreign_nfo}
-          onChange={(e) => update("overwrite_foreign_nfo", e.target.checked)}
-        />
+        <div className="flex gap-2 items-start">
+          <input
+            type="checkbox"
+            checked={!!s.overwrite_foreign_nfo}
+            onChange={(e) => update("overwrite_foreign_nfo", e.target.checked)}
+          />
+          <span className="text-xs text-amber-300">
+            Allow builds to replace NFO files from other tools. Leave off to
+            preserve them. This also controls foreign-file preservation during
+            force rebuilds.
+          </span>
+        </div>
       </Field>
       <Field label="Auto-sweep orphaned sidecars">
         <div className="flex items-start gap-2">
@@ -301,8 +444,8 @@ function ProvidersPane({
   setFanartKey,
   onClearCache,
 }: {
-  s: any;
-  update: (k: string, v: any) => void;
+  s: Settings;
+  update: UpdateSetting;
   apiKey: string;
   setApiKey: (v: string) => void;
   pin: string;
@@ -321,11 +464,17 @@ function ProvidersPane({
       />
 
       <SubHeader>TVDB</SubHeader>
-      <Field label={`TVDB API key${s.tvdb_api_key_configured ? " (configured)" : ""}`}>
+      <Field
+        label={`TVDB API key${s.tvdb_api_key_configured ? " (configured)" : ""}`}
+      >
         <input
           className="bg-slate-800 px-2 py-1 rounded w-80"
           value={apiKey}
-          placeholder={s.tvdb_api_key_configured ? "leave blank to keep current" : "paste API key"}
+          placeholder={
+            s.tvdb_api_key_configured
+              ? "leave blank to keep current"
+              : "paste API key"
+          }
           onChange={(e) => setApiKey(e.target.value)}
         />
       </Field>
@@ -333,18 +482,28 @@ function ProvidersPane({
         <input
           className="bg-slate-800 px-2 py-1 rounded w-32"
           value={pin}
-          placeholder={s.tvdb_pin_configured ? "leave blank to keep current" : "subscriber PIN"}
+          placeholder={
+            s.tvdb_pin_configured
+              ? "leave blank to keep current"
+              : "subscriber PIN"
+          }
           onChange={(e) => setPin(e.target.value)}
         />
       </Field>
 
       <Divider />
       <SubHeader>TMDB</SubHeader>
-      <Field label={`TMDB API key${s.tmdb_api_key_configured ? " (configured)" : ""}`}>
+      <Field
+        label={`TMDB API key${s.tmdb_api_key_configured ? " (configured)" : ""}`}
+      >
         <input
           className="bg-slate-800 px-2 py-1 rounded w-80"
           value={tmdbKey}
-          placeholder={s.tmdb_api_key_configured ? "leave blank to keep current" : "v3 API key"}
+          placeholder={
+            s.tmdb_api_key_configured
+              ? "leave blank to keep current"
+              : "v3 API key"
+          }
           onChange={(e) => setTmdbKey(e.target.value)}
         />
       </Field>
@@ -358,11 +517,17 @@ function ProvidersPane({
 
       <Divider />
       <SubHeader>fanart.tv</SubHeader>
-      <Field label={`fanart.tv API key${s.fanart_api_key_configured ? " (configured)" : ""}`}>
+      <Field
+        label={`fanart.tv API key${s.fanart_api_key_configured ? " (configured)" : ""}`}
+      >
         <input
           className="bg-slate-800 px-2 py-1 rounded w-80"
           value={fanartKey}
-          placeholder={s.fanart_api_key_configured ? "leave blank to keep current" : "personal API key"}
+          placeholder={
+            s.fanart_api_key_configured
+              ? "leave blank to keep current"
+              : "personal API key"
+          }
           onChange={(e) => setFanartKey(e.target.value)}
         />
       </Field>
@@ -375,8 +540,9 @@ function ProvidersPane({
       </Field>
 
       <Divider />
-      <div className="ml-64 pl-3">
+      <div className="xl:ml-56 xl:pl-3">
         <button
+          type="button"
           className="text-xs text-amber-400 hover:underline"
           onClick={onClearCache}
         >
@@ -390,7 +556,7 @@ function ProvidersPane({
   );
 }
 
-function ArtworkPane({ s, update }: { s: any; update: (k: string, v: any) => void }) {
+function ArtworkPane({ s, update }: { s: Settings; update: UpdateSetting }) {
   const [langs, setLangs] = useState<{
     tvdb: { code: string; name: string; native_name: string | null }[];
     tmdb: { code: string; name: string; native_name: string | null }[];
@@ -438,8 +604,8 @@ function ArtworkPane({ s, update }: { s: any; update: (k: string, v: any) => voi
       </Field>
       <p className="text-xs text-slate-500 ml-64 pl-3 max-w-xl mb-6">
         Applies to posters, backgrounds, and season posters. Your per-show
-        manual picks always override this. When the preferred provider can't
-        be reached for a show, the metadata source's own artwork is used.
+        manual picks always override this. When the preferred provider can't be
+        reached for a show, the metadata source's own artwork is used.
       </p>
 
       <div className="border-t border-slate-800 pt-4">
@@ -447,13 +613,13 @@ function ArtworkPane({ s, update }: { s: any; update: (k: string, v: any) => voi
           Language filter
         </h3>
         <p className="text-xs text-slate-500 mb-4 max-w-2xl">
-          Whitelist which languages artwork can be tagged with. Leave the
-          list empty to accept every language (the default). Codes differ
-          per provider: TVDB tags with 3-letter ISO 639-2 (eng, fra, jpn);
-          TMDB tags with 2-letter ISO 639-1 (en, fr, ja). When the filter
-          would leave a show with no poster, the app falls back to the
-          unfiltered best pick so no show ever ends up artless — the filter
-          is a preference, not a guarantee.
+          Whitelist which languages artwork can be tagged with. Leave the list
+          empty to accept every language (the default). Codes differ per
+          provider: TVDB tags with 3-letter ISO 639-2 (eng, fra, jpn); TMDB tags
+          with 2-letter ISO 639-1 (en, fr, ja). When the filter would leave a
+          show with no poster, the app falls back to the unfiltered best pick so
+          no show ever ends up artless — the filter is a preference, not a
+          guarantee.
         </p>
 
         {langsErr && (
@@ -469,7 +635,9 @@ function ArtworkPane({ s, update }: { s: any; update: (k: string, v: any) => voi
           selected={tvdbSelected}
           onChange={(next) => update("tvdb_artwork_languages", next)}
           allowNull={s.tvdb_artwork_allow_null_language !== false}
-          onAllowNullChange={(b) => update("tvdb_artwork_allow_null_language", b)}
+          onAllowNullChange={(b) =>
+            update("tvdb_artwork_allow_null_language", b)
+          }
           codeLabel="3-letter"
         />
 
@@ -482,7 +650,9 @@ function ArtworkPane({ s, update }: { s: any; update: (k: string, v: any) => voi
           selected={tmdbSelected}
           onChange={(next) => update("tmdb_artwork_languages", next)}
           allowNull={s.tmdb_artwork_allow_null_language !== false}
-          onAllowNullChange={(b) => update("tmdb_artwork_allow_null_language", b)}
+          onAllowNullChange={(b) =>
+            update("tmdb_artwork_allow_null_language", b)
+          }
           codeLabel="2-letter"
         />
       </div>
@@ -511,7 +681,10 @@ function LanguagePicker({
 }) {
   const [query, setQuery] = useState("");
 
-  const selectedSet = useMemo(() => new Set(selected.map((x) => x.toLowerCase())), [selected]);
+  const selectedSet = useMemo(
+    () => new Set(selected.map((x) => x.toLowerCase())),
+    [selected],
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -545,7 +718,10 @@ function LanguagePicker({
         <div>
           <div className="text-sm font-medium text-slate-100">{title}</div>
           <div className="text-[11px] text-slate-500">
-            {codeLabel} codes · {options.length ? `${options.length} available` : "no options loaded"}
+            {codeLabel} codes ·{" "}
+            {options.length
+              ? `${options.length} available`
+              : "no options loaded"}
             {selected.length > 0 && ` · ${selected.length} selected`}
           </div>
         </div>
@@ -562,7 +738,9 @@ function LanguagePicker({
       {selected.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-3">
           {selected.map((code) => {
-            const match = options.find((o) => o.code.toLowerCase() === code.toLowerCase());
+            const match = options.find(
+              (o) => o.code.toLowerCase() === code.toLowerCase(),
+            );
             return (
               <button
                 key={code}
@@ -572,8 +750,12 @@ function LanguagePicker({
                 title={`Remove ${code}`}
               >
                 <span className="font-mono">{code}</span>
-                {match?.name ? <span className="text-indigo-300/70">· {match.name}</span> : null}
-                <span aria-hidden className="text-indigo-300/70">×</span>
+                {match?.name ? (
+                  <span className="text-indigo-300/70">· {match.name}</span>
+                ) : null}
+                <span aria-hidden className="text-indigo-300/70">
+                  ×
+                </span>
               </button>
             );
           })}
@@ -606,7 +788,9 @@ function LanguagePicker({
           />
           <div className="max-h-56 overflow-auto border border-slate-800 rounded">
             {filtered.length === 0 ? (
-              <div className="text-xs text-slate-500 p-3">No languages match that filter.</div>
+              <div className="text-xs text-slate-500 p-3">
+                No languages match that filter.
+              </div>
             ) : (
               <ul className="divide-y divide-slate-800">
                 {filtered.map((o) => {
@@ -628,10 +812,14 @@ function LanguagePicker({
                           checked={isOn}
                           className="pointer-events-none"
                         />
-                        <span className="font-mono text-xs text-slate-400 w-10">{o.code}</span>
+                        <span className="font-mono text-xs text-slate-400 w-10">
+                          {o.code}
+                        </span>
                         <span className="flex-1 truncate">{o.name}</span>
                         {o.native_name && o.native_name !== o.name && (
-                          <span className="text-xs text-slate-500 truncate">{o.native_name}</span>
+                          <span className="text-xs text-slate-500 truncate">
+                            {o.native_name}
+                          </span>
                         )}
                       </button>
                     </li>
@@ -653,22 +841,24 @@ function PlexPane({
   plexToken,
   setPlexToken,
 }: {
-  s: any;
-  setS: (v: any) => void;
-  update: (k: string, v: any) => void;
+  s: Settings;
+  setS: Dispatch<SetStateAction<Settings>>;
+  update: UpdateSetting;
   plexToken: string;
-  setPlexToken: (v: string) => void;
+  setPlexToken: Dispatch<SetStateAction<string>>;
 }) {
   const [testing, setTesting] = useState(false);
-  const [result, setResult] = useState<
-    | null
-    | {
-        ok: boolean;
-        error?: string;
-        identity?: { friendly_name?: string; version?: string };
-        sections?: { id: string; title: string; type: string; locations: string[] }[];
-      }
-  >(null);
+  const [result, setResult] = useState<null | {
+    ok: boolean;
+    error?: string;
+    identity?: { friendly_name?: string; version?: string };
+    sections?: {
+      id: string;
+      title: string;
+      type: string;
+      locations: string[];
+    }[];
+  }>(null);
 
   return (
     <>
@@ -684,12 +874,18 @@ function PlexPane({
           onChange={(e) => update("plex_url", e.target.value)}
         />
       </Field>
-      <Field label={`Plex token${s.plex_token_configured ? " (configured)" : ""}`}>
+      <Field
+        label={`Plex token${s.plex_token_configured ? " (configured)" : ""}`}
+      >
         <input
           type="password"
           className="bg-slate-800 px-2 py-1 rounded w-80"
           value={plexToken}
-          placeholder={s.plex_token_configured ? "leave blank to keep current" : "X-Plex-Token"}
+          placeholder={
+            s.plex_token_configured
+              ? "leave blank to keep current"
+              : "X-Plex-Token"
+          }
           onChange={(e) => setPlexToken(e.target.value)}
         />
       </Field>
@@ -708,22 +904,28 @@ function PlexPane({
           className="bg-slate-800 px-2 py-1 rounded w-24"
           value={s.plex_refresh_delay_seconds ?? 5}
           onChange={(e) =>
-            update("plex_refresh_delay_seconds", parseInt(e.target.value || "0"))
+            update(
+              "plex_refresh_delay_seconds",
+              parseInt(e.target.value || "0"),
+            )
           }
         />
       </Field>
-      <div className="flex items-start gap-3 mb-3">
-        <label className="text-sm text-slate-300 w-64 mt-1">Path mappings</label>
+      <div className="flex flex-col xl:flex-row items-start gap-3 mb-3">
+        <label className="text-sm text-slate-300 w-64 mt-1">
+          Path mappings
+        </label>
         <div className="flex-1">
           {(s.plex_path_mappings || []).length === 0 && (
             <div className="text-xs text-slate-500 mb-2">
               No mappings — the app's paths are sent to Plex as-is.
             </div>
           )}
-          {(s.plex_path_mappings || []).map((m: any, i: number) => (
-            <div key={i} className="flex items-center gap-2 mb-2">
+          {(s.plex_path_mappings || []).map((m, i: number) => (
+            <div key={i} className="flex flex-wrap items-center gap-2 mb-2">
               <input
-                className="bg-slate-800 px-2 py-1 rounded w-48"
+                aria-label="Builder media path"
+                className="bg-slate-800 px-2 py-1 rounded w-48 max-w-full"
                 placeholder="/media"
                 value={m.from || ""}
                 onChange={(e) => {
@@ -734,7 +936,8 @@ function PlexPane({
               />
               <span className="text-slate-500 text-sm">→</span>
               <input
-                className="bg-slate-800 px-2 py-1 rounded w-48"
+                aria-label="Plex media path"
+                className="bg-slate-800 px-2 py-1 rounded w-48 max-w-full"
                 placeholder="/data"
                 value={m.to || ""}
                 onChange={(e) => {
@@ -744,6 +947,7 @@ function PlexPane({
                 }}
               />
               <button
+                type="button"
                 className="text-xs text-rose-400"
                 onClick={() => {
                   const next = [...(s.plex_path_mappings || [])];
@@ -756,6 +960,7 @@ function PlexPane({
             </div>
           ))}
           <button
+            type="button"
             className="text-xs text-indigo-400"
             onClick={() =>
               update("plex_path_mappings", [
@@ -771,6 +976,7 @@ function PlexPane({
       <div className="flex items-center gap-3 mb-3">
         <label className="text-sm text-slate-300 w-64"></label>
         <button
+          type="button"
           className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm disabled:opacity-50"
           disabled={testing}
           onClick={async () => {
@@ -778,30 +984,52 @@ function PlexPane({
             setResult(null);
             try {
               if (plexToken || s.plex_url !== undefined) {
-                const body: any = {
+                const body: Pick<
+                  Settings,
+                  "plex_url" | "plex_path_mappings"
+                > & { plex_token?: string } = {
                   plex_url: s.plex_url || null,
                   plex_path_mappings: s.plex_path_mappings || [],
                 };
                 if (plexToken) body.plex_token = plexToken;
                 await api.settings.set(body);
-                if (plexToken) setPlexToken("");
-                const fresh = await api.settings.get();
-                setS(fresh);
+                if (plexToken)
+                  setPlexToken((current) =>
+                    current === plexToken ? "" : current,
+                  );
+                const fresh: Settings = await api.settings.get();
+                // A connection request can finish after edits in this or another pane.
+                setS((current) => ({
+                  ...current,
+                  plex_url:
+                    current.plex_url === s.plex_url
+                      ? fresh.plex_url
+                      : current.plex_url,
+                  plex_path_mappings:
+                    JSON.stringify(current.plex_path_mappings) ===
+                    JSON.stringify(s.plex_path_mappings)
+                      ? fresh.plex_path_mappings
+                      : current.plex_path_mappings,
+                  plex_token_configured: fresh.plex_token_configured,
+                }));
               }
               const r = await api.plex.test();
               setResult(r);
-            } catch (e: any) {
-              setResult({ ok: false, error: String(e?.message || e) });
+            } catch (error) {
+              setResult({
+                ok: false,
+                error: error instanceof Error ? error.message : String(error),
+              });
             } finally {
               setTesting(false);
             }
           }}
         >
-          {testing ? "Testing…" : "Test connection"}
+          {testing ? "Testing…" : "Save connection & test"}
         </button>
       </div>
       {result && (
-        <div className="ml-64 pl-3 mb-2">
+        <div className="xl:ml-56 xl:pl-3 mb-2">
           <div
             className={`rounded-md border p-3 text-xs ${
               result.ok
@@ -813,7 +1041,9 @@ function PlexPane({
               <>
                 <div className="font-semibold text-emerald-300">
                   Connected to {result.identity?.friendly_name || "Plex"}
-                  {result.identity?.version ? ` (v${result.identity.version})` : ""}
+                  {result.identity?.version
+                    ? ` (v${result.identity.version})`
+                    : ""}
                 </div>
                 {result.sections && result.sections.length > 0 ? (
                   <div className="mt-2">
@@ -852,9 +1082,9 @@ function RenamingPane({
   setS,
   update,
 }: {
-  s: any;
-  setS: (v: any) => void;
-  update: (k: string, v: any) => void;
+  s: Settings;
+  setS: (v: Settings) => void;
+  update: UpdateSetting;
 }) {
   return (
     <>
@@ -923,7 +1153,7 @@ function RenamingPane({
         onChange={(v) => update("rename_movie_folder_template", v)}
       />
 
-      <div className="ml-64 pl-3 mb-3 mt-2">
+      <div className="xl:ml-56 xl:pl-3 mb-3 mt-2">
         <button
           type="button"
           className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded"
@@ -944,31 +1174,85 @@ function RenamingPane({
         </button>
       </div>
 
-      <details className="ml-64 pl-3 mb-3 text-xs text-slate-400 max-w-2xl">
+      <details className="xl:ml-56 xl:pl-3 mb-3 text-xs text-slate-400 max-w-2xl">
         <summary className="cursor-pointer text-slate-300 mb-2">
           Token reference
         </summary>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
-          <div><code className="text-slate-200">{"{Series TitleYear}"}</code> Severance (2022)</div>
-          <div><code className="text-slate-200">{"{Episode CleanTitle}"}</code> the matched episode title</div>
-          <div><code className="text-slate-200">{"{season:00}"}</code> / <code className="text-slate-200">{"{episode:00}"}</code> zero-padded</div>
-          <div><code className="text-slate-200">{"{Air-Date}"}</code> 2024-05-08</div>
-          <div><code className="text-slate-200">{"{Quality Full}"}</code> WEBDL-1080p / Bluray-2160p</div>
-          <div><code className="text-slate-200">{"{MediaInfo VideoCodec}"}</code> x264 / x265 / AV1</div>
-          <div><code className="text-slate-200">{"{MediaInfo VideoBitDepth}"}</code> 8 / 10</div>
-          <div><code className="text-slate-200">{"{MediaInfo VideoDynamicRangeType}"}</code> HDR10 / DV / HLG</div>
-          <div><code className="text-slate-200">{"{MediaInfo AudioCodec}"}</code> EAC3 Atmos / DTS-HD MA</div>
-          <div><code className="text-slate-200">{"{MediaInfo AudioChannels}"}</code> 5.1 / 7.1 / 2.0</div>
-          <div><code className="text-slate-200">{"{MediaInfo AudioLanguages}"}</code> [EN] / [EN+JA]</div>
-          <div><code className="text-slate-200">{"{Release Group}"}</code> / <code className="text-slate-200">{"{-Release Group}"}</code></div>
-          <div><code className="text-slate-200">{"{TvdbId}"}</code>, <code className="text-slate-200">{"{TmdbId}"}</code>, <code className="text-slate-200">{"{ImdbId}"}</code></div>
-          <div><code className="text-slate-200">{"{Movie CleanTitle}"}</code>, <code className="text-slate-200">{"{(Release Year)}"}</code></div>
-          <div><code className="text-slate-200">{"{[Token]}"}</code> wraps in [..] when present, drops otherwise</div>
+          <div>
+            <code className="text-slate-200">{"{Series TitleYear}"}</code>{" "}
+            Severance (2022)
+          </div>
+          <div>
+            <code className="text-slate-200">{"{Episode CleanTitle}"}</code> the
+            matched episode title
+          </div>
+          <div>
+            <code className="text-slate-200">{"{season:00}"}</code> /{" "}
+            <code className="text-slate-200">{"{episode:00}"}</code> zero-padded
+          </div>
+          <div>
+            <code className="text-slate-200">{"{Air-Date}"}</code> 2024-05-08
+          </div>
+          <div>
+            <code className="text-slate-200">{"{Quality Full}"}</code>{" "}
+            WEBDL-1080p / Bluray-2160p
+          </div>
+          <div>
+            <code className="text-slate-200">{"{MediaInfo VideoCodec}"}</code>{" "}
+            x264 / x265 / AV1
+          </div>
+          <div>
+            <code className="text-slate-200">
+              {"{MediaInfo VideoBitDepth}"}
+            </code>{" "}
+            8 / 10
+          </div>
+          <div>
+            <code className="text-slate-200">
+              {"{MediaInfo VideoDynamicRangeType}"}
+            </code>{" "}
+            HDR10 / DV / HLG
+          </div>
+          <div>
+            <code className="text-slate-200">{"{MediaInfo AudioCodec}"}</code>{" "}
+            EAC3 Atmos / DTS-HD MA
+          </div>
+          <div>
+            <code className="text-slate-200">
+              {"{MediaInfo AudioChannels}"}
+            </code>{" "}
+            5.1 / 7.1 / 2.0
+          </div>
+          <div>
+            <code className="text-slate-200">
+              {"{MediaInfo AudioLanguages}"}
+            </code>{" "}
+            [EN] / [EN+JA]
+          </div>
+          <div>
+            <code className="text-slate-200">{"{Release Group}"}</code> /{" "}
+            <code className="text-slate-200">{"{-Release Group}"}</code>
+          </div>
+          <div>
+            <code className="text-slate-200">{"{TvdbId}"}</code>,{" "}
+            <code className="text-slate-200">{"{TmdbId}"}</code>,{" "}
+            <code className="text-slate-200">{"{ImdbId}"}</code>
+          </div>
+          <div>
+            <code className="text-slate-200">{"{Movie CleanTitle}"}</code>,{" "}
+            <code className="text-slate-200">{"{(Release Year)}"}</code>
+          </div>
+          <div>
+            <code className="text-slate-200">{"{[Token]}"}</code> wraps in [..]
+            when present, drops otherwise
+          </div>
         </div>
         <p className="mt-2 text-slate-500">
-          Old v0.10.0 simple tokens (<code>{"{title}"}</code>, <code>{"{year}"}</code>,{" "}
-          <code>{"{episode_title}"}</code>, <code>{"{ext}"}</code>,{" "}
-          <code>{"{quality}"}</code>) still work as fallbacks.
+          Old v0.10.0 simple tokens (<code>{"{title}"}</code>,{" "}
+          <code>{"{year}"}</code>, <code>{"{episode_title}"}</code>,{" "}
+          <code>{"{ext}"}</code>, <code>{"{quality}"}</code>) still work as
+          fallbacks.
         </p>
         <p className="mt-2 text-slate-500">
           See the{" "}
@@ -987,214 +1271,12 @@ function RenamingPane({
   );
 }
 
-function WatcherPane() {
-  const [status, setStatus] = useState<
-    | null
-    | {
-        available: boolean;
-        enabled: boolean;
-        running: boolean;
-        debounce_seconds: number;
-        watched_paths: string[];
-        pending_count: number;
-        in_flight_count: number;
-      }
-  >(null);
-  const [debounce, setDebounce] = useState<number>(30);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [savedMsg, setSavedMsg] = useState<string | null>(null);
-
-  const reload = async () => {
-    try {
-      const [st, settings] = await Promise.all([
-        api.watcher.status(),
-        api.settings.get(),
-      ]);
-      setStatus(st);
-      const d =
-        typeof settings.watcher_debounce_seconds === "number"
-          ? settings.watcher_debounce_seconds
-          : st.debounce_seconds;
-      setDebounce(d);
-    } catch (e: any) {
-      setErr(String(e?.message || e));
-    }
-  };
-
-  useEffect(() => {
-    reload();
-    const t = setInterval(() => {
-      api.watcher
-        .status()
-        .then(setStatus)
-        .catch(() => {});
-    }, 5000);
-    return () => clearInterval(t);
-  }, []);
-
-  const onToggle = async (enabled: boolean) => {
-    setBusy(true);
-    setErr(null);
-    try {
-      const r = await api.watcher.toggle(enabled);
-      setStatus(r.status);
-      setSavedMsg(enabled ? "Watcher enabled." : "Watcher disabled.");
-      setTimeout(() => setSavedMsg(null), 1800);
-    } catch (e: any) {
-      setErr(String(e?.message || e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onSaveDebounce = async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      const n = Math.max(1, Math.min(3600, Math.floor(debounce)));
-      await api.settings.set({ watcher_debounce_seconds: n });
-      await reload();
-      setSavedMsg(`Debounce set to ${n}s.`);
-      setTimeout(() => setSavedMsg(null), 1800);
-    } catch (e: any) {
-      setErr(String(e?.message || e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <PaneHeader
-        title="Watcher"
-        subtitle="Watch every enabled library for new folders and media files, then automatically scan, match, and build NFOs. Builds that can't auto-match are queued for manual review on the Watcher page (top nav)."
-      />
-
-      {!status ? (
-        <div className="text-xs text-slate-500">Loading watcher status…</div>
-      ) : (
-        <>
-          {!status.available && (
-            <div className="mb-4 rounded-md border border-amber-800 bg-amber-900/20 px-3 py-2 text-xs text-amber-200">
-              The <code className="text-amber-100">watchdog</code> package is
-              not available in this container. The watcher cannot run; rebuild
-              the image with the latest <code>requirements.txt</code> to fix.
-            </div>
-          )}
-          <Field label="Enable filesystem watcher">
-            <div className="flex items-start gap-2">
-              <input
-                type="checkbox"
-                checked={!!status.enabled}
-                disabled={busy || !status.available}
-                onChange={(e) => onToggle(e.target.checked)}
-                className="mt-1"
-              />
-              <span className="text-[11px] text-slate-500 max-w-xl leading-relaxed">
-                When on, new folders and media files under every enabled
-                library trigger the same scan → match → build pipeline that
-                Schedules runs, after the debounce window expires.
-              </span>
-            </div>
-          </Field>
-
-          <Field label="Debounce window (seconds)">
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                min={1}
-                max={3600}
-                className="bg-slate-800 px-2 py-1 rounded w-24"
-                value={debounce}
-                onChange={(e) =>
-                  setDebounce(parseInt(e.target.value || "30", 10))
-                }
-              />
-              <button
-                type="button"
-                className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded"
-                onClick={onSaveDebounce}
-                disabled={busy}
-              >
-                Save
-              </button>
-              <span className="text-[11px] text-slate-500 max-w-md">
-                How long the folder has to be quiet before the pipeline
-                fires. 30s suits most Sonarr/Radarr setups; raise it if you
-                regularly copy huge files manually.
-              </span>
-            </div>
-          </Field>
-
-          <Divider />
-
-          <SubHeader>Runtime</SubHeader>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-2xl">
-            <Card>
-              <CardLabel>Status</CardLabel>
-              <div className="text-sm text-slate-100">
-                {status.running ? (
-                  <span className="text-emerald-300">Running</span>
-                ) : status.enabled ? (
-                  <span className="text-amber-300">Enabled, not running</span>
-                ) : (
-                  <span className="text-slate-400">Disabled</span>
-                )}
-              </div>
-            </Card>
-            <Card>
-              <CardLabel>Active debounce</CardLabel>
-              <div className="text-sm font-mono text-slate-100">
-                {status.debounce_seconds}s
-              </div>
-            </Card>
-            <Card>
-              <CardLabel>Pending folders</CardLabel>
-              <div className="text-sm font-mono text-slate-100">
-                {status.pending_count}
-              </div>
-            </Card>
-            <Card>
-              <CardLabel>In-flight pipelines</CardLabel>
-              <div className="text-sm font-mono text-slate-100">
-                {status.in_flight_count}
-              </div>
-            </Card>
-          </div>
-
-          <div className="mt-4">
-            <SubHeader>Watched paths</SubHeader>
-            {status.watched_paths.length === 0 ? (
-              <div className="text-xs text-slate-500">
-                No paths are currently being watched. Enable a library in the
-                sidebar to add it.
-              </div>
-            ) : (
-              <ul className="text-xs font-mono text-slate-300 space-y-0.5">
-                {status.watched_paths.map((p) => (
-                  <li key={p} className="truncate">
-                    {p}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </>
-      )}
-
-      {err && (
-        <div className="mt-4 text-xs text-rose-400">{err}</div>
-      )}
-      {savedMsg && (
-        <div className="mt-2 text-xs text-emerald-400">{savedMsg}</div>
-      )}
-    </>
-  );
-}
-
 function AboutPane() {
-  const [info, setInfo] = useState<{ version: string; name: string; repo: string } | null>(null);
+  const [info, setInfo] = useState<{
+    version: string;
+    name: string;
+    repo: string;
+  } | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -1206,7 +1288,10 @@ function AboutPane() {
 
   return (
     <>
-      <PaneHeader title="About" subtitle="Build identity for the running container." />
+      <PaneHeader
+        title="About"
+        subtitle="Build identity for the running container."
+      />
       {err && <div className="text-xs text-rose-400">{err}</div>}
       {!info && !err && <div className="text-xs text-slate-500">Loading…</div>}
       {info && (
@@ -1217,7 +1302,9 @@ function AboutPane() {
           </Card>
           <Card>
             <CardLabel>Backend version</CardLabel>
-            <div className="text-sm font-mono text-slate-100">v{info.version}</div>
+            <div className="text-sm font-mono text-slate-100">
+              v{info.version}
+            </div>
           </Card>
           <Card>
             <CardLabel>Repository</CardLabel>
@@ -1237,8 +1324,8 @@ function AboutPane() {
             </div>
             <div className="text-[11px] text-slate-500 mt-1">
               The <code className="text-slate-300">:latest</code> tag tracks the
-              newest release; the version chip in the top bar shows what's actually
-              running.
+              newest release; the version chip in the top bar shows what's
+              actually running.
             </div>
           </Card>
         </div>
@@ -1248,43 +1335,6 @@ function AboutPane() {
 }
 
 /* ----------------------- Atoms ----------------------- */
-
-function Card({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
-      {children}
-    </div>
-  );
-}
-
-function CardLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">
-      {children}
-    </div>
-  );
-}
-
-function SubHeader({ children }: { children: React.ReactNode }) {
-  return (
-    <h3 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2 mt-1">
-      {children}
-    </h3>
-  );
-}
-
-function Divider() {
-  return <hr className="my-5 border-slate-800" />;
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-3 mb-3">
-      <label className="text-sm text-slate-300 w-64">{label}</label>
-      {children}
-    </div>
-  );
-}
 
 const DEFAULT_TEMPLATES = {
   standard:
@@ -1327,10 +1377,11 @@ function RenameTemplateField({
   hint?: string;
 }) {
   return (
-    <div className="flex items-start gap-3 mb-3">
+    <div className="flex flex-col xl:flex-row items-start gap-3 mb-3">
       <label className="text-sm text-slate-300 w-64 mt-1">{label}</label>
-      <div className="flex-1 max-w-2xl">
+      <div className="w-full min-w-0 xl:flex-1 max-w-2xl">
         <textarea
+          aria-label={label}
           className="bg-slate-800 px-2 py-1 rounded w-full font-mono text-xs leading-relaxed"
           rows={2}
           value={value}
@@ -1354,355 +1405,41 @@ function RenameTemplateField({
   );
 }
 
-const ACTION_LABELS: Record<ScheduleAction, string> = {
-  scan_only: "Scan only",
-  match_only: "Match only",
-  build_only: "Build only",
-  match_and_build: "Match + Build",
-  full: "Full (scan + match + build)",
-};
-
-const CRON_PRESETS: { label: string; cron: string }[] = [
-  { label: "Daily 3am UTC", cron: "0 3 * * *" },
-  { label: "Sunday 3am UTC", cron: "0 3 * * 0" },
-  { label: "Every 6 hours", cron: "0 */6 * * *" },
-  { label: "Hourly", cron: "0 * * * *" },
-];
-
-function fmtTimestamp(ts: number | null): string {
-  if (!ts) return "never";
-  try {
-    return new Date(ts * 1000).toLocaleString();
-  } catch {
-    return String(ts);
-  }
-}
-
-function SchedulesSection() {
-  const confirmDlg = useConfirm();
-  const [items, setItems] = useState<Schedule[] | null>(null);
-  const [libs, setLibs] = useState<Library[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [draft, setDraft] = useState<{
-    library: string;
-    cron: string;
-    action: ScheduleAction;
-    enabled: boolean;
-  }>({ library: "", cron: "0 3 * * *", action: "match_and_build", enabled: true });
-
-  const reload = async () => {
-    try {
-      const [s, l] = await Promise.all([api.schedules.list(), api.libraries.list()]);
-      setItems(s.schedules);
-      setLibs(l.libraries);
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
-    }
-  };
-
-  useEffect(() => {
-    reload();
-  }, []);
-
-  const create = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.schedules.create({
-        library: draft.library || null,
-        cron: draft.cron.trim(),
-        action: draft.action,
-        enabled: draft.enabled,
-      });
-      setDraft({ ...draft, library: "", cron: "0 3 * * *" });
-      await reload();
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const update = async (id: number, body: Parameters<typeof api.schedules.update>[1]) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.schedules.update(id, body);
-      await reload();
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async (id: number) => {
-    const ok = await confirmDlg({
-      title: "Delete this schedule?",
-      message: "The recurring run is removed immediately. You can recreate it later from this same panel.",
-      confirmLabel: "Delete",
-      tone: "danger",
-    });
-    if (!ok) return;
-    setBusy(true);
-    try {
-      await api.schedules.remove(id);
-      await reload();
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const runNow = async (id: number) => {
-    setBusy(true);
-    try {
-      await api.schedules.run(id);
-      setTimeout(reload, 1500);
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
+function SecurityPane() {
   return (
     <>
       <PaneHeader
-        title="Schedules"
-        subtitle="Periodically scan, auto-match, and build NFOs for new or changed items. Cron expressions are evaluated in UTC. A schedule with no library applies to every enabled library."
+        title="Security & file safety"
+        subtitle="Access is controlled by the server environment. File changes stay inside your configured media root."
       />
-
-      <div className="bg-slate-900/60 border border-slate-800 rounded-md p-3 mb-4">
-        <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">
-          New schedule
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label className="flex flex-col gap-1 text-xs text-slate-400">
-            Library
-            <select
-              className="bg-slate-800 px-2 py-1 rounded text-sm text-slate-100"
-              value={draft.library}
-              onChange={(e) => setDraft({ ...draft, library: e.target.value })}
-            >
-              <option value="">All libraries</option>
-              {libs.map((l) => (
-                <option key={l.name} value={l.name}>
-                  {l.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-slate-400">
-            Action
-            <select
-              className="bg-slate-800 px-2 py-1 rounded text-sm text-slate-100"
-              value={draft.action}
-              onChange={(e) =>
-                setDraft({ ...draft, action: e.target.value as ScheduleAction })
-              }
-            >
-              {Object.entries(ACTION_LABELS).map(([v, label]) => (
-                <option key={v} value={v}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-slate-400 sm:col-span-2">
-            Cron (UTC, 5 fields)
-            <input
-              className="bg-slate-800 px-2 py-1 rounded text-sm font-mono text-slate-100"
-              value={draft.cron}
-              onChange={(e) => setDraft({ ...draft, cron: e.target.value })}
-              placeholder="0 3 * * *"
-            />
-            <div className="flex flex-wrap gap-1.5 mt-1">
-              {CRON_PRESETS.map((p) => (
-                <button
-                  key={p.cron}
-                  type="button"
-                  onClick={() => setDraft({ ...draft, cron: p.cron })}
-                  className="text-[11px] px-2 py-0.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded"
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </label>
-        </div>
-        <div className="flex items-center gap-3 mt-3">
-          <label className="text-xs text-slate-300 inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={draft.enabled}
-              onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
-              className="accent-indigo-500"
-            />
-            Enabled
-          </label>
-          <button
-            onClick={create}
-            disabled={busy || !draft.cron.trim()}
-            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs disabled:opacity-50"
-          >
-            Add schedule
-          </button>
-          {error && <span className="text-xs text-rose-400">{error}</span>}
-        </div>
+      <div className="space-y-4 text-sm text-slate-300">
+        <Card>
+          <h3 className="font-medium mb-2">API access</h3>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            API_TOKEN is required on the server. Every API request is
+            authenticated. To rotate access, change the server token, restart
+            the container and sign in again. Use HTTPS and authentication at
+            your reverse proxy when accessing remotely.
+          </p>
+        </Card>
+        <Card>
+          <h3 className="font-medium mb-2">Allowed origins & hosts</h3>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            Set TRUSTED_HOSTS to your server hostnames and IPs. CORS is off by
+            default; configure CORS_ALLOW_ORIGINS only for a separate frontend
+            origin.
+          </p>
+        </Card>
+        <Card>
+          <h3 className="font-medium mb-2">Changes to your media</h3>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            Renaming and cleanup require a preview and explicit confirmation.
+            Foreign NFO preservation and automatic orphan cleanup are controlled
+            under Metadata. Watcher and schedules can write NFOs automatically
+            when enabled.
+          </p>
+        </Card>
       </div>
-
-      {items === null ? (
-        <div className="text-xs text-slate-500">Loading schedules…</div>
-      ) : items.length === 0 ? (
-        <div className="text-xs text-slate-500">No schedules configured.</div>
-      ) : (
-        <div className="space-y-2">
-          {items.map((sch) => (
-            <ScheduleRow
-              key={sch.id}
-              libs={libs}
-              sch={sch}
-              busy={busy}
-              onUpdate={(body) => update(sch.id, body)}
-              onRemove={() => remove(sch.id)}
-              onRun={() => runNow(sch.id)}
-            />
-          ))}
-        </div>
-      )}
     </>
-  );
-}
-
-function ScheduleRow({
-  libs,
-  sch,
-  busy,
-  onUpdate,
-  onRemove,
-  onRun,
-}: {
-  libs: Library[];
-  sch: Schedule;
-  busy: boolean;
-  onUpdate: (body: { library?: string | null; cron?: string; action?: ScheduleAction; enabled?: boolean }) => void;
-  onRemove: () => void;
-  onRun: () => void;
-}) {
-  const [cron, setCron] = useState(sch.cron);
-  const dirty = cron !== sch.cron;
-
-  const statusBadge = useMemo(() => {
-    const status = sch.last_status;
-    if (status === "running") {
-      return (
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-700 text-amber-100 uppercase tracking-wide">
-          running
-        </span>
-      );
-    }
-    if (status === "ok") {
-      return (
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-700 text-emerald-100 uppercase tracking-wide">
-          ok
-        </span>
-      );
-    }
-    if (status === "error") {
-      return (
-        <span
-          className="text-[10px] px-1.5 py-0.5 rounded bg-rose-700 text-rose-100 uppercase tracking-wide"
-          title={sch.last_message ?? undefined}
-        >
-          error
-        </span>
-      );
-    }
-    return null;
-  }, [sch.last_status, sch.last_message]);
-
-  return (
-    <div className="bg-slate-900/40 border border-slate-800 rounded-md p-3">
-      <div className="flex flex-wrap items-center gap-3 mb-2">
-        <span className="text-xs uppercase text-slate-500">#{sch.id}</span>
-        <select
-          className="bg-slate-800 px-2 py-0.5 rounded text-xs text-slate-100"
-          value={sch.library ?? ""}
-          onChange={(e) => onUpdate({ library: e.target.value || null })}
-          disabled={busy}
-        >
-          <option value="">All libraries</option>
-          {libs.map((l) => (
-            <option key={l.name} value={l.name}>
-              {l.name}
-            </option>
-          ))}
-        </select>
-        <select
-          className="bg-slate-800 px-2 py-0.5 rounded text-xs text-slate-100"
-          value={sch.action}
-          onChange={(e) => onUpdate({ action: e.target.value as ScheduleAction })}
-          disabled={busy}
-        >
-          {Object.entries(ACTION_LABELS).map(([v, label]) => (
-            <option key={v} value={v}>
-              {label}
-            </option>
-          ))}
-        </select>
-        <label className="text-xs text-slate-300 inline-flex items-center gap-1.5">
-          <input
-            type="checkbox"
-            checked={!!sch.enabled}
-            onChange={(e) => onUpdate({ enabled: e.target.checked })}
-            disabled={busy}
-            className="accent-indigo-500"
-          />
-          Enabled
-        </label>
-        {statusBadge}
-        <span className="text-[11px] text-slate-500">
-          last run: {fmtTimestamp(sch.last_run)}
-        </span>
-        <div className="flex-1" />
-        <button
-          onClick={onRun}
-          disabled={busy}
-          className="text-xs px-2 py-0.5 bg-indigo-700 hover:bg-indigo-600 rounded disabled:opacity-50"
-        >
-          Run now
-        </button>
-        <button
-          onClick={onRemove}
-          disabled={busy}
-          className="text-xs px-2 py-0.5 bg-rose-900/40 hover:bg-rose-900/70 border border-rose-800 text-rose-200 rounded disabled:opacity-50"
-        >
-          Delete
-        </button>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <input
-          className="bg-slate-800 px-2 py-1 rounded text-xs font-mono text-slate-100 w-44"
-          value={cron}
-          onChange={(e) => setCron(e.target.value)}
-          disabled={busy}
-        />
-        <button
-          onClick={() => onUpdate({ cron: cron.trim() })}
-          disabled={busy || !dirty}
-          className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded disabled:opacity-30"
-        >
-          Save cron
-        </button>
-        {sch.last_message && sch.last_status === "error" && (
-          <span className="text-[11px] text-rose-300 truncate" title={sch.last_message}>
-            {sch.last_message}
-          </span>
-        )}
-      </div>
-    </div>
   );
 }

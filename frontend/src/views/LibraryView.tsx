@@ -1,111 +1,28 @@
 import { useEffect, useMemo, useState } from "react";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, Item } from "../lib/api";
-import { ViewMode } from "../App";
-import { useConfirm } from "../components/ConfirmDialog";
-
-// v0.11.4 — "Needs work / Complete / All" filter pill on the library toolbar.
-// `Needs work` is anything that isn't fully built. `Complete` is the inverse.
-type LibFilter = "all" | "needs" | "complete";
-const NEEDS_WORK_STATUSES = "none,partial,stale,foreign,mixed";
-
-function filterToParams(f: LibFilter): { status?: string } {
-  if (f === "needs") return { status: NEEDS_WORK_STATUSES };
-  if (f === "complete") return { status: "complete" };
-  return {};
-}
-
-function loadFilterFor(library: string | null): LibFilter {
-  if (!library) return "all";
-  try {
-    const v = localStorage.getItem(`pnb.libFilter.${library}`);
-    if (v === "needs" || v === "complete" || v === "all") return v;
-  } catch {}
-  return "all";
-}
-
-// v0.13.0 — library sort. Client-side over the (≤5000 row) items list; the
-// choice persists per library, same pattern as the status filter above.
-type SortKey = "title-asc" | "title-desc" | "added" | "updated" | "seasons";
-
-const SORT_OPTIONS: { key: SortKey; label: string }[] = [
-  { key: "title-asc", label: "Title (A-Z)" },
-  { key: "title-desc", label: "Title (Z-A)" },
-  { key: "added", label: "Date Added" },
-  { key: "updated", label: "Date Updated" },
-  { key: "seasons", label: "Season Count (On disk)" },
-];
-
-const SORT_KEYS = new Set<string>(SORT_OPTIONS.map((o) => o.key));
-
-function loadSortFor(library: string | null): SortKey {
-  if (!library) return "title-asc";
-  try {
-    const v = localStorage.getItem(`pnb.libSort.${library}`);
-    if (v && SORT_KEYS.has(v)) return v as SortKey;
-  } catch {}
-  return "title-asc";
-}
-
-const titleOf = (i: Item) => (i.sort_title || i.title || "").toLowerCase();
-const byTitle = (a: Item, b: Item) => titleOf(a).localeCompare(titleOf(b));
-
-/** Descending on a numeric field; items without a value sink to the bottom
- *  regardless of direction, then tiebreak by title. */
-function byNumberDesc(field: (i: Item) => number | null | undefined) {
-  return (a: Item, b: Item) => {
-    const av = field(a);
-    const bv = field(b);
-    const aMissing = av === null || av === undefined;
-    const bMissing = bv === null || bv === undefined;
-    if (aMissing && bMissing) return byTitle(a, b);
-    if (aMissing) return 1;
-    if (bMissing) return -1;
-    if (bv! !== av!) return bv! - av!;
-    return byTitle(a, b);
-  };
-}
-
-function sortItems(items: Item[], sort: SortKey): Item[] {
-  const out = [...items];
-  switch (sort) {
-    case "title-asc":
-      out.sort(byTitle);
-      break;
-    case "title-desc":
-      out.sort((a, b) => byTitle(b, a));
-      break;
-    case "added":
-      out.sort(byNumberDesc((i) => i.date_added));
-      break;
-    case "updated":
-      out.sort(byNumberDesc((i) => i.date_updated));
-      break;
-    case "seasons":
-      out.sort(byNumberDesc((i) => i.season_count_local));
-      break;
-  }
-  return out;
-}
-
-const STATUS_COLOR: Record<string, string> = {
-  none: "bg-slate-700 text-slate-200",
-  partial: "bg-amber-700 text-amber-100",
-  complete: "bg-emerald-700 text-emerald-100",
-  stale: "bg-orange-700 text-orange-100",
-  foreign: "bg-purple-700 text-purple-100",
-  mixed: "bg-cyan-700 text-cyan-100",
-};
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { api } from "../lib/api";
+import type { ViewMode } from "../App";
+import { useConfirm } from "../components/confirm";
+import {
+  filterToParams,
+  loadFilterFor,
+  loadSortFor,
+  sortItems,
+  SORT_OPTIONS,
+  type LibFilter,
+  type SortKey,
+} from "../lib/library";
+import LibraryMaintenance from "./LibraryMaintenance";
+import { LibraryGrid, LibraryList } from "./LibraryItems";
 
 export default function LibraryView(props: {
   library: string | null;
   viewMode: ViewMode;
   search: string;
+  onSearch: (search: string) => void;
+  onViewMode: (mode: ViewMode) => void;
+  onSelectLibrary: (library: string) => void;
   onOpenDetail: (path: string) => void;
-  /**
-   * v0.11.4 — fires after the items query resolves so App.tsx can restore
-   * the previous scroll position when the user navigates back into a library.
-   */
   onItemsReady?: () => void;
 }) {
   const qc = useQueryClient();
@@ -113,91 +30,93 @@ export default function LibraryView(props: {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [filter, setFilter] = useState<LibFilter>(() => loadFilterFor(props.library));
+  const [filter, setFilter] = useState<LibFilter>(() =>
+    loadFilterFor(props.library),
+  );
   const [sort, setSort] = useState<SortKey>(() => loadSortFor(props.library));
-
-  // Reload persisted filter + sort when the active library changes.
+  const [query, setQuery] = useState(props.search);
   useEffect(() => {
-    setFilter(loadFilterFor(props.library));
-    setSort(loadSortFor(props.library));
-  }, [props.library]);
-
-  const setFilterPersisted = (f: LibFilter) => {
-    setFilter(f);
-    if (props.library) {
-      try {
-        localStorage.setItem(`pnb.libFilter.${props.library}`, f);
-      } catch {}
-    }
-  };
-
-  const setSortPersisted = (s: SortKey) => {
-    setSort(s);
-    if (props.library) {
-      try {
-        localStorage.setItem(`pnb.libSort.${props.library}`, s);
-      } catch {}
-    }
-  };
-
-  const { data, isFetching } = useQuery({
-    queryKey: ["items", props.library, props.search, filter],
+    const id = setTimeout(() => setQuery(props.search), 250);
+    return () => clearTimeout(id);
+  }, [props.search]);
+  const { data, isPending, isFetching, error, refetch } = useQuery({
+    queryKey: ["items", props.library, query, filter],
     queryFn: () =>
       api.items.list({
-        library: props.library || undefined,
-        q: props.search || undefined,
+        library: props.library ?? undefined,
+        q: query || undefined,
         ...filterToParams(filter),
       }),
     enabled: !!props.library,
-    // v0.11.11: cache the items list for 60s so navigating into a show and
-    // back doesn't refetch. Keep the previous list while a refetch is in
-    // flight so toggling the filter pill or typing in the search box doesn't
-    // flash an empty grid every keystroke.
     staleTime: 60_000,
-    placeholderData: keepPreviousData,
   });
-
-  // Notify App.tsx as soon as items have rendered so it can restore scroll
-  // position. We tie this to `data` (not isFetching) so a background refetch
-  // doesn't trigger a re-restore that would yank the user back to the top.
+  const { onItemsReady } = props;
   useEffect(() => {
-    if (!data) return;
-    props.onItemsReady?.();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
-
-  const rawItems = data?.items ?? [];
-  // v0.13.0 — apply the library sort client-side. The backend returns rows
-  // in sort_title order (the "Title (A-Z)" default), everything else is
-  // re-ordered here.
-  const items = useMemo(() => sortItems(rawItems, sort), [rawItems, sort]);
-  const allSelected = items.length > 0 && items.every((i) => selected.has(i.folder_path));
-  const someSelected = selected.size > 0;
-
-  const toggle = (path: string) => {
-    setSelected((s) => {
-      const n = new Set(s);
-      if (n.has(path)) n.delete(path);
-      else n.add(path);
-      return n;
-    });
-  };
-  const toggleAll = () => {
-    if (allSelected) setSelected(new Set());
-    else setSelected(new Set(items.map((i) => i.folder_path)));
-  };
+    if (data) onItemsReady?.();
+  }, [data, onItemsReady]);
+  const items = useMemo(() => sortItems(data?.items ?? [], sort), [data, sort]);
+  // Only visible, current-library rows can enter an operation, including while filters load.
+  const selectedPaths = useMemo(
+    () =>
+      items
+        .filter((item) => selected.has(item.folder_path))
+        .map((item) => item.folder_path),
+    [items, selected],
+  );
+  const allSelected = items.length > 0 && selectedPaths.length === items.length;
+  const flash = (message: string) => setToast(message);
   const clearSelection = () => setSelected(new Set());
-
-  const selectedPaths = useMemo(() => Array.from(selected), [selected]);
-
-  const flash = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 4000);
+  const toggle = (path: string) =>
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  const toggleAll = () =>
+    setSelected(
+      allSelected ? new Set() : new Set(items.map((item) => item.folder_path)),
+    );
+  const saveFilter = (next: LibFilter) => {
+    setFilter(next);
+    clearSelection();
+    try {
+      localStorage.setItem(`pnb.libFilter.${props.library}`, next);
+    } catch {
+      /* Optional preference storage. */
+    }
   };
-
+  const saveSort = (next: SortKey) => {
+    setSort(next);
+    try {
+      localStorage.setItem(`pnb.libSort.${props.library}`, next);
+    } catch {
+      /* Optional preference storage. */
+    }
+  };
+  const scan = async () => {
+    if (!props.library || busy) return;
+    setBusy("Scanning library…");
+    setToast(null);
+    try {
+      await api.libraries.scan(props.library);
+      await qc.invalidateQueries({ queryKey: ["items"] });
+      flash("Scan complete. Library is up to date.");
+    } catch (error) {
+      flash(
+        `Scan failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
   const runAutoMatch = async (scope: "selected" | "library") => {
     if (!props.library) return;
-    setBusy(scope === "selected" ? "Auto-matching selected…" : "Auto-matching library…");
+    setBusy(
+      scope === "selected"
+        ? "Auto-matching selected…"
+        : "Auto-matching library…",
+    );
     try {
       // v0.8.0: "Auto-match all" now processes every folder in the library —
       // we deliberately drop only_unmatched:true so already-matched folders
@@ -209,8 +128,8 @@ export default function LibraryView(props: {
       const res = await api.match.autoBulk(body);
       flash(`Auto-match: ${res.matched}/${res.total} matched`);
       qc.invalidateQueries({ queryKey: ["items"] });
-    } catch (e: any) {
-      flash(`Auto-match failed: ${e?.message ?? e}`);
+    } catch (e: unknown) {
+      flash(`Auto-match failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(null);
     }
@@ -220,9 +139,14 @@ export default function LibraryView(props: {
     if (!props.library) return;
     setBusy("Scanning for missing folders…");
     try {
-      const dry = await api.items.prune({ library: props.library, dry_run: true });
+      const dry = await api.items.prune({
+        library: props.library,
+        dry_run: true,
+      });
       if (dry.missing === 0) {
-        flash(`Nothing to prune — all ${dry.checked} folder(s) still exist on disk.`);
+        flash(
+          `Nothing to prune — all ${dry.checked} folder(s) still exist on disk.`,
+        );
         return;
       }
       const preview = dry.items
@@ -232,17 +156,19 @@ export default function LibraryView(props: {
       const more = dry.missing > 10 ? `\n… and ${dry.missing - 10} more` : "";
       const ok = await confirmDlg({
         title: `Forget ${dry.missing} missing folder(s)?`,
-        message:
-          `These folders are tracked in the database but no longer exist on disk:\n\n${preview}${more}\n\nForget all of them? (No files are deleted.)`,
+        message: `These folders are tracked in the database but no longer exist on disk:\n\n${preview}${more}\n\nForget all of them? (No files are deleted.)`,
         confirmLabel: "Forget",
         tone: "danger",
       });
       if (!ok) return;
-      const res = await api.items.prune({ library: props.library, dry_run: false });
+      const res = await api.items.prune({
+        library: props.library,
+        dry_run: false,
+      });
       flash(`Pruned ${res.removed} missing folder(s)`);
       qc.invalidateQueries({ queryKey: ["items"] });
-    } catch (e: any) {
-      flash(`Prune failed: ${e?.message ?? e}`);
+    } catch (e: unknown) {
+      flash(`Prune failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(null);
     }
@@ -267,7 +193,7 @@ export default function LibraryView(props: {
       });
       if (dry.candidates === 0) {
         flash(
-          `No empty folders — every tracked folder in "${props.library}" contains at least one media file.`
+          `No empty folders — every tracked folder in "${props.library}" contains at least one media file.`,
         );
         return;
       }
@@ -301,35 +227,39 @@ export default function LibraryView(props: {
         : "";
       flash(`Pruned ${res.removed ?? 0} empty folder(s)${skippedPart}`);
       qc.invalidateQueries({ queryKey: ["items"] });
-    } catch (e: any) {
-      flash(`Prune empty failed: ${e?.message ?? e}`);
+    } catch (e: unknown) {
+      flash(
+        `Prune empty failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
     } finally {
       setBusy(null);
     }
   };
 
   const runRemoveSelected = async () => {
-    if (!someSelected) return;
+    if (!selectedPaths.length) return;
     const ok = await confirmDlg({
-      title: `Remove ${selected.size} item(s) from the library?`,
-      message:
-        `This only forgets them in the database — no files are deleted on disk.`,
+      title: `Remove ${selectedPaths.length} item(s) from the library?`,
+      message: `This only forgets them in the database — no files are deleted on disk.`,
       confirmLabel: "Remove",
       tone: "danger",
     });
     if (!ok) return;
-    setBusy(`Removing ${selected.size} item(s)…`);
+    setBusy(`Removing ${selectedPaths.length} item(s)…`);
     try {
       let removed = 0;
+      let failed = 0;
       for (const p of selectedPaths) {
         try {
           const r = await api.items.remove(p);
           removed += r.removed;
         } catch {
-          /* keep going */
+          failed++;
         }
       }
-      flash(`Removed ${removed} item(s) from library`);
+      flash(
+        `Removed ${removed} item(s) from library${failed ? `; ${failed} failed. Retry failed items.` : ""}`,
+      );
       clearSelection();
       qc.invalidateQueries({ queryKey: ["items"] });
     } finally {
@@ -339,7 +269,9 @@ export default function LibraryView(props: {
 
   const runBuild = async (scope: "selected" | "library") => {
     if (!props.library) return;
-    setBusy(scope === "selected" ? "Queuing builds…" : "Queuing library builds…");
+    setBusy(
+      scope === "selected" ? "Queuing builds…" : "Queuing library builds…",
+    );
     try {
       const body =
         scope === "selected"
@@ -348,641 +280,346 @@ export default function LibraryView(props: {
       const res = await api.buildBulk(body);
       flash(`Queued ${res.queued} build job(s) — see Jobs tab`);
       clearSelection();
-    } catch (e: any) {
-      flash(`Build failed: ${e?.message ?? e}`);
+    } catch (e: unknown) {
+      flash(`Build failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(null);
     }
   };
 
-  if (!props.library) {
-    return (
-      <div className="p-8 text-slate-400">
-        Pick a library from the sidebar. New folders under <code>/media</code> are auto-detected.
-      </div>
-    );
-  }
-
-  const btnBase =
-    "text-sm px-3 py-1.5 rounded-md font-medium transition disabled:opacity-40 disabled:cursor-not-allowed";
-  const btnPrimary = `${btnBase} bg-indigo-600 hover:bg-indigo-500 text-white`;
-  const btnAccent = `${btnBase} bg-emerald-600 hover:bg-emerald-500 text-white`;
-  const btnSecondary = `${btnBase} bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700`;
-  const btnGhost = `${btnBase} bg-transparent hover:bg-slate-800 text-slate-300 border border-slate-800`;
-  const btnDanger = `${btnBase} bg-rose-900/40 hover:bg-rose-900/70 text-rose-200 border border-rose-800`;
-
-  // Hazard-yellow buttons for the Danger Zone. Black text on amber-400 with a
-  // chunkier border so they read as "don't press unless you mean it".
-  const btnHazard = `${btnBase} bg-amber-400 hover:bg-amber-300 text-black border-2 border-amber-500 shadow-sm`;
-  const btnHazardOutline = `${btnBase} bg-transparent hover:bg-amber-400/10 text-amber-300 border-2 border-amber-500`;
-
+  if (!props.library) return <LibraryHome onSelect={props.onSelectLibrary} />;
+  const locked = !!busy || isFetching || query !== props.search;
   return (
-    <div className="p-6 max-w-[1600px] mx-auto">
-      {/* Library header */}
-      <div className="flex flex-wrap items-baseline gap-3 mb-2">
-        <h2 className="text-2xl font-semibold tracking-tight">{props.library}</h2>
-        <span className="text-sm text-slate-500">{items.length} items</span>
-        {busy && <span className="text-xs text-amber-400 ml-auto">{busy}</span>}
-      </div>
-
-      {/* Action toolbar — sticky */}
-      <div className="sticky top-0 z-20 -mx-6 px-6 py-3 mb-5 bg-slate-950/95 backdrop-blur supports-[backdrop-filter]:bg-slate-950/80 border-b border-slate-800">
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2 text-sm text-slate-300 px-3 py-1.5 rounded-md bg-slate-900 border border-slate-800 cursor-pointer hover:border-slate-700">
-            <input
-              type="checkbox"
-              checked={allSelected}
-              onChange={toggleAll}
-              className="accent-indigo-500"
-            />
-            Select all
-            {someSelected && (
-              <span className="text-xs bg-indigo-600 text-white rounded-full px-2 py-0.5 leading-none">
-                {selected.size}
-              </span>
-            )}
-          </label>
-
-          {/* Sort dropdown — v0.13.0 */}
-          <select
-            value={sort}
-            onChange={(e) => setSortPersisted(e.target.value as SortKey)}
-            className="text-xs bg-slate-900 border border-slate-800 rounded-md px-2 py-1.5 text-slate-300 hover:border-slate-700 focus:outline-none focus:border-indigo-600 cursor-pointer"
-            title="Sort this library"
-            aria-label="Sort library"
-          >
-            {SORT_OPTIONS.map((o) => (
-              <option key={o.key} value={o.key}>
-                Sort: {o.label}
-              </option>
-            ))}
-          </select>
-
-          {/* Status filter pill — v0.11.4 */}
-          <div className="flex bg-slate-900 border border-slate-800 rounded-md p-0.5">
-            {(
-              [
-                { key: "all", label: "All" },
-                { key: "needs", label: "Needs work" },
-                { key: "complete", label: "Complete" },
-              ] as const
-            ).map((f) => (
-              <button
-                key={f.key}
-                onClick={() => setFilterPersisted(f.key)}
-                className={`px-2.5 py-1 text-xs rounded transition ${
-                  filter === f.key
-                    ? "bg-indigo-600 text-white"
-                    : "text-slate-400 hover:text-white hover:bg-slate-800"
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-
-          {someSelected ? (
-            <>
-              <button
-                disabled={!!busy}
-                onClick={() => runAutoMatch("selected")}
-                className={btnSecondary}
-              >
-                Auto-match
-              </button>
-              <button
-                disabled={!!busy}
-                onClick={() => runBuild("selected")}
-                className={btnPrimary}
-              >
-                Build
-              </button>
-              <button
-                disabled={!!busy}
-                onClick={runRemoveSelected}
-                className={btnDanger}
-                title="Forget selected items in the database. Files on disk are not touched."
-              >
-                Remove
-              </button>
-            </>
-          ) : (
-            <span className="text-xs text-slate-500">Select shows to act on them</span>
-          )}
-
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <button
-              disabled={!!busy}
-              onClick={() => runAutoMatch("library")}
-              className={btnGhost}
-              title="Run auto-match on all unmatched items in this library"
-            >
-              Auto-match all
-            </button>
-            <button
-              disabled={!!busy}
-              onClick={() => runBuild("library")}
-              className={btnAccent}
-              title="Queue builds for everything in this library that is not already complete"
-            >
-              Build all
-            </button>
-            <button
-              disabled={!!busy}
-              onClick={runPruneMissing}
-              className={btnGhost}
-              title="Find folders tracked in the database that no longer exist on disk and remove them."
-            >
-              Prune missing
-            </button>
-            <button
-              disabled={!!busy}
-              onClick={runPruneEmpty}
-              className={btnHazardOutline}
-              title="Find folders that exist on disk but contain no video files (e.g. only NFOs + posters), preview them, and prune. Folders that contain media are never touched."
-            >
-              ⚠ Prune empty
-            </button>
-            <button
-              className={btnGhost}
-              onClick={async () => {
-                await api.libraries.scan(props.library!);
-                setTimeout(() => qc.invalidateQueries({ queryKey: ["items"] }), 500);
-              }}
-            >
-              {isFetching ? "scanning…" : "Scan"}
-            </button>
-          </div>
+    <div className="page">
+      <div className="page-heading">
+        <div>
+          <p className="eyebrow">Media library</p>
+          <h1 className="page-title">{props.library}</h1>
+          <p className="text-xs text-slate-500 mt-2">
+            {isPending
+              ? "Loading titles…"
+              : `${items.length.toLocaleString()} ${items.length === 1 ? "title" : "titles"}${filter !== "all" || query ? " in this view" : ""}`}{" "}
+            · Local metadata & artwork
+          </p>
         </div>
+        <div className="flex flex-wrap gap-2">
+          <button className="btn btn-ghost" disabled={!!busy} onClick={scan}>
+            {busy === "Scanning library…" ? "Scanning…" : "Scan library"}
+          </button>
+          <button
+            className="btn"
+            disabled={locked}
+            onClick={() => runAutoMatch("library")}
+          >
+            Auto-match all
+          </button>
+          <button
+            className="btn btn-primary"
+            disabled={locked}
+            onClick={() => runBuild("library")}
+          >
+            Build missing
+          </button>
+        </div>
+      </div>
+      <div className="library-toolbar">
+        <label className="relative flex-1 min-w-[180px] max-w-md">
+          <span className="sr-only">Search library</span>
+          <input
+            type="search"
+            className="field w-full"
+            placeholder="Search titles…"
+            value={props.search}
+            onChange={(event) => {
+              props.onSearch(event.target.value);
+              clearSelection();
+            }}
+          />
+        </label>
+        <div
+          className="flex gap-0.5 rounded-md bg-slate-900 p-1 border border-slate-800"
+          aria-label="Filter by status"
+        >
+          {(
+            [
+              ["all", "All titles"],
+              ["needs", "Needs work"],
+              ["complete", "Complete"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              className={`px-3 py-1.5 rounded text-xs ${filter === key ? "bg-slate-700 text-slate-100" : "text-slate-400"}`}
+              aria-pressed={filter === key}
+              onClick={() => saveFilter(key)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <select
+          aria-label="Sort library"
+          className="field text-xs"
+          value={sort}
+          onChange={(event) => saveSort(event.target.value as SortKey)}
+        >
+          {SORT_OPTIONS.map((option) => (
+            <option key={option.key} value={option.key}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <div className="flex gap-1 ml-auto" aria-label="Library layout">
+          {(["grid", "list"] as const).map((mode) => (
+            <button
+              key={mode}
+              className={`btn ${props.viewMode === mode ? "border-indigo-500 text-indigo-300" : ""}`}
+              aria-pressed={props.viewMode === mode}
+              onClick={() => props.onViewMode(mode)}
+            >
+              {mode === "grid" ? "Grid" : "List"}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="flex items-center flex-wrap gap-3 mb-5 min-h-9">
+        <label className="flex items-center gap-2 text-xs text-slate-400">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            disabled={locked || !items.length}
+            onChange={toggleAll}
+          />
+          Select visible
+        </label>
+        {selectedPaths.length > 0 && (
+          <>
+            <span className="badge">{selectedPaths.length} selected</span>
+            <button
+              className="btn"
+              disabled={locked}
+              onClick={() => runAutoMatch("selected")}
+            >
+              Match selected
+            </button>
+            <button
+              className="btn btn-primary"
+              disabled={locked}
+              onClick={() => runBuild("selected")}
+            >
+              Build selected
+            </button>
+            <button
+              className="btn btn-danger"
+              disabled={locked}
+              onClick={runRemoveSelected}
+            >
+              Forget selected
+            </button>
+            <button className="text-xs text-slate-400" onClick={clearSelection}>
+              Clear
+            </button>
+          </>
+        )}
+        {busy && (
+          <span role="status" className="text-xs text-indigo-300 ml-auto">
+            {busy}
+          </span>
+        )}
+        {!busy && isFetching && (
+          <span role="status" className="text-xs text-slate-500 ml-auto">
+            Updating view…
+          </span>
+        )}
       </div>
       {toast && (
-        <div className="mb-4 text-sm px-3 py-2 rounded-md bg-slate-900 border border-indigo-800 text-indigo-200">
-          {toast}
+        <div
+          role="status"
+          className="notice mb-4 flex items-start justify-between gap-3"
+        >
+          <span>{toast}</span>
+          <button
+            aria-label="Dismiss notification"
+            onClick={() => setToast(null)}
+          >
+            ×
+          </button>
         </div>
       )}
-      {props.viewMode === "grid" ? (
-        <Grid
+      {error ? (
+        <div role="alert" className="notice error-notice">
+          Could not load this library: {error.message}
+          <button className="btn ml-3" onClick={() => refetch()}>
+            Retry
+          </button>
+        </div>
+      ) : isPending ? (
+        <div className="poster-grid" aria-label="Loading titles">
+          {Array.from({ length: 12 }, (_, i) => (
+            <div key={i} className="skeleton aspect-[2/3] rounded-md" />
+          ))}
+        </div>
+      ) : !items.length ? (
+        <div className="empty-state">
+          <h2 className="text-base text-slate-200 mb-2">
+            {query || filter !== "all"
+              ? "No titles match this view"
+              : "Ready for your media"}
+          </h2>
+          <p className="text-sm">
+            {query || filter !== "all"
+              ? "Try another title or clear the status filter."
+              : "Scan this library to discover movie and series folders."}
+          </p>
+          {(query || filter !== "all") && (
+            <button
+              className="btn mt-4"
+              onClick={() => {
+                props.onSearch("");
+                saveFilter("all");
+              }}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      ) : props.viewMode === "grid" ? (
+        <LibraryGrid
           items={items}
           selected={selected}
           onToggle={toggle}
           onOpen={props.onOpenDetail}
         />
       ) : (
-        <List
+        <LibraryList
           items={items}
           selected={selected}
           onToggle={toggle}
-          allSelected={allSelected}
-          onToggleAll={toggleAll}
           onOpen={props.onOpenDetail}
         />
       )}
-      <DangerZone
+      <details className="mt-8 text-xs text-slate-400">
+        <summary className="py-2">Database cleanup</summary>
+        <p className="mb-3">
+          Forget missing or empty folders from the app. Files remain on disk.
+        </p>
+        <div className="flex gap-2">
+          <button className="btn" disabled={!!busy} onClick={runPruneMissing}>
+            Preview missing folders
+          </button>
+          <button className="btn" disabled={!!busy} onClick={runPruneEmpty}>
+            Preview empty folders
+          </button>
+        </div>
+      </details>
+      <LibraryMaintenance
         library={props.library}
         busy={busy}
         setBusy={setBusy}
         flash={flash}
         invalidateItems={() => qc.invalidateQueries({ queryKey: ["items"] })}
-        btnHazard={btnHazard}
-        btnHazardOutline={btnHazardOutline}
+        btnHazard="btn btn-danger"
+        btnHazardOutline="btn btn-danger"
       />
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Danger Zone
-// ---------------------------------------------------------------------------
-// Two library-wide "big yellow buttons" for emergencies:
-//   1. Wipe ALL NFOs + artwork in this library
-//   2. Blast every .plex-nfo-builder.json sidecar in this library
-// Both run a dry-run preview first, show a count, and require explicit
-// confirmation before touching disk. Collapsed by default so they don't
-// scream at the user every time they open a library.
-
-function DangerZone(props: {
-  library: string;
-  busy: string | null;
-  setBusy: (v: string | null) => void;
-  flash: (msg: string) => void;
-  invalidateItems: () => void;
-  btnHazard: string;
-  btnHazardOutline: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const confirmDlg = useConfirm();
-
-  const runWipeNfo = async () => {
-    if (props.busy) return;
-    props.setBusy("Scanning library for NFOs and artwork…");
-    let preview: { folder_count: number; file_count?: number };
-    try {
-      preview = await api.libraries.wipeNfo(props.library, { dry_run: true });
-    } catch (e: any) {
-      props.flash(`Wipe preview failed: ${e?.message ?? e}`);
-      props.setBusy(null);
-      return;
-    }
-    props.setBusy(null);
-    if (!preview.file_count) {
-      props.flash(
-        `Nothing to wipe in "${props.library}" — checked ${preview.folder_count} folder(s).`
-      );
-      return;
-    }
-    const ok = await confirmDlg({
-      title: `Wipe NFOs + artwork across “${props.library}”?`,
-      message:
-        `This will delete ${preview.file_count} file(s) across ` +
-        `${preview.folder_count} folder(s):\n` +
-        `  • Every tvshow.nfo / movie .nfo / episode .nfo / season.nfo\n` +
-        `  • Every poster.jpg / background.jpg / banner.jpg / clearlogo.png\n` +
-        `  • Every Season<NN>-poster.jpg / season-specials-poster.jpg\n` +
-        `  • Every <episode>-thumb.jpg next to a video file\n\n` +
-        `Sidecars (.plex-nfo-builder.json) and your media files are NOT touched. ` +
-        `Bindings + overrides survive — you can rebuild straight after.\n\n` +
-        `This cannot be undone.`,
-      confirmLabel: "Wipe",
-      tone: "danger",
-    });
-    if (!ok) return;
-    props.setBusy(`Wiping NFOs + artwork from ${preview.folder_count} folder(s)…`);
-    try {
-      const res = await api.libraries.wipeNfo(props.library, { dry_run: false });
-      props.flash(
-        `Wiped ${res.nfo_deleted ?? 0} NFO(s) + ${res.artwork_deleted ?? 0} artwork file(s) ` +
-          `across ${res.folder_count} folder(s)` +
-          (res.failed && res.failed.length ? ` — ${res.failed.length} folder(s) failed` : "")
-      );
-      props.invalidateItems();
-    } catch (e: any) {
-      props.flash(`Wipe failed: ${e?.message ?? e}`);
-    } finally {
-      props.setBusy(null);
-    }
-  };
-
-  const runSweepOrphans = async () => {
-    if (props.busy) return;
-    props.setBusy("Scanning library for orphaned NFO + thumbnail sidecars…");
-    let preview: {
-      folder_count: number;
-      affected_folder_count: number;
-      nfo_removed: number;
-      thumb_removed: number;
-      folders: { folder_path: string; nfo_removed: number; thumb_removed: number }[];
-    };
-    try {
-      preview = await api.libraries.sweepOrphans(props.library, { dry_run: true });
-    } catch (e: any) {
-      props.flash(`Orphan scan failed: ${e?.message ?? e}`);
-      props.setBusy(null);
-      return;
-    }
-    props.setBusy(null);
-    const total = preview.nfo_removed + preview.thumb_removed;
-    if (!total) {
-      props.flash(
-        `No orphaned sidecars found in "${props.library}" — checked ${preview.folder_count} folder(s).`
-      );
-      return;
-    }
-    const sample = preview.folders
-      .slice(0, 6)
-      .map((f) => `  • ${f.folder_path.split("/").pop()} (${f.nfo_removed + f.thumb_removed})`)
-      .join("\n");
-    const more =
-      preview.affected_folder_count > 6
-        ? `\n  … and ${preview.affected_folder_count - 6} more folder(s)`
-        : "";
-    const ok = await confirmDlg({
-      title: `Sweep orphaned sidecars across “${props.library}”?`,
-      message:
-        `Found ${preview.nfo_removed} orphaned NFO(s) and ${preview.thumb_removed} ` +
-        `orphaned thumbnail(s) across ${preview.affected_folder_count} folder(s):\n` +
-        `${sample}${more}\n\n` +
-        `These are companion files left behind when Sonarr/Radarr swapped a release — ` +
-        `Plex reads the orphaned NFO's <uniqueid> and creates a duplicate library entry, ` +
-        `which is the “my show appears twice” symptom.\n\n` +
-        `Only ${'`<stem>.nfo`'} and ${'`<stem>-thumb.{jpg,jpeg,png}`'} files whose stem ` +
-        `does not pair with a live video file will be deleted. tvshow.nfo, season.nfo, ` +
-        `every show/season-level artwork file, and every video / subtitle / audio file ` +
-        `are preserved.\n\n` +
-        `This cannot be undone.`,
-      confirmLabel: "Sweep orphans",
-      tone: "danger",
-    });
-    if (!ok) return;
-    props.setBusy(`Sweeping orphans across ${preview.affected_folder_count} folder(s)…`);
-    try {
-      const res = await api.libraries.sweepOrphans(props.library, {
-        dry_run: false,
-        rescan: true,
-      });
-      props.flash(
-        `Removed ${res.nfo_removed} orphaned NFO(s) and ${res.thumb_removed} orphaned ` +
-          `thumb(s) across ${res.affected_folder_count} folder(s)` +
-          (res.failed && res.failed.length
-            ? ` — ${res.failed.length} folder(s) failed`
-            : "")
-      );
-      props.invalidateItems();
-    } catch (e: any) {
-      props.flash(`Orphan sweep failed: ${e?.message ?? e}`);
-    } finally {
-      props.setBusy(null);
-    }
-  };
-
-  const runWipeSidecars = async () => {
-    if (props.busy) return;
-    props.setBusy("Scanning library for sidecar files…");
-    let preview: { sidecar_count: number; files?: string[] };
-    try {
-      preview = await api.libraries.wipeSidecars(props.library, { dry_run: true });
-    } catch (e: any) {
-      props.flash(`Sidecar preview failed: ${e?.message ?? e}`);
-      props.setBusy(null);
-      return;
-    }
-    props.setBusy(null);
-    if (!preview.sidecar_count) {
-      props.flash(`No .plex-nfo-builder.json sidecars found in "${props.library}".`);
-      return;
-    }
-    const ok = await confirmDlg({
-      title: `Blast every sidecar in “${props.library}”?`,
-      message:
-        `Found ${preview.sidecar_count} .plex-nfo-builder.json sidecar file(s) to delete.\n\n` +
-        `The sidecar is the only on-disk record of bindings + overrides for ` +
-        `each folder. After wiping them, the database still remembers everything, ` +
-        `but if you ever wipe the database too you'll have to re-bind from scratch.\n\n` +
-        `NFOs and artwork are NOT touched.\n\n` +
-        `This cannot be undone.`,
-      confirmLabel: "Blast sidecars",
-      tone: "danger",
-    });
-    if (!ok) return;
-    props.setBusy(`Deleting ${preview.sidecar_count} sidecar file(s)…`);
-    try {
-      const res = await api.libraries.wipeSidecars(props.library, { dry_run: false });
-      props.flash(
-        `Deleted ${res.deleted?.length ?? 0} sidecar file(s)` +
-          (res.failed && res.failed.length ? ` — ${res.failed.length} failed` : "")
-      );
-    } catch (e: any) {
-      props.flash(`Sidecar wipe failed: ${e?.message ?? e}`);
-    } finally {
-      props.setBusy(null);
-    }
-  };
-
+function LibraryHome({ onSelect }: { onSelect: (name: string) => void }) {
+  const { data, error, isPending, refetch } = useQuery({
+    queryKey: ["libraries"],
+    queryFn: api.libraries.list,
+  });
+  const libraries =
+    data?.libraries.filter((library) => Number(library.enabled) === 1) ?? [];
   return (
-    <div className="mt-6 rounded-lg border-2 border-amber-500/60 bg-amber-500/[0.04]">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-left"
-      >
-        <div className="flex items-center gap-2">
-          <span
-            aria-hidden
-            className="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-400 text-black text-xs font-black"
-            title="Hazard"
-          >
-            ⚠
-          </span>
-          <span className="text-sm font-semibold text-amber-200">
-            Danger zone
-          </span>
-          <span className="text-xs text-amber-300/70">
-            library-wide destructive operations
-          </span>
-        </div>
-        <span className="text-xs text-amber-300/80">{open ? "hide" : "show"}</span>
-      </button>
-      {open && (
-        <div className="px-4 pb-4 pt-1 border-t border-amber-500/30 space-y-3">
-          <p className="text-xs text-amber-200/80 leading-relaxed">
-            These actions touch every folder tracked under{" "}
-            <span className="font-mono text-amber-100">{props.library}</span>. Each
-            one shows you exactly what it will delete and asks for confirmation
-            before touching disk. Don't press unless you're sure.
+    <div className="page">
+      <div className="page-heading">
+        <div>
+          <p className="eyebrow">Your workspace</p>
+          <h1 className="page-title">Media libraries</h1>
+          <p className="text-slate-400 text-sm mt-2">
+            Match your titles. Choose artwork. Build metadata that stays with
+            your media.
           </p>
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              onClick={runSweepOrphans}
-              disabled={!!props.busy}
-              className={props.btnHazard}
-              title="Delete orphaned <stem>.nfo and <stem>-thumb.* sidecars left behind by Sonarr/Radarr release upgrades. Live videos, tvshow.nfo, season.nfo, and show/season artwork are preserved."
-            >
-              ⚠ Sweep orphaned sidecars
-            </button>
-            <button
-              onClick={runWipeNfo}
-              disabled={!!props.busy}
-              className={props.btnHazard}
-              title="Delete every generated NFO and artwork file across this whole library. Bindings survive via the sidecar."
-            >
-              ⚠ Wipe ALL NFOs + artwork
-            </button>
-            <button
-              onClick={runWipeSidecars}
-              disabled={!!props.busy}
-              className={props.btnHazardOutline}
-              title="Delete every .plex-nfo-builder.json sidecar in this library. Database is untouched."
-            >
-              ⚠ Blast every sidecar (.plex-nfo-builder.json)
-            </button>
-          </div>
         </div>
-      )}
-    </div>
-  );
-}
-
-function Grid({
-  items,
-  selected,
-  onToggle,
-  onOpen,
-}: {
-  items: Item[];
-  selected: Set<string>;
-  onToggle: (p: string) => void;
-  onOpen: (p: string) => void;
-}) {
-  return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(170px,1fr))] gap-5">
-      {items.map((it) => (
-        <Tile
-          key={it.folder_path}
-          item={it}
-          checked={selected.has(it.folder_path)}
-          onToggle={onToggle}
-          onOpen={onOpen}
-        />
-      ))}
-    </div>
-  );
-}
-
-function Tile({
-  item,
-  checked,
-  onToggle,
-  onOpen,
-}: {
-  item: Item;
-  checked: boolean;
-  onToggle: (p: string) => void;
-  onOpen: (p: string) => void;
-}) {
-  const poster = item.poster_path
-    ? `${api.artwork.fileUrl(item.poster_path)}&t=${item.last_built ?? 0}`
-    : null;
-  return (
-    <div
-      className={`group relative rounded-lg overflow-hidden transition ${
-        checked
-          ? "ring-2 ring-indigo-500 ring-offset-2 ring-offset-slate-950"
-          : ""
-      }`}
-    >
-      {/* Selection checkbox — only visible on hover or when selected */}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggle(item.folder_path);
-        }}
-        className={`absolute top-2 left-2 z-20 w-6 h-6 rounded-md flex items-center justify-center transition ${
-          checked
-            ? "bg-indigo-600 text-white opacity-100"
-            : "bg-black/70 text-transparent opacity-0 group-hover:opacity-100 hover:bg-black/90 hover:text-slate-300 border border-white/20"
-        }`}
-        aria-label={checked ? "Deselect" : "Select"}
-      >
-        {checked ? (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-        ) : (
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-        )}
-      </button>
-
-      {/* Status badge — top right */}
-      {item.nfo_status && item.nfo_status !== "none" && (
-        <span
-          className={`absolute top-2 right-2 z-10 text-[10px] font-medium px-1.5 py-0.5 rounded uppercase tracking-wide ${
-            STATUS_COLOR[item.nfo_status] ?? "bg-slate-700"
-          }`}
-        >
-          {item.nfo_status}
-        </span>
-      )}
-
-      <button
-        onClick={() => onOpen(item.folder_path)}
-        className="w-full text-left block"
-      >
-        <div className="aspect-[2/3] bg-slate-900 flex items-center justify-center text-slate-600 overflow-hidden rounded-lg border border-slate-800 group-hover:border-slate-700 transition">
-          {poster ? (
-            <img
-              src={poster}
-              alt={item.title}
-              loading="lazy"
-              className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
-            />
-          ) : (
-            <div className="px-3 text-center">
-              <div className="text-[10px] uppercase tracking-wider text-slate-600 mb-1">No poster</div>
-              <div className="text-xs text-slate-400 line-clamp-3">{item.title}</div>
-            </div>
-          )}
+      </div>
+      {error ? (
+        <div role="alert" className="notice error-notice">
+          {error.message}
+          <button className="btn ml-3" onClick={() => refetch()}>
+            Retry
+          </button>
         </div>
-        <div className="pt-2 px-0.5">
-          <div className="text-sm truncate font-medium text-slate-200">{item.title}</div>
-          <div className="text-xs text-slate-500 mt-0.5">{item.year ?? "—"}</div>
-        </div>
-      </button>
-    </div>
-  );
-}
-
-function List({
-  items,
-  selected,
-  onToggle,
-  allSelected,
-  onToggleAll,
-  onOpen,
-}: {
-  items: Item[];
-  selected: Set<string>;
-  onToggle: (p: string) => void;
-  allSelected: boolean;
-  onToggleAll: () => void;
-  onOpen: (p: string) => void;
-}) {
-  return (
-    <div className="border border-slate-800 rounded overflow-hidden">
-      <table className="w-full text-sm">
-        <thead className="bg-slate-900 text-slate-400 text-left">
-          <tr>
-            <th className="p-2 w-8">
-              <input type="checkbox" checked={allSelected} onChange={onToggleAll} />
-            </th>
-            <th className="p-2">Title</th>
-            <th>Year</th>
-            <th>ID</th>
-            <th>Episodes</th>
-            <th>Status</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((it) => (
-            <tr
-              key={it.folder_path}
-              className={`border-t border-slate-800 hover:bg-slate-900 ${
-                selected.has(it.folder_path) ? "bg-slate-900" : ""
-              }`}
+      ) : isPending ? (
+        <p role="status">Loading libraries…</p>
+      ) : libraries.length ? (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {libraries.map((library) => (
+            <button
+              key={library.name}
+              onClick={() => onSelect(library.name)}
+              className="panel text-left p-6 hover:border-indigo-600 transition-colors"
             >
-              <td className="p-2">
-                <input
-                  type="checkbox"
-                  checked={selected.has(it.folder_path)}
-                  onChange={() => onToggle(it.folder_path)}
-                />
-              </td>
-              <td className="p-2">{it.title}</td>
-              <td>{it.year ?? ""}</td>
-              <td className="text-xs text-slate-500">
-                {it.provider}-{it.external_id}
-              </td>
-              <td className="text-xs">{it.episode_count_local ?? ""}</td>
-              <td>
-                {it.nfo_status && (
-                  <span
-                    className={`text-[10px] px-1.5 py-0.5 rounded ${
-                      STATUS_COLOR[it.nfo_status] ?? "bg-slate-700"
-                    }`}
-                  >
-                    {it.nfo_status}
-                  </span>
-                )}
-              </td>
-              <td className="text-right">
-                <button onClick={() => onOpen(it.folder_path)} className="text-indigo-400 text-xs">
-                  open
-                </button>
-              </td>
-            </tr>
+              <span className="eyebrow block">
+                {library.kind === "movies"
+                  ? "Movies"
+                  : library.kind === "mixed"
+                    ? "Mixed media"
+                    : "TV series"}
+              </span>
+              <span className="block text-lg font-medium mt-5">
+                {library.name}
+              </span>
+              <span className="flex justify-between text-xs text-slate-500 mt-3">
+                <span>
+                  {library.effective_metadata_source?.toUpperCase() ??
+                    "Default provider"}
+                </span>
+                <span className="text-indigo-300">Open library ↗</span>
+              </span>
+            </button>
           ))}
-        </tbody>
-      </table>
+        </div>
+      ) : (
+        <div className="empty-state">
+          <h2 className="text-slate-200 mb-2">No enabled libraries yet</h2>
+          <p>
+            Mount your media under MEDIA_ROOT, then use Detect in the library
+            sidebar.
+          </p>
+        </div>
+      )}
+      <div className="mt-10 max-w-2xl border-t border-slate-800 pt-5">
+        <p className="eyebrow">A simple workflow</p>
+        <div className="grid sm:grid-cols-3 gap-6 mt-5">
+          {[
+            [
+              "01",
+              "Scan & match",
+              "Discover folders and connect each title to its metadata source.",
+            ],
+            [
+              "02",
+              "Review & refine",
+              "Check episodes, artwork and any title-specific overrides.",
+            ],
+            [
+              "03",
+              "Build & keep",
+              "Write local NFOs and artwork. Review progress in Activity.",
+            ],
+          ].map(([number, title, body]) => (
+            <div key={number}>
+              <span className="text-xs font-mono text-indigo-300">
+                {number}
+              </span>
+              <h2 className="font-medium mt-2 mb-1">{title}</h2>
+              <p className="text-xs leading-relaxed text-slate-500">{body}</p>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

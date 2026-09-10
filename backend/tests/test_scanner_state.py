@@ -96,17 +96,14 @@ def test_season_nfo_ignored(tmp_path):
     assert _scan_series_state(folder, resolved, [], 1) == ("complete", True, 1, 0)
 
 
-def test_root_eps_layout_counts_tvshow_nfo_as_episode(tmp_path):
+def test_root_eps_layout_excludes_tvshow_nfo_from_episode_and_orphan_counts(tmp_path):
     # anime/OVA: videos at show root, no season dirs.
-    # NOTE: pins current behavior — the root-directory pass has no tvshow.nfo
-    # exclusion, so tvshow.nfo is counted as an episode NFO *and* an orphan,
-    # turning a complete 1/1 folder into "mixed". Tracked separately.
     folder = tmp_path / "OVA"
     folder.mkdir()
     _tvshow(folder, OURS)
     (folder / "Ep 01.nfo").write_text(OURS, encoding="utf-8")
     root_eps = [FakeEp(folder / "Ep 01.mkv")]
-    assert _scan_series_state(folder, [], root_eps, 1) == ("mixed", True, 2, 1)
+    assert _scan_series_state(folder, [], root_eps, 1) == ("complete", True, 1, 0)
 
 
 # ---- back-compat shim + hash_text -------------------------------------------

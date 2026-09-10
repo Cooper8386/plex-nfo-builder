@@ -26,11 +26,36 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Ruff
-        run: ruff check app
+        run: ruff check app tests
       - name: Mypy
         run: mypy app
       - name: Pytest
         run: python -m pytest -q
+      - name: Validate documented Compose setup
+        working-directory: .
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          readme = Path("README.md").read_text(encoding="utf-8")
+          compose = re.search(r"```yaml\n(services:\n.*?)\n```", readme, re.S)
+          assert compose, "README must include the canonical Compose setup"
+          with tempfile.TemporaryDirectory() as directory:
+              path = Path(directory)
+              (path / "compose.yaml").write_text(compose[1], encoding="utf-8")
+              (path / ".env").write_text("", encoding="utf-8")
+              command = ["docker", "compose", "--env-file", str(path / ".env"),
+                         "-f", str(path / "compose.yaml"), "config", "--quiet"]
+              env = {**os.environ, "API_TOKEN": "ci-compose-validation"}
+              subprocess.run(command, env=env, check=True)
+              del env["API_TOKEN"]
+              result = subprocess.run(command, env=env, capture_output=True, text=True)
+              assert result.returncode != 0 and "Set API_TOKEN in .env" in result.stderr, result.stderr
+          PY
 
   frontend:
     runs-on: ubuntu-latest
@@ -41,7 +66,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
@@ -50,3 +75,7 @@ jobs:
         run: npm run typecheck
       - name: Lint
         run: npm run lint
+      - name: Tests
+        run: npm test
+      - name: Production build
+        run: npm run build

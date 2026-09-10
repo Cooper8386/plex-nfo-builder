@@ -4,8 +4,10 @@
 // param via `mediaUrl`.
 
 const TOKEN_KEY = "pnb.apiToken";
+let memoryToken: string | null | undefined;
 
 export function getToken(): string | null {
+  if (memoryToken !== undefined) return memoryToken;
   try {
     return localStorage.getItem(TOKEN_KEY);
   } catch {
@@ -14,6 +16,7 @@ export function getToken(): string | null {
 }
 
 export function setToken(t: string): void {
+  memoryToken = t;
   try {
     localStorage.setItem(TOKEN_KEY, t);
   } catch {
@@ -22,6 +25,7 @@ export function setToken(t: string): void {
 }
 
 export function clearToken(): void {
+  memoryToken = null;
   try {
     localStorage.removeItem(TOKEN_KEY);
   } catch {
@@ -59,13 +63,21 @@ export function mediaUrl(url: string): string {
 /** Drop-in for `fetch` that attaches the token and reports 401s. */
 export async function authFetch(
   input: RequestInfo | URL,
-  init: RequestInit = {}
+  init: RequestInit = {},
 ): Promise<Response> {
   const token = getToken();
-  const headers = new Headers(init.headers || {});
+  const url = new URL(
+    input instanceof Request ? input.url : String(input),
+    window.location.origin,
+  );
+  if (url.origin !== window.location.origin)
+    throw new Error("Refusing to send the API token to another origin.");
+  const headers = new Headers(
+    init.headers ?? (input instanceof Request ? input.headers : undefined),
+  );
   if (token) headers.set("X-API-Token", token);
   const res = await fetch(input, { ...init, headers });
-  if (res.status === 401) {
+  if (res.status === 401 && getToken() === token) {
     clearToken();
     listeners.forEach((fn) => fn("expired"));
   }

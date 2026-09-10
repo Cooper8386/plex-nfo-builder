@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errors";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -6,7 +7,7 @@ import {
   WatcherReviewItem,
   WatcherStatus,
 } from "../lib/api";
-import { useConfirm } from "../components/ConfirmDialog";
+import { useConfirm } from "../components/confirm";
 
 type Tab = "activity" | "review";
 
@@ -43,7 +44,22 @@ export default function WatcherView(props: {
   });
 
   return (
-    <div className="p-4 flex flex-col gap-4 h-full min-h-0">
+    <div className="page flex flex-col gap-4 h-full min-h-0">
+      <div>
+        <p className="eyebrow">Library automation</p>
+        <h1 className="page-title">Filesystem watcher</h1>
+        <p className="text-sm text-slate-500 mt-2">
+          Track incoming media and review titles that need your attention.
+        </p>
+      </div>
+      {statusQ.error && (
+        <div role="alert" className="notice error-notice">
+          Unable to load watcher: {statusQ.error.message}
+          <button className="btn ml-3" onClick={() => statusQ.refetch()}>
+            Retry
+          </button>
+        </div>
+      )}
       <Header
         status={statusQ.data ?? null}
         reviewCount={reviewQ.data?.items?.length ?? 0}
@@ -274,7 +290,7 @@ function ReviewTab(props: {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  const items = reviewQ.data?.items ?? [];
+  const items = useMemo(() => reviewQ.data?.items ?? [], [reviewQ.data]);
 
   const grouped = useMemo(() => {
     const out: Record<string, WatcherReviewItem[]> = {};
@@ -295,8 +311,8 @@ function ReviewTab(props: {
       // success or update `attempts` on another failure.
       qc.invalidateQueries({ queryKey: ["watcher", "review"] });
       qc.invalidateQueries({ queryKey: ["watcher", "events"] });
-    } catch (e: any) {
-      setErr(String(e?.message || e));
+    } catch (e: unknown) {
+      setErr(errorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -308,8 +324,8 @@ function ReviewTab(props: {
     try {
       await api.watcher.review.resolve(it.folder_path);
       qc.invalidateQueries({ queryKey: ["watcher", "review"] });
-    } catch (e: any) {
-      setErr(String(e?.message || e));
+    } catch (e: unknown) {
+      setErr(errorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -329,8 +345,8 @@ function ReviewTab(props: {
     try {
       await api.watcher.review.clear();
       qc.invalidateQueries({ queryKey: ["watcher", "review"] });
-    } catch (e: any) {
-      setErr(String(e?.message || e));
+    } catch (e: unknown) {
+      setErr(errorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -412,7 +428,8 @@ function ReviewRow({
         ? "bg-amber-900/40 text-amber-200 border border-amber-800"
         : "bg-slate-900 text-slate-300 border border-slate-700";
 
-  const folderName = item.folder_path.split("/").filter(Boolean).pop() || item.folder_path;
+  const folderName =
+    item.folder_path.split("/").filter(Boolean).pop() || item.folder_path;
 
   return (
     <li className="px-3 py-2 flex flex-col gap-1.5">

@@ -1,8 +1,9 @@
+import { errorMessage } from "../lib/errors";
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ArtworkCandidate, ArtworkProvider } from "../lib/api";
 import { mediaUrl } from "../lib/auth";
-import { useConfirm, usePrompt } from "../components/ConfirmDialog";
+import { useConfirm, usePrompt } from "../components/confirm";
 
 const SLOT_LABELS: Record<string, string> = {
   poster: "Poster",
@@ -20,16 +21,19 @@ function slotLabel(slot: string): string {
 }
 
 function aspectFor(slot: string): string {
-  if (slot.includes("background") || slot.includes("banner")) return "aspect-[16/9]";
+  if (slot.includes("banner")) return "aspect-[5/1]";
+  if (slot.includes("background") || slot.includes("clear"))
+    return "aspect-[16/9]";
   return "aspect-[2/3]";
 }
 
-const PROVIDER_BADGES: Record<ArtworkProvider, { label: string; cls: string }> = {
-  tvdb: { label: "TVDB", cls: "bg-blue-700/80 text-blue-50" },
-  tmdb: { label: "TMDB", cls: "bg-emerald-700/80 text-emerald-50" },
-  fanart: { label: "fanart", cls: "bg-purple-700/80 text-purple-50" },
-  custom: { label: "Custom", cls: "bg-amber-600/80 text-amber-50" },
-};
+const PROVIDER_BADGES: Record<ArtworkProvider, { label: string; cls: string }> =
+  {
+    tvdb: { label: "TVDB", cls: "bg-slate-950/90 text-slate-200" },
+    tmdb: { label: "TMDB", cls: "bg-slate-950/90 text-slate-200" },
+    fanart: { label: "fanart", cls: "bg-slate-950/90 text-slate-200" },
+    custom: { label: "Custom", cls: "bg-amber-600/80 text-amber-50" },
+  };
 
 const PROVIDER_FILTERS: { key: "all" | ArtworkProvider; label: string }[] = [
   { key: "all", label: "All" },
@@ -54,20 +58,20 @@ export default function ArtworkPicker({
     queryFn: () => api.artwork.candidates(path, kind),
   });
   const [activeSlot, setActiveSlot] = useState<string | null>(null);
-  const [providerFilter, setProviderFilter] = useState<"all" | ArtworkProvider>("all");
+  const [providerFilter, setProviderFilter] = useState<"all" | ArtworkProvider>(
+    "all",
+  );
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const slotKeys = useMemo(() => {
     const slots = candidates.data?.slots ?? {};
-    const ordered: string[] = [];
-    for (const s of ["poster", "background", "banner", "clearlogo", "clearart"]) {
-      if (slots[s]) ordered.push(s);
-    }
+    // Local uploads must remain available when providers have no artwork.
+    const ordered = ["poster", "background", "banner", "clearlogo", "clearart"];
     const seasons = Object.keys(slots)
       .filter((k) => k.startsWith("season-") && k.endsWith("-poster"))
-      .sort();
+      .sort((a, b) => Number(a.split("-")[1]) - Number(b.split("-")[1]));
     return [...ordered, ...seasons];
   }, [candidates.data]);
 
@@ -76,17 +80,21 @@ export default function ArtworkPicker({
   if (candidates.error)
     return (
       <div className="text-sm text-amber-400">
-        {(candidates.error as any).message ?? "Failed to load artwork"}
+        {errorMessage(candidates.error)}
       </div>
     );
 
   const slots = candidates.data?.slots ?? {};
   const selections = candidates.data?.selections ?? {};
-  const current = activeSlot ?? slotKeys[0] ?? null;
-  const allList: ArtworkCandidate[] = current ? slots[current] ?? [] : [];
-  const list = providerFilter === "all"
-    ? allList
-    : allList.filter((c) => (c.provider ?? "tvdb") === providerFilter);
+  const current =
+    activeSlot && slotKeys.includes(activeSlot)
+      ? activeSlot
+      : (slotKeys[0] ?? null);
+  const allList: ArtworkCandidate[] = current ? (slots[current] ?? []) : [];
+  const list =
+    providerFilter === "all"
+      ? allList
+      : allList.filter((c) => (c.provider ?? "tvdb") === providerFilter);
   const activeSelection = current ? selections[current] : undefined;
 
   const select = async (slot: string, c: ArtworkCandidate) => {
@@ -102,8 +110,8 @@ export default function ArtworkPicker({
       });
       setMsg(`Saved selection for ${slotLabel(slot)}. Run a build to apply.`);
       await qc.invalidateQueries({ queryKey: ["artwork-candidates", path] });
-    } catch (e: any) {
-      setMsg(e?.message ?? String(e));
+    } catch (e: unknown) {
+      setMsg(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -114,10 +122,14 @@ export default function ArtworkPicker({
     setMsg(null);
     try {
       await api.artwork.clear({ folder_path: path, slot });
-      setMsg(slot ? `Reset ${slotLabel(slot)} to auto.` : "Cleared all artwork selections.");
+      setMsg(
+        slot
+          ? `Reset ${slotLabel(slot)} to auto.`
+          : "Cleared all artwork selections.",
+      );
       await qc.invalidateQueries({ queryKey: ["artwork-candidates", path] });
-    } catch (e: any) {
-      setMsg(e?.message ?? String(e));
+    } catch (e: unknown) {
+      setMsg(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -134,8 +146,8 @@ export default function ArtworkPicker({
       await api.artwork.upload(path, file, current);
       setMsg(`Uploaded ${file.name}. It is available under Custom.`);
       await qc.invalidateQueries({ queryKey: ["artwork-candidates", path] });
-    } catch (e: any) {
-      setMsg(e?.message ?? String(e));
+    } catch (e: unknown) {
+      setMsg(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -156,11 +168,15 @@ export default function ArtworkPicker({
     setBusy(true);
     setMsg(null);
     try {
-      await api.artwork.addUrl({ folder_path: path, url: url.trim(), slot: current });
+      await api.artwork.addUrl({
+        folder_path: path,
+        url: url.trim(),
+        slot: current,
+      });
       setMsg("Added image URL. It is available under Custom.");
       await qc.invalidateQueries({ queryKey: ["artwork-candidates", path] });
-    } catch (e: any) {
-      setMsg(e?.message ?? String(e));
+    } catch (e: unknown) {
+      setMsg(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -169,7 +185,8 @@ export default function ArtworkPicker({
   const handleDeleteCustom = async (id: string) => {
     const ok = await confirmDlg({
       title: "Remove this custom artwork?",
-      message: "The uploaded file is deleted from disk and detached from any slot it was selected on.",
+      message:
+        "The uploaded file is deleted from disk and detached from any slot it was selected on.",
       confirmLabel: "Remove",
       tone: "danger",
     });
@@ -179,8 +196,8 @@ export default function ArtworkPicker({
     try {
       await api.artwork.deleteCustom(id);
       await qc.invalidateQueries({ queryKey: ["artwork-candidates", path] });
-    } catch (e: any) {
-      setMsg(e?.message ?? String(e));
+    } catch (e: unknown) {
+      setMsg(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -188,7 +205,7 @@ export default function ArtworkPicker({
 
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-2 mb-3">
+      <div className="panel p-3 flex flex-wrap items-center gap-2 mb-3">
         <div className="flex flex-wrap gap-1">
           {slotKeys.map((s) => {
             const isActive = current === s;
@@ -196,7 +213,11 @@ export default function ArtworkPicker({
             return (
               <button
                 key={s}
-                onClick={() => setActiveSlot(s)}
+                aria-pressed={isActive}
+                onClick={() => {
+                  setActiveSlot(s);
+                  setProviderFilter("all");
+                }}
                 className={`text-xs px-2.5 py-1 rounded border transition ${
                   isActive
                     ? "bg-indigo-600 border-indigo-500 text-white"
@@ -231,15 +252,19 @@ export default function ArtworkPicker({
       </div>
 
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <span className="text-[11px] uppercase tracking-wide text-slate-500 mr-1">Source</span>
+        <span className="text-[11px] uppercase tracking-wide text-slate-500 mr-1">
+          Source
+        </span>
         {PROVIDER_FILTERS.map((f) => {
           const isActive = providerFilter === f.key;
-          const count = f.key === "all"
-            ? allList.length
-            : allList.filter((c) => (c.provider ?? "tvdb") === f.key).length;
+          const count =
+            f.key === "all"
+              ? allList.length
+              : allList.filter((c) => (c.provider ?? "tvdb") === f.key).length;
           return (
             <button
               key={f.key}
+              aria-pressed={isActive}
               onClick={() => setProviderFilter(f.key)}
               disabled={f.key !== "all" && count === 0}
               className={`text-xs px-2 py-0.5 rounded border transition ${
@@ -268,8 +293,10 @@ export default function ArtworkPicker({
         <button
           disabled={busy || !current}
           onClick={() => fileRef.current?.click()}
-          className="text-xs px-2 py-1 rounded bg-emerald-700/70 border border-emerald-600 hover:bg-emerald-600 disabled:opacity-40"
-          title={current ? `Upload to ${slotLabel(current)}` : "Pick a slot first"}
+          className="btn"
+          title={
+            current ? `Upload to ${slotLabel(current)}` : "Pick a slot first"
+          }
         >
           Upload image
         </button>
@@ -277,15 +304,27 @@ export default function ArtworkPicker({
           disabled={busy || !current}
           onClick={handleAddUrl}
           className="text-xs px-2 py-1 rounded bg-slate-800 border border-slate-600 hover:border-emerald-500 disabled:opacity-40"
-          title={current ? `Add URL to ${slotLabel(current)}` : "Pick a slot first"}
+          title={
+            current ? `Add URL to ${slotLabel(current)}` : "Pick a slot first"
+          }
         >
           Add from URL
         </button>
       </div>
 
-      {msg && <div className="text-xs text-slate-400 mb-2">{msg}</div>}
+      <p className="text-xs text-slate-400 mb-4">
+        Choose an image for each slot, then build NFOs to apply your selections
+        to the local artwork.
+      </p>
+      {msg && (
+        <div role="status" className="text-xs text-slate-300 mb-3">
+          {msg}
+        </div>
+      )}
       {!current && (
-        <div className="text-sm text-slate-500">No artwork slots available for this title yet.</div>
+        <div className="text-sm text-slate-500">
+          No artwork slots available for this title yet.
+        </div>
       )}
       {current && list.length === 0 && (
         <div className="text-sm text-slate-500">
@@ -316,6 +355,8 @@ export default function ArtworkPicker({
                 }`}
               >
                 <button
+                  aria-label={`Select ${slotLabel(current)} from ${badge.label}${c.language ? ` in ${c.language}` : ""}, option ${i + 1}`}
+                  aria-pressed={selected}
                   disabled={busy}
                   onClick={() => select(current, c)}
                   className="block w-full text-left"
@@ -323,14 +364,16 @@ export default function ArtworkPicker({
                 >
                   <div className={`bg-slate-800 ${aspectFor(current)}`}>
                     <img
-                      src={mediaUrl(c.thumb)}
+                      src={mediaUrl(c.thumb || c.url)}
                       alt=""
-                      className="w-full h-full object-cover"
+                      className={`w-full h-full ${current.includes("clear") ? "object-contain p-3" : "object-cover"}`}
                       loading="lazy"
                     />
                   </div>
                   <div className="absolute top-1 left-1 flex gap-1">
-                    <span className={`text-[10px] px-1 py-0.5 rounded ${badge.cls}`}>
+                    <span
+                      className={`text-[10px] px-1 py-0.5 rounded ${badge.cls}`}
+                    >
                       {badge.label}
                     </span>
                     {c.language && (
@@ -359,6 +402,7 @@ export default function ArtworkPicker({
                     }}
                     className="absolute bottom-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-rose-700/90 hover:bg-rose-600 text-white"
                     title="Remove custom artwork"
+                    aria-label="Remove custom artwork"
                   >
                     ✕
                   </button>

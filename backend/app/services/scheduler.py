@@ -37,6 +37,7 @@ from typing import Optional
 from loguru import logger
 
 from .. import db
+from .async_io import run_in_thread
 from ..config import effective_metadata_source, get_user_settings
 from . import builder as build_svc
 from . import matcher as matcher_svc
@@ -162,9 +163,13 @@ class Scheduler:
                 await asyncio.wait_for(self._task, timeout=5)
             except asyncio.TimeoutError:
                 self._task.cancel()
+                await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
-        # Don't await running jobs; let them finish in the background. The
-        # FastAPI shutdown hook is best-effort and we'd rather not block it.
+        running = list(self._running.values())
+        for task in running:
+            task.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
+        self._running.clear()
         logger.info("Scheduler stopped")
 
     # -- main tick loop -----------------------------------------------------
@@ -278,10 +283,10 @@ class Scheduler:
         scanned = matched = built = 0
         for lib in libraries:
             if action in ("scan_only", "full"):
-                scanned += await asyncio.to_thread(scanner_svc.scan_library, lib)
+                scanned += await run_in_thread(scanner_svc.scan_library, lib)
             else:
                 # Match/build still need item_state to be up to date.
-                await asyncio.to_thread(scanner_svc.scan_library, lib)
+                await run_in_thread(scanner_svc.scan_library, lib)
             if action in ("match_only", "match_and_build", "full"):
                 matched += await self._match_unmatched(lib)
             if action in ("build_only", "match_and_build", "full"):
@@ -387,9 +392,9 @@ class Scheduler:
             # Re-scan to refresh local episode count before deciding.
             if not needs_build and kind == "series":
                 try:
-                    fresh = scanner_svc.scan_series_folder(p, library=library)
+                    fresh = await run_in_thread(scanner_svc.scan_series_folder, p, library=library)
                     prior = d.get("episode_count_local") or 0
-                    if fresh.episode_count != prior:
+                    if fresh.episode_count != prior or fresh.nfo_state != "complete":
                         needs_build = True
                 except Exception as e:
                     logger.warning("pre-build rescan {} failed: {}", p, e)

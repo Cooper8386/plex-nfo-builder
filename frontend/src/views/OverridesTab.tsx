@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { errorMessage } from "../lib/errors";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 
@@ -19,7 +20,14 @@ export default function OverridesTab({
 }: {
   path: string;
   kind: "series" | "movie";
-  binding: any;
+  binding: {
+    provider: "tvdb" | "tmdb";
+    external_id: string;
+    source_locked: number;
+    kind: "series" | "movie";
+    title: string;
+    year: number | null;
+  } | null;
 }) {
   const qc = useQueryClient();
   const overridesQ = useQuery({
@@ -32,11 +40,14 @@ export default function OverridesTab({
     enabled: kind === "series" && !!binding,
   });
 
-  const overrides: Overrides = overridesQ.data?.overrides ?? {};
+  const overrides: Overrides = useMemo(
+    () => overridesQ.data?.overrides ?? {},
+    [overridesQ.data?.overrides],
+  );
 
   // Provider override state
   const [provider, setProvider] = useState<"tvdb" | "tmdb">(
-    (binding?.provider as any) || "tvdb",
+    binding?.provider || "tvdb",
   );
   const [locked, setLocked] = useState<boolean>(
     !!(binding && Number(binding.source_locked || 0) === 1),
@@ -44,16 +55,19 @@ export default function OverridesTab({
   const [savingSrc, setSavingSrc] = useState(false);
   const [srcMsg, setSrcMsg] = useState<string | null>(null);
 
+  const bindingProvider = binding?.provider ?? "tvdb";
+  const bindingLocked = Number(binding?.source_locked ?? 0) === 1;
   useEffect(() => {
-    setProvider((binding?.provider as any) || "tvdb");
-    setLocked(!!(binding && Number(binding.source_locked || 0) === 1));
-  }, [binding?.provider, binding?.source_locked]);
+    setProvider(bindingProvider);
+    setLocked(bindingLocked);
+  }, [bindingProvider, bindingLocked]);
 
   const localSeasons = useMemo(() => {
     const set = new Set<number>();
     for (const e of episodesQ.data?.locals ?? []) {
-      if (typeof e.parsed_season === "number" && e.parsed_season > 0) {
-        set.add(e.parsed_season);
+      const season = e.effective_season ?? e.parsed_season;
+      if (typeof season === "number" && season >= 0) {
+        set.add(season);
       }
     }
     // Also include any season scopes present in overrides
@@ -65,9 +79,13 @@ export default function OverridesTab({
   }, [episodesQ.data, overrides]);
 
   const matchedEpisodes = useMemo(() => {
-    const arr = (episodesQ.data?.locals ?? []).filter(
-      (e) => !!e.matched_episode_id,
-    );
+    const seen = new Set<string>();
+    const arr = (episodesQ.data?.locals ?? []).filter((episode) => {
+      if (!episode.matched_episode_id || seen.has(episode.matched_episode_id))
+        return false;
+      seen.add(episode.matched_episode_id);
+      return true;
+    });
     arr.sort((a, b) => {
       const sa = a.matched_season ?? a.parsed_season ?? 0;
       const sb = b.matched_season ?? b.parsed_season ?? 0;
@@ -80,13 +98,35 @@ export default function OverridesTab({
   }, [episodesQ.data]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      <div className="panel p-3 text-xs text-slate-400">
+        Edit a field and leave it to save. Build NFOs when you are ready to
+        write saved changes to disk.
+      </div>
+      {overridesQ.isLoading && (
+        <p role="status" className="text-sm text-slate-400">
+          Loading saved overrides…
+        </p>
+      )}
+      {overridesQ.error && (
+        <p role="alert" className="text-sm text-rose-300">
+          Overrides could not load: {overridesQ.error.message}{" "}
+          <button className="btn" onClick={() => overridesQ.refetch()}>
+            Retry
+          </button>
+        </p>
+      )}
+      {episodesQ.error && (
+        <p role="alert" className="text-xs text-rose-300">
+          Episode overrides unavailable: {episodesQ.error.message}
+        </p>
+      )}
       {/* Provider override */}
       <section className="bg-slate-900 border border-slate-800 rounded p-4">
         <h3 className="font-semibold mb-1">Metadata source</h3>
         <p className="text-xs text-slate-500 mb-3">
-          Switch which provider this folder uses, independent of the global default.
-          Lock it to prevent auto-match from changing it later.
+          Switch which provider this folder uses, independent of the global
+          default. Lock it to prevent auto-match from changing it later.
         </p>
         {!binding ? (
           <div className="text-sm text-slate-400">
@@ -95,8 +135,9 @@ export default function OverridesTab({
         ) : (
           <div className="flex flex-wrap items-center gap-3">
             <select
+              aria-label="Metadata source"
               value={provider}
-              onChange={(e) => setProvider(e.target.value as any)}
+              onChange={(e) => setProvider(e.target.value as "tvdb" | "tmdb")}
               className="bg-slate-800 px-2 py-1 rounded text-sm border border-slate-700"
             >
               <option value="tvdb">TVDB</option>
@@ -111,7 +152,7 @@ export default function OverridesTab({
               Lock for this show (auto-match won't change it)
             </label>
             <button
-              disabled={savingSrc}
+              disabled={savingSrc || provider !== binding.provider}
               className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded text-xs disabled:opacity-50"
               onClick={async () => {
                 setSavingSrc(true);
@@ -128,9 +169,13 @@ export default function OverridesTab({
                     year: binding.year,
                   });
                   setSrcMsg("Saved.");
-                  qc.invalidateQueries({ queryKey: ["detail", path] });
-                } catch (e: any) {
-                  setSrcMsg(`Failed: ${e?.message ?? e}`);
+                  await Promise.all(
+                    ["detail", "episodes", "artwork-candidates"].map((key) =>
+                      qc.invalidateQueries({ queryKey: [key, path] }),
+                    ),
+                  );
+                } catch (e: unknown) {
+                  setSrcMsg(`Failed: ${errorMessage(e)}`);
                 } finally {
                   setSavingSrc(false);
                 }
@@ -143,25 +188,29 @@ export default function OverridesTab({
         )}
         {binding && provider !== binding.provider && (
           <div className="text-[11px] text-amber-300 mt-2">
-            Switching providers requires the new provider's external id. If you've
-            never matched this folder to {provider.toUpperCase()}, use the Overview tab
-            to search and bind first.
+            Switching providers requires the new provider's external id. If
+            you've never matched this folder to {provider.toUpperCase()}, use
+            the Overview tab to search and bind first.
           </div>
         )}
       </section>
 
       {/* Main scope */}
-      <ScopeBlock
-        title={kind === "series" ? "Series fields" : "Movie fields"}
-        description="Override what gets written into the main NFO. Empty fields fall back to the source provider."
-        path={path}
-        scope={kind === "series" ? "series" : "movie"}
-        values={overrides[kind === "series" ? "series" : "movie"] ?? {}}
-        onChanged={() => qc.invalidateQueries({ queryKey: ["overrides", path] })}
-      />
+      {!overridesQ.isLoading && !overridesQ.error && (
+        <ScopeBlock
+          title={kind === "series" ? "Series fields" : "Movie fields"}
+          description="Override what gets written into the main NFO. Empty fields fall back to the source provider."
+          path={path}
+          scope={kind === "series" ? "series" : "movie"}
+          values={overrides[kind === "series" ? "series" : "movie"] ?? {}}
+          onChanged={() =>
+            qc.invalidateQueries({ queryKey: ["overrides", path] })
+          }
+        />
+      )}
 
       {/* Seasons (series only) */}
-      {kind === "series" && (
+      {kind === "series" && !overridesQ.isLoading && !overridesQ.error && (
         <section>
           <h3 className="font-semibold mb-2">Seasons</h3>
           {localSeasons.length === 0 ? (
@@ -175,7 +224,7 @@ export default function OverridesTab({
                 return (
                   <Collapsible
                     key={scope}
-                    title={`Season ${s}`}
+                    title={s === 0 ? "Specials" : `Season ${s}`}
                     badge={hasAny(overrides[scope]) ? "edited" : null}
                   >
                     <ScopeBlock
@@ -204,7 +253,7 @@ export default function OverridesTab({
           The flat "Episode thumbnails" gallery from v0.11.8 has been removed
           because the per-episode picker covers the same provider-vs-on-disk
           comparison while also letting the user act on it. */}
-      {kind === "series" && (
+      {kind === "series" && !overridesQ.isLoading && !overridesQ.error && (
         <section>
           <h3 className="font-semibold mb-2">Episodes</h3>
           {!binding ? (
@@ -213,7 +262,8 @@ export default function OverridesTab({
             </div>
           ) : matchedEpisodes.length === 0 ? (
             <div className="text-xs text-slate-500">
-              No matched local episodes yet. Run a scan or build to populate matches.
+              No matched local episodes yet. Run a scan or build to populate
+              matches.
             </div>
           ) : (
             <div className="space-y-1.5">
@@ -256,10 +306,10 @@ export default function OverridesTab({
       )}
 
       <div className="text-[11px] text-slate-500">
-        Overrides are saved into both the database and a sidecar file
-        (<code className="font-mono">.plex-nfo-builder.json</code>) inside the folder, so
-        they survive a database wipe. Run "Force rebuild" on the Overview tab to apply
-        changes to the NFO files on disk.
+        Overrides are saved into both the database and a sidecar file (
+        <code className="font-mono">.plex-nfo-builder.json</code>) inside the
+        folder, so they survive a database wipe. Run "Force rebuild" on the
+        Overview tab to apply changes to the NFO files on disk.
       </div>
     </div>
   );
@@ -296,33 +346,58 @@ function EpisodeThumbPicker({
     queryFn: () => api.episodes.thumbCandidates(path, season, episode),
   });
 
-  const localThumbUrl = localThumbPath ? api.artwork.fileUrl(localThumbPath) : null;
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const localThumbUrl = localThumbPath
+    ? api.artwork.fileUrl(localThumbPath)
+    : null;
 
   async function pick(url: string | null) {
     const eid = q.data?.external_id;
     if (!eid) return;
-    await api.episodes.thumbSelect({
-      folder_path: path,
-      external_id: eid,
-      url,
-    });
-    await qc.invalidateQueries({ queryKey: ["thumb-candidates", path, season, episode] });
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.episodes.thumbSelect({
+        folder_path: path,
+        external_id: eid,
+        url,
+      });
+      await qc.invalidateQueries({
+        queryKey: ["thumb-candidates", path, season, episode],
+      });
+    } catch (cause) {
+      setError(
+        `Could not save thumbnail: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <div className="mt-3 pt-3 border-t border-slate-800">
       <div className="flex items-baseline justify-between gap-3 mb-2">
-        <div className="text-xs font-semibold text-slate-300">Episode thumbnail</div>
+        <div className="text-xs font-semibold text-slate-300">
+          Episode thumbnail
+        </div>
         <div className="text-[10px] text-slate-500">
-          Saved to <code className="font-mono">&lt;file&gt;-thumb.jpg</code> on next build
+          Saved to <code className="font-mono">&lt;file&gt;-thumb.jpg</code> on
+          next build
         </div>
       </div>
+      {error && (
+        <p role="alert" className="text-xs text-rose-300 mb-2">
+          {error}
+        </p>
+      )}
       {q.isLoading && (
         <div className="text-[11px] text-slate-500">Loading candidates…</div>
       )}
       {q.isError && (
         <div className="text-[11px] text-amber-300">
-          Failed to load: {(q.error as any)?.message ?? String(q.error)}
+          Failed to load: {errorMessage(q.error)}
         </div>
       )}
       {q.data && (
@@ -347,7 +422,8 @@ function EpisodeThumbPicker({
               </div>
             </div>
           )}
-          {q.data.candidates.length === 0 ? (
+          {q.data.candidates.length === 0 &&
+          q.data.current_selection === null ? (
             <div className="text-[11px] text-slate-500">
               No thumbnail candidates available for this episode.
             </div>
@@ -358,7 +434,7 @@ function EpisodeThumbPicker({
                   provider's default still. */}
               <button
                 onClick={() => pick(null)}
-                disabled={q.data.current_selection === null}
+                disabled={saving || q.data.current_selection === null}
                 title="Use the provider default"
                 className={`aspect-video rounded border flex flex-col items-center justify-center text-[11px] font-semibold ${
                   q.data.current_selection === null
@@ -374,6 +450,9 @@ function EpisodeThumbPicker({
               {q.data.candidates.map((c) => (
                 <button
                   key={c.url}
+                  aria-label={`Select episode thumbnail${c.language ? ` (${c.language})` : ""}`}
+                  aria-pressed={c.selected}
+                  disabled={saving}
                   onClick={() => pick(c.url)}
                   className={`relative aspect-video rounded overflow-hidden border ${
                     c.selected
@@ -434,18 +513,21 @@ function Collapsible({
 }: {
   title: string;
   badge?: string | null;
-  children: any;
+  children: React.ReactNode;
   dense?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="bg-slate-900 border border-slate-800 rounded">
       <button
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className={`w-full flex items-center gap-2 px-3 ${dense ? "py-1.5" : "py-2"} text-left hover:bg-slate-800/60`}
       >
         <span className="text-slate-500 text-xs">{open ? "▾" : "▸"}</span>
-        <span className={`flex-1 ${dense ? "text-xs" : "text-sm"} truncate`}>{title}</span>
+        <span className={`flex-1 ${dense ? "text-xs" : "text-sm"} truncate`}>
+          {title}
+        </span>
         {badge && (
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-700/40 text-indigo-200 uppercase tracking-wide">
             {badge}
@@ -475,9 +557,15 @@ function ScopeBlock({
   compact?: boolean;
 }) {
   return (
-    <section className={compact ? "" : "bg-slate-900 border border-slate-800 rounded p-4"}>
+    <section
+      className={
+        compact ? "" : "bg-slate-900 border border-slate-800 rounded p-4"
+      }
+    >
       {title && <h3 className="font-semibold mb-1">{title}</h3>}
-      {description && <p className="text-xs text-slate-500 mb-3">{description}</p>}
+      {description && (
+        <p className="text-xs text-slate-500 mb-3">{description}</p>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {FIELDS.map((f) => (
           <FieldRow
@@ -513,108 +601,104 @@ function FieldRow({
   scope: string;
   onChanged: () => void;
 }) {
-  const [draft, setDraft] = useState(value);
+  const id = useId();
+  const [draft, setDraft] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-  const lastSavedRef = useRef<string>(value);
-
-  // Sync external value (e.g. after refetch) when it differs and user hasn't typed
-  useEffect(() => {
-    if (draft === lastSavedRef.current) {
-      setDraft(value);
-      lastSavedRef.current = value;
-    }
-  }, [value]);
-
-  const dirty = draft !== lastSavedRef.current;
-
-  async function save() {
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const text = draft ?? value;
+  const dirty = text !== value;
+  const persist = async (next: string) => {
+    if (saving) return;
     setSaving(true);
+    setMessage(null);
+    setError(null);
     try {
-      const trimmed = draft;
-      if (trimmed.trim() === "") {
+      if (!next.trim())
         await api.overrides.clear({ folder_path: path, scope, field });
-      } else {
+      else
         await api.overrides.set({
           folder_path: path,
           scope,
           field,
-          value: trimmed,
+          value: next,
         });
-      }
-      lastSavedRef.current = trimmed;
-      setSavedAt(Date.now());
-      onChanged();
+      await onChanged();
+      setDraft(undefined);
+      setMessage(next.trim() ? "Saved" : "Using source");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSaving(false);
     }
-  }
-
-  async function reset() {
-    setDraft("");
-    setSaving(true);
-    try {
-      await api.overrides.clear({ folder_path: path, scope, field });
-      lastSavedRef.current = "";
-      setSavedAt(Date.now());
-      onChanged();
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const overridden = (lastSavedRef.current ?? "").trim() !== "";
-
+  };
+  const inputProps = {
+    id,
+    value: text,
+    disabled: saving,
+    placeholder: "Use source value",
+    "aria-invalid": !!error,
+    "aria-describedby": error ? id + "-error" : undefined,
+    onChange: (
+      event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
+    ) => {
+      setDraft(event.target.value);
+      setMessage(null);
+    },
+    onBlur: () => {
+      if (dirty) void persist(text);
+    },
+    className: "field w-full",
+  };
   return (
     <div className={multiline ? "md:col-span-2" : ""}>
-      <div className="flex items-center justify-between mb-1">
-        <label className="text-xs text-slate-400 inline-flex items-center gap-2">
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <label htmlFor={id} className="text-xs text-slate-300">
           {label}
-          {overridden && (
-            <span className="text-[9px] px-1 py-0.5 rounded bg-indigo-700/40 text-indigo-200 uppercase tracking-wide">
-              override
-            </span>
+          {value.trim() && (
+            <span className="ml-2 text-[10px] text-amber-400">Overridden</span>
           )}
         </label>
-        <div className="flex items-center gap-2">
-          {savedAt && !dirty && !saving && (
-            <span className="text-[10px] text-emerald-400">saved</span>
-          )}
-          {overridden && (
-            <button
-              onClick={reset}
-              disabled={saving}
-              className="text-[10px] text-slate-400 hover:text-slate-200 underline disabled:opacity-50"
-            >
-              reset to source
-            </button>
-          )}
-        </div>
+        {value.trim() && (
+          <button
+            type="button"
+            disabled={saving}
+            className="text-xs text-slate-400 underline"
+            onClick={() => persist("")}
+          >
+            Reset to source
+          </button>
+        )}
       </div>
       {multiline ? (
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => {
-            if (dirty) save();
-          }}
-          rows={4}
-          placeholder="(use source value)"
-          className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm font-sans"
-        />
+        <textarea {...inputProps} rows={4} />
       ) : (
         <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => {
-            if (dirty) save();
+          {...inputProps}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
           }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-          }}
-          placeholder="(use source value)"
-          className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm"
         />
+      )}
+      {error ? (
+        <p
+          id={id + "-error"}
+          role="alert"
+          className="text-xs text-rose-300 mt-1"
+        >
+          Save failed: {error}{" "}
+          <button className="underline" onClick={() => persist(text)}>
+            Retry
+          </button>
+        </p>
+      ) : (
+        <p role="status" className="text-[10px] text-slate-400 mt-1 min-h-4">
+          {saving
+            ? "Saving…"
+            : dirty
+              ? "Unsaved · leave the field to save"
+              : message}
+        </p>
       )}
     </div>
   );

@@ -59,6 +59,7 @@ except Exception as e:  # pragma: no cover - import guard only
     _WATCHDOG_AVAILABLE = False
 
 from .. import db
+from .async_io import run_in_thread
 from ..config import (
     MEDIA_ROOT,
     effective_metadata_source,
@@ -280,6 +281,8 @@ class Watcher:
         with self._lifecycle_lock:
             self._teardown_observer()
             self._enabled = False
+            for task in self._running.values():
+                task.cancel()
             self._record_event(
                 event_type="stopped",
                 folder_path="",
@@ -300,6 +303,9 @@ class Watcher:
                        and _WATCHDOG_AVAILABLE
                        and not _KILL_SWITCH)
             if not enabled:
+                self._enabled = False
+                for task in self._running.values():
+                    task.cancel()
                 if self._observer is not None:
                     self._teardown_observer()
                     self._enabled = False
@@ -332,6 +338,13 @@ class Watcher:
                 ),
                 status="info",
             )
+
+
+    async def aclose(self) -> None:
+        """Stop observing and await cancelled pipelines before loop teardown."""
+        running = list(self._running.values())
+        self.stop()
+        await asyncio.gather(*running, return_exceptions=True)
 
     # ----- introspection --------------------------------------------------
 
@@ -373,7 +386,7 @@ class Watcher:
             except (KeyError, IndexError, TypeError):
                 continue
             lib_path = MEDIA_ROOT / name
-            if not lib_path.is_dir():
+            if not lib_path.resolve().is_relative_to(MEDIA_ROOT.resolve()) or not lib_path.is_dir():
                 logger.info("Watcher skipping {!r}: not a directory", name)
                 continue
             try:
@@ -436,7 +449,7 @@ class Watcher:
     def _schedule_debounce(self, library: str, show_folder: Path,
                             raw_path: str, is_dir: bool) -> None:
         """Reset (or start) the debounce timer for ``show_folder``."""
-        if self._loop is None:
+        if self._loop is None or not self._enabled:
             return
         debounce = effective_watcher_debounce_seconds()
         existing = self._pending.get(show_folder)
@@ -470,17 +483,18 @@ class Watcher:
         state = self._pending.pop(show_folder, None)
         if state is None:
             return
-        # If a previous run for the same folder is still in flight, just
-        # drop this event — that run will pick up whatever's on disk now.
+        # New imports may arrive after the active run took its snapshot.
+        # Keep one deferred pass instead of losing that change.
         in_flight = self._running.get(show_folder)
         if in_flight is not None and not in_flight.done():
             self._record_event(
                 event_type="debounced",
                 folder_path=str(show_folder),
                 library=state.library,
-                message="A previous run is still in flight; skipping duplicate trigger",
+                message="A previous run is still in flight; deferring new changes",
                 status="info",
             )
+            self._schedule_debounce(state.library, show_folder, str(show_folder), True)
             return
         task = asyncio.create_task(
             self._process_folder(show_folder, state.library),
@@ -527,7 +541,7 @@ class Watcher:
 
     async def _process_folder_locked(self, folder: Path, library: str) -> None:
         try:
-            exists = await asyncio.to_thread(folder.exists)
+            exists = await run_in_thread(folder.exists)
             if not exists:
                 self._record_event(
                     event_type="error",
@@ -562,21 +576,21 @@ class Watcher:
             )
 
             # 1. Determine the folder's kind.
-            kind = await asyncio.to_thread(_detect_kind, folder, library)
+            kind = await run_in_thread(_detect_kind, folder, library)
 
             # 2. If already matched, skip directly to build.
-            binding = await asyncio.to_thread(db.get_binding, str(folder))
+            binding = await run_in_thread(db.get_binding, str(folder))
             if binding and binding["external_id"]:
                 # Refresh state for the single folder so downstream views see
                 # the new episode count / mtime; this replaces the removed
                 # library-wide scan_library refresh above.
                 try:
                     if kind == "series":
-                        await asyncio.to_thread(
+                        await run_in_thread(
                             scanner_svc.scan_series_folder, folder, library,
                         )
                     else:
-                        await asyncio.to_thread(
+                        await run_in_thread(
                             scanner_svc.scan_movie_folder, folder, library,
                         )
                 except Exception as e:
@@ -595,13 +609,13 @@ class Watcher:
                 )
                 await self._queue_build(folder, kind, library)
                 # Clear any prior review-queue entry — it auto-resolved.
-                await asyncio.to_thread(db.delete_watcher_review, str(folder))
+                await run_in_thread(db.delete_watcher_review, str(folder))
                 return
 
             # 3. Auto-match.
-            settings = await asyncio.to_thread(get_user_settings)
+            settings = await run_in_thread(get_user_settings)
             lang = settings.preferred_language
-            source = await asyncio.to_thread(effective_metadata_source, library)
+            source = await run_in_thread(effective_metadata_source, library)
             try:
                 if source == "tmdb":
                     if kind == "series":
@@ -627,7 +641,7 @@ class Watcher:
                         )
             except Exception as e:
                 logger.warning("watcher auto-match {} failed: {}", folder, e)
-                await asyncio.to_thread(
+                await run_in_thread(
                     db.upsert_watcher_review,
                     str(folder), library=library, kind=kind,
                     reason="error", detail=str(e),
@@ -642,7 +656,7 @@ class Watcher:
                 return
 
             if not data:
-                await asyncio.to_thread(
+                await run_in_thread(
                     db.upsert_watcher_review,
                     str(folder), library=library, kind=kind,
                     reason="no_match",
@@ -660,14 +674,14 @@ class Watcher:
             # 4. Persist + build.
             try:
                 if kind == "series":
-                    await asyncio.to_thread(
+                    await run_in_thread(
                         scanner_svc.scan_series_folder, folder, library,
                     )
                 else:
-                    await asyncio.to_thread(
+                    await run_in_thread(
                         scanner_svc.scan_movie_folder, folder, library,
                     )
-                await asyncio.to_thread(sidecar_svc.write_sidecar, folder)
+                await run_in_thread(sidecar_svc.write_sidecar, folder)
             except Exception as e:
                 logger.warning("watcher post-match rescan {} failed: {}", folder, e)
 
@@ -678,7 +692,7 @@ class Watcher:
                 message=f"Matched to {data.get('name') or data.get('title') or '?'}",
                 status="success",
             )
-            await asyncio.to_thread(db.delete_watcher_review, str(folder))
+            await run_in_thread(db.delete_watcher_review, str(folder))
             await self._queue_build(folder, kind, library)
         except Exception as e:
             logger.exception("watcher pipeline crashed on {}: {}", folder, e)
@@ -692,8 +706,8 @@ class Watcher:
 
     async def _queue_build(self, folder: Path, kind: str, library: str) -> None:
         try:
-            # start_build enqueues + touches the DB, so keep it off the loop.
-            jid = await asyncio.to_thread(build_svc.start_build, folder, kind, False)  # type: ignore[call-arg]  # LATENT BUG: force is keyword-only; positional False raises TypeError at runtime
+            # Scheduling asyncio work belongs to the running event loop.
+            jid = build_svc.start_build(folder, kind, force=False)
             self._record_event(
                 event_type="built",
                 folder_path=str(folder),
@@ -701,6 +715,7 @@ class Watcher:
                 message=f"Build queued (job {jid})",
                 status="success",
             )
+            await build_svc.wait_build(jid)
         except Exception as e:
             logger.warning("watcher start_build {} failed: {}", folder, e)
             self._record_event(
@@ -716,15 +731,15 @@ class Watcher:
         prev: Optional[tuple[int, float]] = None
         for _ in range(_STABILITY_POLL_MAX):
             try:
-                snap = await asyncio.to_thread(_snapshot_folder, folder)
+                snap = await run_in_thread(_snapshot_folder, folder)
             except Exception as e:
                 logger.warning("watcher stability snapshot failed: {}", e)
-                return True  # Don't block the pipeline on stat errors.
+                return False
             if prev is not None and snap == prev:
                 return True
             prev = snap
             await asyncio.sleep(_STABILITY_POLL_INTERVAL)
-        return prev is not None  # If we got at least one snapshot, proceed.
+        return False
 
     # ----- internal: event buffer ----------------------------------------
 
@@ -745,23 +760,22 @@ class Watcher:
 
 
 def _snapshot_folder(folder: Path) -> tuple[int, float]:
-    """Return (total_size, max_mtime) for every file under ``folder``.
-
-    Skips errors silently so a transient EACCES on one file doesn't make the
-    whole snapshot useless. Used by the stability poll.
-    """
+    """Return (total_size, max_mtime); unreadable files are not proof of stability."""
     total = 0
     max_mtime = 0.0
-    for root, dirs, files in os.walk(folder, followlinks=False):
+    def unreadable(error: OSError) -> None:
+        raise error
+
+    for root, dirs, files in os.walk(folder, followlinks=False, onerror=unreadable):
         # Drop hidden dirs in-place so os.walk doesn't recurse into them.
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for name in files:
             if name.startswith(".") or name.endswith(tuple(_IGNORED_SUFFIXES)):
                 continue
-            try:
-                st = os.stat(os.path.join(root, name))
-            except OSError:
+            path = Path(root) / name
+            if path.is_symlink():
                 continue
+            st = path.stat()
             total += st.st_size
             if st.st_mtime > max_mtime:
                 max_mtime = st.st_mtime

@@ -1,59 +1,134 @@
+import { errorMessage } from "../lib/errors";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { api } from "../lib/api";
+import { api, Item } from "../lib/api";
 import ArtworkPicker from "./ArtworkPicker";
 import EpisodeMapper from "./EpisodeMapper";
 import OverridesTab from "./OverridesTab";
-import { useConfirm } from "../components/ConfirmDialog";
+import { useConfirm } from "../components/confirm";
+
+import {
+  BindEmptyState,
+  MatchPanel,
+  SecondarySourcePanel,
+} from "./SourcePanels";
+import { OrphansPanel, WhyStatusPanel } from "./ItemDiagnostics";
+import { providerPageUrl } from "./mediaLinks";
+import RenameModal from "./RenameModal";
+
+type Detail = {
+  state: (Item & { orphan_count?: number | null }) | null;
+  binding: {
+    provider: "tvdb" | "tmdb";
+    external_id: string;
+    kind: "series" | "movie";
+    title: string;
+    year: number | null;
+    source_locked: number;
+    secondary_provider?: string | null;
+    secondary_external_id?: string | null;
+  } | null;
+  artwork_files: string[];
+  provider_episode_count: number | null;
+  provider_used: string | null;
+  library_kind?: string | null;
+  tags: { tvdb: string[]; tmdb: string[]; custom: string[] };
+};
 
 type Tab = "overview" | "artwork" | "episodes" | "overrides";
 
-/** Build a public-facing URL for a TVDB/TMDB record so users can jump from
- * the detail header straight to the source page. Returns null when we don't
- * have enough info to build one. */
-function providerPageUrl(
-  provider: string | null | undefined,
-  externalId: string | number | null | undefined,
-  kind: "series" | "movie"
-): string | null {
-  if (!provider || externalId === null || externalId === undefined || externalId === "") {
-    return null;
-  }
-  const id = String(externalId);
-  const p = provider.toLowerCase();
-  if (p === "tvdb") {
-    return kind === "movie"
-      ? `https://www.thetvdb.com/?tab=movie&id=${id}`
-      : `https://www.thetvdb.com/?tab=series&id=${id}`;
-  }
-  if (p === "tmdb") {
-    return kind === "movie"
-      ? `https://www.themoviedb.org/movie/${id}`
-      : `https://www.themoviedb.org/tv/${id}`;
-  }
-  return null;
-}
-
-export default function DetailView({ path, onBack }: { path: string; onBack: () => void }) {
+/** Item workspace: source, file diagnostics and editing flows share one context. */
+export default function DetailView({
+  path,
+  onBack,
+}: {
+  path: string;
+  onBack: () => void;
+}) {
   const qc = useQueryClient();
   const confirmDlg = useConfirm();
-  const detail = useQuery({ queryKey: ["detail", path], queryFn: () => api.items.detail(path) });
+  const detail = useQuery<Detail>({
+    queryKey: ["detail", path],
+    queryFn: () => api.items.detail(path),
+  });
+  const health = useQuery({
+    queryKey: ["health"],
+    queryFn: api.health,
+    staleTime: 60_000,
+  });
+  const plexConfigured = !!health.data?.plex_configured;
+  const [showRename, setShowRename] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const job = useQuery({
+    queryKey: ["job", jobId],
+    queryFn: () => (jobId ? api.jobs.get(jobId) : Promise.resolve(null)),
+    enabled: !!jobId,
+    refetchInterval: jobId ? 1500 : false,
+  });
+  const currentJob = job.data;
+  useEffect(() => {
+    if (
+      !jobId ||
+      currentJob === undefined ||
+      (currentJob && ["queued", "running"].includes(currentJob.status))
+    )
+      return;
+    setJobId(null);
+    setMsg(
+      currentJob === null
+        ? "Build status is no longer available. The server may have restarted. Check local files and Activity before starting another build."
+        : currentJob.status === "cancelled"
+          ? "Build interrupted. Some files may already have changed. Review local files and Activity before retrying."
+          : ["error", "failed"].includes(currentJob.status)
+            ? `Build failed. ${currentJob.messages[currentJob.messages.length - 1] ?? "Open Activity for details."}`
+            : "Build complete. Local metadata and artwork refreshed.",
+    );
+    for (const key of ["detail", "episodes", "nfo-explain", "orphans"])
+      void qc.invalidateQueries({ queryKey: [key, path] });
+    void qc.invalidateQueries({ queryKey: ["items"] });
+  }, [currentJob, jobId, path, qc]);
+  const controlsBusy = busy || !!jobId;
   const [tab, setTab] = useState<Tab>("overview");
-  const [plexConfigured, setPlexConfigured] = useState(false);
   const [showMatcher, setShowMatcher] = useState(false);
   // v0.11.7 — "Why partial?" diagnostic panel. Closed by default; the user
   // clicks the status pill to open it. Lazily fetched.
   const [showExplain, setShowExplain] = useState(false);
-  useEffect(() => {
-    api.health().then((h: any) => setPlexConfigured(!!h.plex_configured)).catch(() => {});
-  }, []);
 
-  if (!detail.data) return <div className="p-6 text-slate-500">Loading…</div>;
-  const { state, binding, artwork_files, provider_episode_count, provider_used, tags, library_kind } =
-    detail.data as any;
-  const kind: "series" | "movie" = state?.kind === "movie" ? "movie" : "series";
+  if (detail.error && !detail.data)
+    return (
+      <div className="p-6">
+        <button className="btn mb-4" onClick={onBack}>
+          ← Library
+        </button>
+        <div role="alert" className="panel p-5 text-rose-300">
+          Could not load this item. {detail.error.message}
+          <button className="btn ml-3" onClick={() => detail.refetch()}>
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  if (!detail.data)
+    return (
+      <div role="status" className="p-6 space-y-4 animate-pulse">
+        <div className="h-32 panel" />
+        <div className="h-12 panel" />
+        <p className="text-sm text-slate-400">Loading media details…</p>
+      </div>
+    );
+  const {
+    state,
+    binding,
+    artwork_files,
+    provider_episode_count,
+    provider_used,
+    tags,
+    library_kind,
+  } = detail.data;
+  const kind: "series" | "movie" =
+    binding?.kind ?? (state?.kind === "movie" ? "movie" : "series");
   // v0.11.8: when offering manual matching, default the dropdown to whatever
   // the parent library was detected as ("tv" → series, "movies" → movie). For
   // empty / freshly-downloaded folders the per-folder scanner can't tell what
@@ -62,16 +137,24 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
   // single-video folder as a movie inside a TV library. The match panel now
   // honours the library kind unless the user has already bound the folder.
   const libraryDefaultKind: "series" | "movie" =
-    library_kind === "movies" ? "movie" : library_kind === "tv" ? "series" : kind;
+    library_kind === "movies"
+      ? "movie"
+      : library_kind === "tv"
+        ? "series"
+        : kind;
   const matchDefaultKind: "series" | "movie" = binding
     ? (binding.kind as "series" | "movie")
     : libraryDefaultKind;
-  const providerLabel = (provider_used ?? binding?.provider ?? "tvdb").toUpperCase();
+  const providerLabel = (
+    provider_used ??
+    binding?.provider ??
+    "tvdb"
+  ).toUpperCase();
   const cacheBust = state?.last_built ?? 0;
   const filesByName: Record<string, string> = {};
   const seasonPosters: { season: string; path: string }[] = [];
   for (const f of (artwork_files ?? []) as string[]) {
-    const name = f.split("/").pop() ?? f;
+    const name = f.split(/[\\/]/).pop() ?? f;
     filesByName[name] = f;
     const m = name.match(/^Season(\d+)-poster\.jpg$/i);
     if (m) seasonPosters.push({ season: m[1], path: f });
@@ -83,17 +166,28 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
   const doBuild = async (force: boolean) => {
     setBusy(true);
     setMsg(force ? "Force rebuild…" : "Build started…");
-    await api.build(path, kind, force);
-    setMsg(force ? "Force rebuild queued." : "Build queued. Check Jobs view for progress.");
-    setBusy(false);
-    setTimeout(() => qc.invalidateQueries({ queryKey: ["detail", path] }), 2000);
+    try {
+      const result = await api.build(path, kind, force);
+      setJobId(result.job);
+      setMsg("Build queued. Open Activity to follow progress.");
+      await qc.invalidateQueries({ queryKey: ["jobs"] });
+    } catch (cause) {
+      setMsg(
+        `Build could not start: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    } finally {
+      setBusy(false);
+    }
   };
 
   const doWipe = async () => {
     try {
       setBusy(true);
       setMsg("Listing files to remove…");
-      const preview = await api.items.clean({ folder_path: path, dry_run: true });
+      const preview = await api.items.clean({
+        folder_path: path,
+        dry_run: true,
+      });
       const files = preview.files ?? [];
       if (files.length === 0) {
         setMsg("Nothing to clean — no NFOs or artwork found.");
@@ -101,7 +195,8 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
         return;
       }
       const head = files.slice(0, 12).join("\n  • ");
-      const more = files.length > 12 ? `\n  … and ${files.length - 12} more` : "";
+      const more =
+        files.length > 12 ? `\n  … and ${files.length - 12} more` : "";
       const ok = await confirmDlg({
         title: `Wipe NFOs & artwork for “${state?.title ?? path}”?`,
         message:
@@ -120,12 +215,12 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
       const res = await api.items.clean({ folder_path: path, dry_run: false });
       setMsg(
         `Cleaned: ${res.nfo_deleted ?? 0} NFO file${res.nfo_deleted === 1 ? "" : "s"}, ` +
-          `${res.artwork_deleted ?? 0} artwork file${res.artwork_deleted === 1 ? "" : "s"} removed.`
+          `${res.artwork_deleted ?? 0} artwork file${res.artwork_deleted === 1 ? "" : "s"} removed.`,
       );
       await qc.invalidateQueries({ queryKey: ["detail", path] });
       await qc.invalidateQueries({ queryKey: ["items"] });
-    } catch (e: any) {
-      setMsg(`Failed: ${e?.message ?? e}`);
+    } catch (e: unknown) {
+      setMsg(`Failed: ${errorMessage(e)}`);
     } finally {
       setBusy(false);
     }
@@ -138,17 +233,17 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
       const r = await api.plex.refresh(path, 0);
       if (r.refreshed && r.strategy === "metadata-refresh") {
         setMsg(
-          `Plex re-reading metadata for "${r.item_title || r.section_title}" (ratingKey ${r.rating_key}). Updated NFO and artwork should appear in a moment.`
+          `Plex re-reading metadata for "${r.item_title || r.section_title}" (ratingKey ${r.rating_key}). Updated NFO and artwork should appear in a moment.`,
         );
       } else if (r.refreshed) {
         setMsg(
-          `Plex partial scan queued for "${r.section_title}" but no item matched ${r.translated_path ?? path}. ${r.error || "Plex hasn't indexed this folder yet — wait for the scan to finish, then click Refresh in Plex again to force the NFO re-read."}`
+          `Plex partial scan queued for "${r.section_title}" but no item matched ${r.translated_path ?? path}. ${r.error || "Plex hasn't indexed this folder yet — wait for the scan to finish, then click Refresh in Plex again to force the NFO re-read."}`,
         );
       } else {
         setMsg(`Plex refresh failed: ${r.error || "unknown error"}`);
       }
-    } catch (e: any) {
-      setMsg(`Plex refresh failed: ${e?.message ?? e}`);
+    } catch (e: unknown) {
+      setMsg(`Plex refresh failed: ${errorMessage(e)}`);
     } finally {
       setBusy(false);
     }
@@ -157,8 +252,7 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
   const doRemove = async () => {
     const ok = await confirmDlg({
       title: `Remove “${state?.title ?? path}” from the library?`,
-      message:
-        `This only forgets it in the database — no files are deleted. Use this when you've already deleted the folder on disk.`,
+      message: `This only forgets it in the database — no files are deleted. Use this when you've already deleted the folder on disk.`,
       confirmLabel: "Remove",
       tone: "danger",
     });
@@ -170,68 +264,108 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
       setMsg("Removed. Returning to library.");
       await qc.invalidateQueries({ queryKey: ["items"] });
       setTimeout(() => onBack(), 600);
-    } catch (e: any) {
-      setMsg(`Failed: ${e?.message ?? e}`);
+    } catch (e: unknown) {
+      setMsg(`Failed: ${errorMessage(e)}`);
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="p-6">
+    <div className="p-4 sm:p-6 max-w-[1440px] mx-auto">
       <button
         onClick={onBack}
         className="text-indigo-400 text-sm mb-4 inline-flex items-center gap-1 hover:text-indigo-300"
       >
-        ← back
+        ← Back to library
       </button>
 
-      <div className="flex flex-wrap items-baseline gap-3 mb-1">
-        <h2 className="text-2xl font-semibold tracking-tight">{state?.title ?? path}</h2>
-        {state?.year && <span className="text-slate-500">({state.year})</span>}
-        {(() => {
-          const url = providerPageUrl(
-            (binding?.provider as string | undefined) ?? null,
-            binding?.external_id ?? null,
-            kind
-          );
-          if (!url) return null;
-          const label = (binding?.provider ?? "").toLowerCase() === "tmdb" ? "TMDB" : "TVDB";
-          return (
-            <a
-              href={url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs px-2 py-0.5 rounded border border-indigo-700 text-indigo-300 hover:bg-indigo-700/30"
-              title={`Open on ${label}`}
-            >
-              {label} ↗
-            </a>
-          );
-        })()}
-        {state?.nfo_status && (
-          <button
-            type="button"
-            onClick={() => setShowExplain((v) => !v)}
-            title={
-              showExplain
-                ? "Hide the breakdown of why this status was assigned"
-                : "Click to see exactly which files / NFOs led to this status"
-            }
-            className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide cursor-pointer transition ring-1 ring-transparent hover:ring-indigo-400 ${
-              state.nfo_status === "complete"
-                ? "bg-emerald-700 text-emerald-100"
-                : state.nfo_status === "partial" || state.nfo_status === "stale"
-                ? "bg-amber-700 text-amber-100"
-                : "bg-slate-700 text-slate-200"
-            }`}
-          >
-            {state.nfo_status}
-            <span className="ml-1 opacity-80">{showExplain ? "▴" : "▾"}</span>
-          </button>
-        )}
-      </div>
-      <div className="text-xs text-slate-500 mb-4 font-mono break-all">{path}</div>
+      <header className="flex gap-4 sm:gap-5 pb-5 mb-4 border-b border-slate-800">
+        <div className="w-20 sm:w-24 shrink-0 aspect-[2/3] rounded overflow-hidden bg-slate-900 border border-slate-800 self-start">
+          {slot("poster.jpg") ? (
+            <img
+              src={fileSrc(slot("poster.jpg")!)}
+              alt=""
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="h-full flex items-center justify-center text-slate-500 text-xs">
+              No poster
+            </div>
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] uppercase tracking-widest text-amber-400 mb-2">
+            {state?.library ?? "Media library"} /{" "}
+            {kind === "series" ? "Series" : "Movie"}
+          </p>
+          <div className="flex flex-wrap items-baseline gap-2 mb-2">
+            <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight break-words">
+              {state?.title ?? binding?.title ?? path.split(/[\\/]/).pop()}
+            </h1>
+            {state?.year && (
+              <span className="text-slate-500">({state.year})</span>
+            )}
+            {(() => {
+              const url = providerPageUrl(
+                (binding?.provider as string | undefined) ?? null,
+                binding?.external_id ?? null,
+                kind,
+              );
+              if (!url) return null;
+              const label =
+                (binding?.provider ?? "").toLowerCase() === "tmdb"
+                  ? "TMDB"
+                  : "TVDB";
+              return (
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs px-2 py-0.5 rounded border border-indigo-700 text-indigo-300 hover:bg-indigo-700/30"
+                  title={`Open on ${label}`}
+                >
+                  {label} ↗
+                </a>
+              );
+            })()}
+            {state?.nfo_status && (
+              <button
+                type="button"
+                aria-expanded={showExplain}
+                onClick={() => setShowExplain((v) => !v)}
+                title={
+                  showExplain
+                    ? "Hide the breakdown of why this status was assigned"
+                    : "Click to see exactly which files / NFOs led to this status"
+                }
+                className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide cursor-pointer transition ring-1 ring-transparent hover:ring-indigo-400 ${
+                  state.nfo_status === "complete"
+                    ? "bg-emerald-700 text-emerald-100"
+                    : state.nfo_status === "partial" ||
+                        state.nfo_status === "stale"
+                      ? "bg-amber-700 text-amber-100"
+                      : "bg-slate-700 text-slate-200"
+                }`}
+              >
+                {state.nfo_status}
+                <span className="ml-1 opacity-80">
+                  {showExplain ? "▴" : "▾"}
+                </span>
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-slate-400 font-mono break-all">{path}</p>
+          <p className="text-xs text-slate-400 mt-3">
+            {binding
+              ? `${providerLabel} · ${binding.external_id}${binding.source_locked ? " · Source locked" : ""}`
+              : "Match this folder to unlock provider metadata and artwork."}
+            {state?.last_built
+              ? ` · Built ${new Date(state.last_built * 1000).toLocaleString()}`
+              : " · No completed build"}
+          </p>
+        </div>
+      </header>
 
       {showExplain && (
         <WhyStatusPanel path={path} onClose={() => setShowExplain(false)} />
@@ -243,44 +377,36 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
         cachedOrphanCount={state?.orphan_count ?? null}
       />
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
-        <Stat label="Episodes (local)" value={state?.episode_count_local ?? "—"} />
-        <Stat
-          label={kind === "series" ? `Episodes (${providerLabel})` : "Episodes (matched)"}
-          value={
-            kind === "series"
-              ? binding
-                ? provider_episode_count ?? "—"
-                : "—"
-              : "—"
-          }
-        />
-        <Stat
-          label="Binding"
-          value={binding ? `${binding.provider}-${binding.external_id}` : "unmatched"}
-        />
-      </div>
-
-      <TagsPanel
-        path={path}
-        tags={tags ?? { tvdb: [], tmdb: [], custom: [] }}
-        bindingProvider={(binding?.provider as string | undefined) ?? null}
-        onChanged={() => qc.invalidateQueries({ queryKey: ["detail", path] })}
-      />
+      {kind === "series" && (
+        <div className="flex flex-wrap gap-x-6 gap-y-2 mb-4 text-xs text-slate-400">
+          <span>
+            <b className="text-slate-100">
+              {state?.episode_count_local ?? "—"}
+            </b>{" "}
+            local episodes
+          </span>
+          <span>
+            <b className="text-slate-100">
+              {binding ? (provider_episode_count ?? "—") : "—"}
+            </b>{" "}
+            episodes matched on {providerLabel}
+          </span>
+        </div>
+      )}
 
       {/* Action row — primary actions inline, everything secondary tucked in overflow menu */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <button
-          disabled={busy}
+          disabled={controlsBusy}
           title="Generate NFO files and download artwork. Uses cached metadata when available."
-          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded text-sm disabled:opacity-50"
+          className="btn btn-primary"
           onClick={() => doBuild(false)}
         >
           Build NFOs
         </button>
         <button
-          disabled={busy}
-          title="Same as Build NFOs but bypasses the local metadata cache and re-fetches everything from TVDB/TMDB."
+          disabled={controlsBusy}
+          title="Re-fetch provider metadata. Foreign NFO protection follows Settings. Saved overrides are applied."
           className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-sm disabled:opacity-50"
           onClick={() => doBuild(true)}
         >
@@ -288,7 +414,7 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
         </button>
         {binding && (
           <button
-            disabled={busy}
+            disabled={controlsBusy}
             title="Change which TVDB/TMDB title this folder is bound to."
             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-sm disabled:opacity-50"
             onClick={() => {
@@ -299,36 +425,78 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
             {showMatcher ? "Hide match panel" : "Change match"}
           </button>
         )}
+        {kind === "movie" && binding && (
+          <button
+            className="btn"
+            disabled={controlsBusy}
+            onClick={() => setShowRename(true)}
+          >
+            Preview rename…
+          </button>
+        )}
         <div className="flex-1" />
         <OverflowMenu
-          disabled={busy}
+          disabled={controlsBusy}
           items={[
-            { label: "Wipe NFOs & artwork", tone: "warn", onClick: doWipe },
+            {
+              label: "Delete NFOs & artwork…",
+              tone: "danger",
+              onClick: doWipe,
+            },
             ...(plexConfigured
-              ? [{ label: "Refresh in Plex", tone: "ok" as const, onClick: doPlexRefresh }]
+              ? [
+                  {
+                    label: "Refresh in Plex",
+                    tone: "ok" as const,
+                    onClick: doPlexRefresh,
+                  },
+                ]
               : []),
             { label: "Remove from library", tone: "danger", onClick: doRemove },
           ]}
         />
       </div>
-      {msg && <div className="text-xs text-slate-400 mb-3">{msg}</div>}
+      {msg && (
+        <div
+          role="status"
+          className="panel px-3 py-2 text-xs text-slate-300 mb-3"
+        >
+          {currentJob && ["queued", "running"].includes(currentJob.status)
+            ? `Build ${currentJob.status} · ${currentJob.progress} / ${currentJob.total}`
+            : msg}
+          {jobId && job.error && (
+            <span className="block mt-1 text-amber-300">
+              Progress unavailable: {job.error.message}. Retrying…
+            </span>
+          )}
+        </div>
+      )}
 
-      <div className="border-b border-slate-800 mb-4 flex gap-1">
-        {(["overview", "artwork", ...(kind === "series" ? (["episodes"] as Tab[]) : []), "overrides"] as Tab[]).map(
-          (t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-4 py-2 text-sm capitalize border-b-2 transition -mb-px ${
-                tab === t
-                  ? "border-indigo-500 text-white"
-                  : "border-transparent text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              {t}
-            </button>
-          ),
-        )}
+      <div
+        aria-label="Item sections"
+        className="border-b border-slate-800 mb-5 flex gap-1 overflow-x-auto"
+      >
+        {(
+          [
+            "overview",
+            "artwork",
+            ...(kind === "series" ? (["episodes"] as Tab[]) : []),
+            "overrides",
+          ] as Tab[]
+        ).map((t) => (
+          <button
+            key={t}
+            aria-pressed={tab === t}
+            onClick={() => setTab(t)}
+            className={`shrink-0 whitespace-nowrap px-4 py-2 text-sm capitalize border-b-2 transition -mb-px ${
+              tab === t
+                ? "border-indigo-500 text-white"
+                : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            {t === "overrides" ? "Metadata overrides" : t}
+          </button>
+        ))}
       </div>
 
       {tab === "overview" && (
@@ -337,7 +505,9 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
             <BindEmptyState
               path={path}
               detectedKind={matchDefaultKind}
-              onBound={() => qc.invalidateQueries({ queryKey: ["detail", path] })}
+              onBound={() =>
+                qc.invalidateQueries({ queryKey: ["detail", path] })
+              }
             />
           ) : showMatcher ? (
             <MatchPanel
@@ -350,20 +520,43 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
             />
           ) : null}
 
+          <TagsPanel
+            path={path}
+            tags={tags ?? { tvdb: [], tmdb: [], custom: [] }}
+            bindingProvider={(binding?.provider as string | undefined) ?? null}
+            onChanged={() =>
+              qc.invalidateQueries({ queryKey: ["detail", path] })
+            }
+          />
+
           {binding && (
             <SecondarySourcePanel
               path={path}
               kind={kind}
               primaryProvider={(binding.provider as "tvdb" | "tmdb") ?? "tvdb"}
-              secondaryProvider={(binding.secondary_provider as string | null) ?? null}
-              secondaryExternalId={(binding.secondary_external_id as string | null) ?? null}
-              onChanged={() => qc.invalidateQueries({ queryKey: ["detail", path] })}
+              secondaryProvider={
+                (binding.secondary_provider as string | null) ?? null
+              }
+              secondaryExternalId={
+                (binding.secondary_external_id as string | null) ?? null
+              }
+              onChanged={() =>
+                qc.invalidateQueries({ queryKey: ["detail", path] })
+              }
             />
           )}
 
-          <h3 className="font-semibold mt-6 mb-2">Current artwork</h3>
+          <div className="flex items-center justify-between gap-2 mt-6 mb-2">
+            <h3 className="font-semibold">Local artwork</h3>
+            {binding && (
+              <button className="btn" onClick={() => setTab("artwork")}>
+                Choose artwork →
+              </button>
+            )}
+          </div>
           <p className="text-xs text-slate-500 mb-3">
-            The active local files Plex reads from the folder. Rebuilds overwrite these in place.
+            The active local files Plex reads from the folder. Rebuilds
+            overwrite these in place.
           </p>
           {artwork_files && artwork_files.length > 0 ? (
             <div className="space-y-4">
@@ -377,7 +570,11 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
                 <ArtSlot
                   label="Background"
                   filename="background.jpg"
-                  src={slot("background.jpg") ? fileSrc(slot("background.jpg")!) : null}
+                  src={
+                    slot("background.jpg")
+                      ? fileSrc(slot("background.jpg")!)
+                      : null
+                  }
                   aspect="aspect-[16/9]"
                 />
                 <ArtSlot
@@ -389,7 +586,11 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
                 <ArtSlot
                   label="Clearlogo"
                   filename="clearlogo.png"
-                  src={slot("clearlogo.png") ? fileSrc(slot("clearlogo.png")!) : null}
+                  src={
+                    slot("clearlogo.png")
+                      ? fileSrc(slot("clearlogo.png")!)
+                      : null
+                  }
                   aspect="aspect-[16/9]"
                   contain
                 />
@@ -404,7 +605,7 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
                       <ArtSlot
                         key={sp.path}
                         label={`Season ${Number(sp.season)}`}
-                        filename={sp.path.split("/").pop() ?? ""}
+                        filename={sp.path.split(/[\\/]/).pop() ?? ""}
                         src={fileSrc(sp.path)}
                         aspect="aspect-[2/3]"
                         compact
@@ -426,7 +627,8 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
         <div>
           {!binding ? (
             <div className="text-sm text-slate-400">
-              Bind this folder to a TVDB or TMDB title from the Overview tab to pick artwork.
+              Bind this folder to a TVDB or TMDB title from the Overview tab to
+              pick artwork.
             </div>
           ) : (
             <ArtworkPicker path={path} kind={kind} />
@@ -438,7 +640,8 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
         <div>
           {!binding ? (
             <div className="text-sm text-slate-400">
-              Bind this folder to a TVDB or TMDB series from the Overview tab first.
+              Bind this folder to a TVDB or TMDB series from the Overview tab
+              first.
             </div>
           ) : (
             <EpisodeMapper path={path} />
@@ -446,8 +649,23 @@ export default function DetailView({ path, onBack }: { path: string; onBack: () 
         </div>
       )}
 
+      {showRename && (
+        <RenameModal
+          path={path}
+          onClose={() => setShowRename(false)}
+          onApplied={async () => {
+            await qc.invalidateQueries({ queryKey: ["detail", path] });
+            await qc.invalidateQueries({ queryKey: ["items"] });
+          }}
+        />
+      )}
       {tab === "overrides" && (
-        <OverridesTab path={path} kind={kind} binding={binding} />
+        <OverridesTab
+          key={`${path}-${binding?.provider}-${binding?.external_id}`}
+          path={path}
+          kind={kind}
+          binding={binding}
+        />
       )}
     </div>
   );
@@ -459,14 +677,19 @@ function OverflowMenu({
   items,
 }: {
   disabled?: boolean;
-  items: Array<{ label: string; tone?: "warn" | "danger" | "ok"; onClick: () => void }>;
+  items: Array<{
+    label: string;
+    tone?: "warn" | "danger" | "ok";
+    onClick: () => void;
+  }>;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node))
+        setOpen(false);
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
@@ -475,20 +698,31 @@ function OverflowMenu({
     t === "danger"
       ? "text-rose-300 hover:bg-rose-900/30"
       : t === "warn"
-      ? "text-amber-200 hover:bg-amber-900/30"
-      : t === "ok"
-      ? "text-emerald-200 hover:bg-emerald-900/30"
-      : "text-slate-200 hover:bg-slate-800";
+        ? "text-amber-200 hover:bg-amber-900/30"
+        : t === "ok"
+          ? "text-emerald-200 hover:bg-emerald-900/30"
+          : "text-slate-200 hover:bg-slate-800";
   return (
-    <div className="relative" ref={ref}>
+    <div
+      className="relative"
+      ref={ref}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          setOpen(false);
+          ref.current?.querySelector("button")?.focus();
+        }
+      }}
+    >
       <button
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         title="More actions"
+        aria-label="More item actions"
+        aria-expanded={open}
         className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-sm disabled:opacity-50"
       >
-        •••
+        More actions ▾
       </button>
       {open && (
         <div className="absolute right-0 mt-1 z-20 min-w-[12rem] bg-slate-900 border border-slate-700 rounded-md shadow-xl py-1">
@@ -507,870 +741,6 @@ function OverflowMenu({
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-/** Prominent empty state shown when a folder has no binding yet. */
-function BindEmptyState({
-  path,
-  detectedKind,
-  onBound,
-}: {
-  path: string;
-  detectedKind: "series" | "movie";
-  onBound: () => void;
-}) {
-  return (
-    <div className="bg-indigo-950/30 border border-indigo-800/60 rounded-md p-4 mb-6">
-      <div className="text-sm font-semibold text-indigo-100 mb-1">
-        This folder isn't bound yet
-      </div>
-      <p className="text-xs text-indigo-200/80 mb-3">
-        Bind it to a TVDB or TMDB title to download artwork, generate NFOs, and map episodes.
-      </p>
-      <MatchPanel path={path} detectedKind={detectedKind} onBound={onBound} initialOpen />
-    </div>
-  );
-}
-
-/** Search & bind UI. Used both as the empty-state body and the "Change match" panel. */
-function MatchPanel({
-  path,
-  detectedKind,
-  onBound,
-  initialOpen,
-}: {
-  path: string;
-  detectedKind: "series" | "movie";
-  onBound: () => void;
-  initialOpen?: boolean;
-}) {
-  const [matchKind, setMatchKind] = useState<"series" | "movie">(detectedKind);
-  const [matchProvider, setMatchProvider] = useState<"tvdb" | "tmdb">("tvdb");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [matches, setMatches] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
-
-  const runSearch = async () => {
-    if (!searchQuery.trim()) return;
-    setBusy(true);
-    try {
-      const r = await api.match.search(searchQuery, matchKind, undefined, undefined, matchProvider);
-      setMatches(r.results);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className={initialOpen ? "" : "bg-slate-900/40 border border-slate-800 rounded-md p-3 mb-6"}>
-      {!initialOpen && <h3 className="font-semibold mb-2">Change match</h3>}
-      <div className="flex flex-wrap gap-2 mb-2">
-        <select
-          value={matchProvider}
-          onChange={(e) => setMatchProvider(e.target.value as any)}
-          className="bg-slate-800 px-2 py-1 rounded text-sm border border-slate-700"
-          title="Metadata provider to search"
-        >
-          <option value="tvdb">TVDB</option>
-          <option value="tmdb">TMDB</option>
-        </select>
-        <select
-          value={matchKind}
-          onChange={(e) => setMatchKind(e.target.value as any)}
-          className="bg-slate-800 px-2 py-1 rounded text-sm border border-slate-700"
-        >
-          <option value="series">Series</option>
-          <option value="movie">Movie</option>
-        </select>
-        <input
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder={`${matchProvider === "tmdb" ? "TMDB" : "TVDB"} title`}
-          className="bg-slate-800 px-2 py-1 rounded text-sm flex-1 min-w-[12rem] border border-slate-700"
-          onKeyDown={(e) => {
-            if (e.key === "Enter") runSearch();
-          }}
-        />
-        <button
-          disabled={busy}
-          className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm disabled:opacity-50"
-          onClick={runSearch}
-        >
-          Search
-        </button>
-      </div>
-      <div className="max-h-72 overflow-auto border border-slate-800 rounded">
-        {matches.length === 0 && (
-          <div className="p-4 text-xs text-slate-500">
-            Type a title and press Enter to search.
-          </div>
-        )}
-        {matches.map((m) => {
-          const provider = (m.provider as "tvdb" | "tmdb") || matchProvider;
-          const externalId = String(m.tvdb_id || m.id);
-          return (
-            <div
-              key={`${provider}-${externalId}`}
-              className="p-2 flex items-center gap-3 border-b border-slate-800 last:border-0"
-            >
-              {m.image_url && (
-                <img src={m.image_url} className="w-10 h-14 object-cover rounded" />
-              )}
-              <div className="flex-1 min-w-0">
-                <div className="text-sm truncate">
-                  {m.name} {m.year ? `(${m.year})` : ""}
-                </div>
-                <div className="text-xs text-slate-500 truncate">
-                  <span
-                    className={`mr-1 px-1 rounded ${
-                      provider === "tmdb"
-                        ? "bg-emerald-800/60 text-emerald-100"
-                        : "bg-blue-800/60 text-blue-100"
-                    }`}
-                  >
-                    {provider}
-                  </span>
-                  {provider}-{externalId}
-                </div>
-              </div>
-              <button
-                className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs"
-                onClick={async () => {
-                  await api.match.bind({
-                    folder_path: path,
-                    kind: matchKind,
-                    provider,
-                    external_id: externalId,
-                    title: m.name,
-                    year: m.year,
-                  });
-                  onBound();
-                }}
-              >
-                Bind
-              </button>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Lets the user pin a manual TMDB id on a TVDB-bound show (or vice versa)
- * when the primary metadata record doesn't include a cross-reference. The
- * stored secondary id is used by the cross-provider artwork resolver, the
- * fanart.tv lookup, and the NFO ``<uniqueid>`` block. Persists to the sidecar
- * so it survives a DB wipe.
- */
-function SecondarySourcePanel({
-  path,
-  kind,
-  primaryProvider,
-  secondaryProvider,
-  secondaryExternalId,
-  onChanged,
-}: {
-  path: string;
-  kind: "series" | "movie";
-  primaryProvider: "tvdb" | "tmdb";
-  secondaryProvider: string | null;
-  secondaryExternalId: string | null;
-  onChanged: () => void;
-}) {
-  const otherProvider: "tvdb" | "tmdb" = primaryProvider === "tvdb" ? "tmdb" : "tvdb";
-  const otherLabel = otherProvider.toUpperCase();
-  const hasSecondary =
-    !!secondaryProvider && !!secondaryExternalId && secondaryProvider.toLowerCase() !== primaryProvider;
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [pasteId, setPasteId] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [matches, setMatches] = useState<any[]>([]);
-
-  const linkUrl = providerPageUrl(secondaryProvider, secondaryExternalId, kind);
-
-  const save = async (provider: "tvdb" | "tmdb" | null, externalId: string | null) => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      await api.match.setSecondary({
-        folder_path: path,
-        provider,
-        external_id: externalId,
-      });
-      setOpen(false);
-      setPasteId("");
-      setSearchQuery("");
-      setMatches([]);
-      onChanged();
-    } catch (e: any) {
-      setMsg(`Failed: ${e?.message ?? e}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const savePaste = async () => {
-    const id = pasteId.trim();
-    if (!id) {
-      setMsg(`Enter a ${otherLabel} id (numbers only).`);
-      return;
-    }
-    if (!/^\d+$/.test(id)) {
-      setMsg(`${otherLabel} id should be all numbers.`);
-      return;
-    }
-    await save(otherProvider, id);
-  };
-
-  const runSearch = async () => {
-    if (!searchQuery.trim()) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      const r = await api.match.search(
-        searchQuery,
-        kind,
-        undefined,
-        undefined,
-        otherProvider,
-      );
-      setMatches(r.results || []);
-    } catch (e: any) {
-      setMsg(`Search failed: ${e?.message ?? e}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="bg-slate-900/40 border border-slate-800 rounded-md p-3 mb-6">
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 className="font-semibold mr-1">Secondary source</h3>
-        {hasSecondary ? (
-          <>
-            <span className="text-xs px-2 py-0.5 rounded bg-slate-800 border border-slate-700 font-mono">
-              {(secondaryProvider ?? "").toLowerCase()}-{secondaryExternalId}
-            </span>
-            {linkUrl && (
-              <a
-                href={linkUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs px-2 py-0.5 rounded border border-indigo-700 text-indigo-300 hover:bg-indigo-700/30"
-                title={`Open on ${(secondaryProvider ?? "").toUpperCase()}`}
-              >
-                {(secondaryProvider ?? "").toUpperCase()} ↗
-              </a>
-            )}
-            <button
-              disabled={busy}
-              className="text-xs px-2 py-0.5 rounded border border-slate-700 hover:bg-slate-800 disabled:opacity-50"
-              onClick={() => setOpen((v) => !v)}
-            >
-              {open ? "Hide" : "Edit"}
-            </button>
-            <button
-              disabled={busy}
-              className="text-xs px-2 py-0.5 rounded border border-yellow-600/60 text-yellow-300 hover:bg-yellow-600/20 disabled:opacity-50"
-              onClick={() => save(null, null)}
-              title="Remove the manual secondary id"
-            >
-              Clear
-            </button>
-          </>
-        ) : (
-          <>
-            <span className="text-xs text-slate-500">
-              No manual {otherLabel} id linked.
-            </span>
-            <button
-              disabled={busy}
-              className="text-xs px-2 py-0.5 rounded border border-slate-700 hover:bg-slate-800 disabled:opacity-50"
-              onClick={() => setOpen((v) => !v)}
-            >
-              {open ? "Hide" : `Add ${otherLabel} id`}
-            </button>
-          </>
-        )}
-      </div>
-      <p className="text-xs text-slate-500 mt-2">
-        Pin a {otherLabel} id when {primaryProvider.toUpperCase()}'s record doesn't cross-reference
-        {" "}{otherLabel}. Used for cross-provider artwork, fanart.tv lookups, and the NFO
-        {" "}<code className="text-slate-400">&lt;uniqueid&gt;</code> tag. Persists in the sidecar.
-      </p>
-
-      {open && (
-        <div className="mt-3 border-t border-slate-800 pt-3 space-y-3">
-          <div>
-            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
-              Paste {otherLabel} id
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <input
-                value={pasteId}
-                onChange={(e) => setPasteId(e.target.value)}
-                placeholder={`${otherLabel} id (e.g. ${otherProvider === "tmdb" ? "12345" : "81189"})`}
-                className="bg-slate-800 px-2 py-1 rounded text-sm flex-1 min-w-[12rem] border border-slate-700 font-mono"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") savePaste();
-                }}
-              />
-              <button
-                disabled={busy || !pasteId.trim()}
-                className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-sm disabled:opacity-50"
-                onClick={savePaste}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
-              Or search {otherLabel}
-            </div>
-            <div className="flex flex-wrap gap-2 mb-2">
-              <input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={`${otherLabel} title`}
-                className="bg-slate-800 px-2 py-1 rounded text-sm flex-1 min-w-[12rem] border border-slate-700"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") runSearch();
-                }}
-              />
-              <button
-                disabled={busy || !searchQuery.trim()}
-                className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm disabled:opacity-50"
-                onClick={runSearch}
-              >
-                Search
-              </button>
-            </div>
-            {matches.length > 0 && (
-              <div className="max-h-72 overflow-auto border border-slate-800 rounded">
-                {matches.map((m) => {
-                  const externalId = String(m.tvdb_id || m.id);
-                  return (
-                    <div
-                      key={`${otherProvider}-${externalId}`}
-                      className="p-2 flex items-center gap-3 border-b border-slate-800 last:border-0"
-                    >
-                      {m.image_url && (
-                        <img src={m.image_url} className="w-10 h-14 object-cover rounded" />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm truncate">
-                          {m.name} {m.year ? `(${m.year})` : ""}
-                        </div>
-                        <div className="text-xs text-slate-500 truncate">
-                          <span
-                            className={`mr-1 px-1 rounded ${
-                              otherProvider === "tmdb"
-                                ? "bg-emerald-800/60 text-emerald-100"
-                                : "bg-blue-800/60 text-blue-100"
-                            }`}
-                          >
-                            {otherProvider}
-                          </span>
-                          {otherProvider}-{externalId}
-                        </div>
-                      </div>
-                      <button
-                        disabled={busy}
-                        className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs disabled:opacity-50"
-                        onClick={() => save(otherProvider, externalId)}
-                      >
-                        Link
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-      {msg && <div className="text-xs text-amber-400 mt-2">{msg}</div>}
-    </div>
-  );
-}
-
-// v0.11.7 — inline diagnostic panel that explains *why* the folder has the
-// nfo_status the library list is showing. Lazily fetches /items/nfo-explain
-// when first opened. Renders a friendly summary line, the bulleted reason
-// list, and (for series) a per-season coverage table including which
-// specific episode files have no .nfo yet. Designed to make the difference
-// between "partial", "foreign", "mixed", and "none" actionable instead of
-// just a bucket label.
-// v0.11.10 — Orphan companion sweeper. Renders inline only when the folder
-// has at least one orphaned `<stem>.nfo` or `<stem>-thumb.*` left behind by
-// a Sonarr/Radarr release upgrade. The hazard-yellow button removes them.
-function OrphansPanel({
-  path,
-  title,
-  cachedOrphanCount,
-}: {
-  path: string;
-  title: string;
-  /**
-   * v0.11.11 — the scanner caches the orphan count on item_state so we can
-   * skip the per-folder disk walk on the detail page when there's nothing
-   * to show. ``null`` means "unknown — fetch to confirm". ``0`` is the
-   * fast path: don't render the panel and don't hit the backend at all.
-   */
-  cachedOrphanCount: number | null;
-}) {
-  const qc = useQueryClient();
-  const confirmDlg = useConfirm();
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const skipFetch = cachedOrphanCount === 0;
-  const q = useQuery({
-    queryKey: ["orphans", path],
-    queryFn: () => api.items.orphansPreview(path),
-    staleTime: 60_000,
-    enabled: !skipFetch,
-  });
-  if (skipFetch) return null;
-  const total = (q.data?.nfo_removed ?? 0) + (q.data?.thumb_removed ?? 0);
-  if (q.isLoading) return null;
-  if (!q.data || total === 0) return null;
-
-  const files = q.data.files ?? [];
-  const head = files.slice(0, 12).join("\n  • ");
-  const more = files.length > 12 ? `\n  … and ${files.length - 12} more` : "";
-
-  const runSweep = async () => {
-    if (busy) return;
-    const ok = await confirmDlg({
-      title: `Remove ${total} orphaned sidecar${total === 1 ? "" : "s"} for “${title}”?`,
-      message:
-        `These files have no matching video file in the folder — they were left ` +
-        `behind when Sonarr/Radarr swapped a release. Plex reads the orphaned ` +
-        `NFO's <uniqueid> and creates a duplicate library entry, which is the ` +
-        `“my show appears twice” symptom.\n\n` +
-        `Will delete:\n  • ${head}${more}\n\n` +
-        `tvshow.nfo, season.nfo, every show/season-level artwork file, and every ` +
-        `video / subtitle / audio file are preserved. This cannot be undone.`,
-      confirmLabel: "Remove orphans",
-      tone: "danger",
-    });
-    if (!ok) return;
-    setBusy(true);
-    setMsg("Removing orphaned sidecars…");
-    try {
-      const res = await api.items.orphansSweep({
-        folder_path: path,
-        dry_run: false,
-        rescan: true,
-      });
-      setMsg(
-        `Removed ${res.nfo_removed} orphaned NFO(s) and ${res.thumb_removed} orphaned ` +
-          `thumbnail(s).`,
-      );
-      await qc.invalidateQueries({ queryKey: ["orphans", path] });
-      await qc.invalidateQueries({ queryKey: ["detail", path] });
-      await qc.invalidateQueries({ queryKey: ["nfo-explain", path] });
-      await qc.invalidateQueries({ queryKey: ["items"] });
-    } catch (e: any) {
-      setMsg(`Orphan sweep failed: ${e?.message ?? e}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="mb-4 rounded-lg border-2 border-amber-500/60 bg-amber-500/[0.04] p-3">
-      <div className="flex flex-wrap items-start gap-3">
-        <span
-          aria-hidden
-          className="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-400 text-black text-xs font-black flex-none"
-          title="Hazard"
-        >
-          ⚠
-        </span>
-        <div className="flex-1 min-w-[200px]">
-          <div className="text-sm font-semibold text-amber-200">
-            Orphaned sidecars detected
-          </div>
-          <div className="text-xs text-amber-200/80 mt-0.5 leading-relaxed">
-            Found {q.data.nfo_removed} orphaned NFO(s) and {q.data.thumb_removed}{" "}
-            orphaned thumbnail(s) with no matching video. Sonarr/Radarr likely
-            replaced the video with a different release group, leaving the old
-            companion files behind. Plex reads the orphaned NFO and creates a
-            <i> duplicate library entry</i> for this folder — removing them
-            collapses the duplicate.
-          </div>
-          {files.length > 0 && (
-            <details className="mt-2 text-[11px] text-amber-100/90">
-              <summary className="cursor-pointer text-amber-300/90 hover:text-amber-200">
-                Show file list ({files.length})
-              </summary>
-              <ul className="mt-1 font-mono text-[11px] text-amber-100/80 max-h-40 overflow-auto pl-4 list-disc">
-                {files.map((f) => (
-                  <li key={f}>{f}</li>
-                ))}
-              </ul>
-            </details>
-          )}
-          {msg && <div className="text-[11px] text-amber-200/80 mt-2">{msg}</div>}
-        </div>
-        <button
-          onClick={runSweep}
-          disabled={busy}
-          className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-black border-2 border-amber-500 rounded text-sm font-semibold disabled:opacity-50 flex-none"
-          title="Delete the orphaned <stem>.nfo and <stem>-thumb.* files for this folder. Live videos and show/season artwork are preserved."
-        >
-          ⚠ Remove orphaned sidecars
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function WhyStatusPanel({
-  path,
-  onClose,
-}: {
-  path: string;
-  onClose: () => void;
-}) {
-  const q = useQuery({
-    queryKey: ["nfo-explain", path],
-    queryFn: () => api.items.nfoExplain(path),
-    staleTime: 15_000,
-  });
-  const [expandSeasons, setExpandSeasons] = useState<Record<number, boolean>>({});
-
-  return (
-    <div className="mb-4 rounded-lg border border-slate-800 bg-slate-900/60">
-      <div className="px-3 py-2 border-b border-slate-800 flex items-center gap-2">
-        <div className="text-xs uppercase tracking-wide text-slate-300 font-semibold">
-          Status breakdown
-        </div>
-        <div className="text-[11px] text-slate-500 flex-1">
-          Why this folder is reported as <b>{q.data?.status ?? "…"}</b>.
-        </div>
-        <button
-          type="button"
-          onClick={() => q.refetch()}
-          disabled={q.isFetching}
-          className="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 disabled:opacity-50"
-          title="Re-walk the folder and recompute the breakdown"
-        >
-          {q.isFetching ? "Recomputing…" : "Recompute"}
-        </button>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-slate-400 hover:text-white text-sm"
-          title="Hide breakdown"
-        >
-          ✕
-        </button>
-      </div>
-
-      {q.isLoading && (
-        <div className="p-3 text-xs text-slate-500">Walking folder…</div>
-      )}
-      {q.error && (
-        <div className="p-3 text-xs text-rose-300">
-          Couldn't compute breakdown: {(q.error as any)?.message ?? String(q.error)}
-        </div>
-      )}
-      {q.data && (
-        <div className="p-3 space-y-3">
-          {/* Top counters */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-            <CounterCell label="Status" value={q.data.status} />
-            {q.data.kind === "series" ? (
-              <>
-                <CounterCell
-                  label="tvshow.nfo"
-                  value={
-                    !q.data.show_nfo?.present
-                      ? "missing"
-                      : q.data.show_nfo?.foreign
-                      ? "foreign"
-                      : "present"
-                  }
-                  tone={
-                    !q.data.show_nfo?.present
-                      ? "warn"
-                      : q.data.show_nfo?.foreign
-                      ? "warn"
-                      : "ok"
-                  }
-                />
-                <CounterCell
-                  label="Episode NFOs"
-                  value={`${q.data.nfo_count} / ${q.data.video_count}`}
-                  tone={
-                    q.data.video_count > 0 && q.data.nfo_count >= q.data.video_count
-                      ? "ok"
-                      : "warn"
-                  }
-                />
-                <CounterCell
-                  label="Foreign NFOs"
-                  value={q.data.foreign_nfo_count}
-                  tone={q.data.foreign_nfo_count === 0 ? "ok" : "warn"}
-                />
-              </>
-            ) : (
-              <>
-                <CounterCell
-                  label="movie.nfo"
-                  value={
-                    !q.data.movie_nfo?.present
-                      ? "missing"
-                      : q.data.movie_nfo?.foreign
-                      ? "foreign"
-                      : "present"
-                  }
-                  tone={
-                    !q.data.movie_nfo?.present
-                      ? "warn"
-                      : q.data.movie_nfo?.foreign
-                      ? "warn"
-                      : "ok"
-                  }
-                />
-                <CounterCell label="Video files" value={q.data.video_count} />
-              </>
-            )}
-          </div>
-
-          {/* Reasons */}
-          {q.data.reasons && q.data.reasons.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">
-                Reasons
-              </div>
-              <ul className="text-xs text-slate-300 list-disc pl-5 space-y-0.5">
-                {q.data.reasons.map((r, i) => (
-                  <li key={i}>{r}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Per-season table */}
-          {q.data.kind === "series" && q.data.seasons.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">
-                Per-season coverage
-              </div>
-              <div className="rounded border border-slate-800 overflow-hidden">
-                <table className="w-full text-xs">
-                  <thead className="bg-slate-900 text-slate-400">
-                    <tr>
-                      <th className="text-left px-2 py-1">Season</th>
-                      <th className="text-right px-2 py-1">Videos</th>
-                      <th className="text-right px-2 py-1">NFOs</th>
-                      <th className="text-right px-2 py-1">Missing</th>
-                      <th className="text-right px-2 py-1">Foreign</th>
-                      <th className="text-right px-2 py-1">season.nfo</th>
-                      <th className="px-2 py-1"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {q.data.seasons.map((s) => {
-                      const expanded = !!expandSeasons[s.season];
-                      const hasDetails = s.missing.length > 0 || s.foreign.length > 0;
-                      const trouble =
-                        s.nfo_count < s.video_count || s.foreign_nfo_count > 0;
-                      return (
-                        <tr
-                          key={s.season}
-                          className={`border-t border-slate-800 ${
-                            trouble ? "bg-amber-950/30" : ""
-                          }`}
-                        >
-                          <td className="px-2 py-1 align-top">
-                            S{String(s.season).padStart(2, "0")}
-                            {expanded && hasDetails && (
-                              <ExpandedSeasonDetails s={s} />
-                            )}
-                          </td>
-                          <td className="px-2 py-1 text-right align-top">
-                            {s.video_count}
-                          </td>
-                          <td
-                            className={`px-2 py-1 text-right align-top ${
-                              s.nfo_count < s.video_count ? "text-amber-300" : ""
-                            }`}
-                          >
-                            {s.nfo_count}
-                          </td>
-                          <td
-                            className={`px-2 py-1 text-right align-top ${
-                              s.missing_total > 0 ? "text-amber-300" : "text-slate-500"
-                            }`}
-                          >
-                            {s.missing_total}
-                          </td>
-                          <td
-                            className={`px-2 py-1 text-right align-top ${
-                              s.foreign_total > 0 ? "text-amber-300" : "text-slate-500"
-                            }`}
-                          >
-                            {s.foreign_total}
-                          </td>
-                          <td className="px-2 py-1 text-right align-top">
-                            {s.season_nfo ? (
-                              <span className="text-emerald-400">yes</span>
-                            ) : (
-                              <span className="text-slate-500">no</span>
-                            )}
-                          </td>
-                          <td className="px-2 py-1 text-right align-top">
-                            {hasDetails && (
-                              <button
-                                type="button"
-                                className="text-[11px] text-indigo-300 hover:text-indigo-200"
-                                onClick={() =>
-                                  setExpandSeasons((prev) => ({
-                                    ...prev,
-                                    [s.season]: !prev[s.season],
-                                  }))
-                                }
-                              >
-                                {expanded ? "hide" : "show files"}
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {q.data.orphan_root_videos && q.data.orphan_root_videos.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">
-                Loose videos at series root
-              </div>
-              <ul className="text-[11px] text-slate-400 font-mono list-disc pl-5 space-y-0.5">
-                {q.data.orphan_root_videos.slice(0, 25).map((n) => (
-                  <li key={n} className="break-all">
-                    {n}
-                  </li>
-                ))}
-                {q.data.orphan_root_videos.length > 25 && (
-                  <li>
-                    +{q.data.orphan_root_videos.length - 25} more…
-                  </li>
-                )}
-              </ul>
-            </div>
-          )}
-
-          <div className="text-[11px] text-slate-500 leading-snug">
-            <b>partial</b>: tvshow.nfo exists but some episodes don't have NFOs.{" "}
-            <b>mixed</b>: tvshow.nfo plus a mix of builder-written and outside
-            NFOs.{" "}
-            <b>foreign</b>: NFOs exist but none were written by plex-nfo-builder.
-            Use <i>Force rebuild</i> to overwrite foreign NFOs and fill in any
-            missing episode NFOs.
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ExpandedSeasonDetails({
-  s,
-}: {
-  s: {
-    season: number;
-    missing: string[];
-    missing_total: number;
-    foreign: string[];
-    foreign_total: number;
-  };
-}) {
-  return (
-    <div className="mt-2 space-y-1.5 text-[11px] font-mono text-slate-400 max-w-md">
-      {s.missing.length > 0 && (
-        <div>
-          <div className="text-[10px] uppercase tracking-wide text-amber-300 font-sans">
-            Missing NFO
-          </div>
-          <ul className="list-disc pl-5">
-            {s.missing.map((n) => (
-              <li key={`m-${n}`} className="break-all">
-                {n}
-              </li>
-            ))}
-            {s.missing_total > s.missing.length && (
-              <li>+{s.missing_total - s.missing.length} more…</li>
-            )}
-          </ul>
-        </div>
-      )}
-      {s.foreign.length > 0 && (
-        <div>
-          <div className="text-[10px] uppercase tracking-wide text-amber-300 font-sans">
-            Foreign NFO (no provenance)
-          </div>
-          <ul className="list-disc pl-5">
-            {s.foreign.map((n) => (
-              <li key={`f-${n}`} className="break-all">
-                {n}
-              </li>
-            ))}
-            {s.foreign_total > s.foreign.length && (
-              <li>+{s.foreign_total - s.foreign.length} more…</li>
-            )}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CounterCell({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: any;
-  tone?: "ok" | "warn";
-}) {
-  const toneCls =
-    tone === "ok"
-      ? "text-emerald-300"
-      : tone === "warn"
-      ? "text-amber-300"
-      : "text-slate-200";
-  return (
-    <div className="bg-slate-950 border border-slate-800 rounded px-2 py-1.5">
-      <div className="text-[9px] uppercase tracking-wide text-slate-500">
-        {label}
-      </div>
-      <div className={`text-sm font-medium mt-0.5 ${toneCls}`}>{String(value)}</div>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: any }) {
-  return (
-    <div className="bg-slate-900 border border-slate-800 rounded px-3 py-2">
-      <div className="text-[10px] uppercase text-slate-500 tracking-wide">{label}</div>
-      <div className="text-base mt-0.5 truncate">{value}</div>
     </div>
   );
 }
@@ -1394,7 +764,15 @@ function ArtSlot({
     <div className="bg-slate-900 border border-slate-800 rounded overflow-hidden flex flex-col">
       <div
         className={`${aspect} bg-slate-950 flex items-center justify-center text-slate-600`}
-        style={contain ? { backgroundImage: "linear-gradient(45deg, #0f172a 25%, #111827 25%, #111827 50%, #0f172a 50%, #0f172a 75%, #111827 75%)", backgroundSize: "16px 16px" } : undefined}
+        style={
+          contain
+            ? {
+                backgroundImage:
+                  "linear-gradient(45deg, #0f172a 25%, #111827 25%, #111827 50%, #0f172a 50%, #0f172a 75%, #111827 75%)",
+                backgroundSize: "16px 16px",
+              }
+            : undefined
+        }
       >
         {src ? (
           <img
@@ -1406,12 +784,18 @@ function ArtSlot({
           <span className="text-[10px] uppercase tracking-wide">missing</span>
         )}
       </div>
-      <div className={`px-2 py-1 ${compact ? "" : "border-t border-slate-800"}`}>
-        <div className={`${compact ? "text-[10px]" : "text-xs"} font-medium text-slate-200 truncate`}>
+      <div
+        className={`px-2 py-1 ${compact ? "" : "border-t border-slate-800"}`}
+      >
+        <div
+          className={`${compact ? "text-[10px]" : "text-xs"} font-medium text-slate-200 truncate`}
+        >
           {label}
         </div>
         {!compact && (
-          <div className="text-[10px] text-slate-500 font-mono truncate">{filename}</div>
+          <div className="text-[10px] text-slate-500 font-mono truncate">
+            {filename}
+          </div>
         )}
       </div>
     </div>
@@ -1458,8 +842,8 @@ function TagsPanel({
       await api.items.tags.add(path, value);
       setDraft("");
       onChanged();
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
+    } catch (e: unknown) {
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -1471,8 +855,8 @@ function TagsPanel({
     try {
       await api.items.tags.remove(path, tag);
       onChanged();
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
+    } catch (e: unknown) {
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -1550,6 +934,7 @@ function TagsPanel({
       {source === "custom" && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <input
+            aria-label="Custom tag"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {

@@ -36,6 +36,7 @@ from . import mediainfo as mi_svc
 from .parser import (
     ANIME_RE,
     detect_season_dirs,
+    is_within_folder,
     list_season_episodes,
     season_number_from_dir,
 )
@@ -332,6 +333,10 @@ def _lookup(token: str, ctx: dict, fmt: Optional[str]) -> str:
     if raw is None or raw == "":
         return ""
 
+    if mapped == "episode" and ctx.get("end_episode") is not None:
+        width = len(fmt) if fmt and re.fullmatch(r"0+", fmt) else 1
+        return f"{int(raw):0{width}d}-E{int(ctx['end_episode']):0{width}d}"
+
     if fmt and re.fullmatch(r"0+", fmt):
         width = len(fmt)
         try:
@@ -360,6 +365,7 @@ def build_context(
     imdb_id: Optional[str] = None,
     season: Optional[int] = None,
     episode: Optional[int] = None,
+    end_episode: Optional[int] = None,
     episode_title: str = "",
     air_date: str = "",
     release_group: str = "",
@@ -392,6 +398,7 @@ def build_context(
         # Episode info
         "season": season if season is not None else "",
         "episode": episode if episode is not None else "",
+        "end_episode": end_episode,
         "episode_title": clean_title(episode_title or ""),
         "episode_cleantitle": clean_title(episode_title or ""),
         "air_date": air_date or "",
@@ -457,7 +464,9 @@ def plan_series_rename(
     manual = (series_type or "auto").lower()
 
     def _emit(parsed_path: Path, parsed_season: int, parsed_episode: int,
-              parsed_air_date: Optional[str]):
+              parsed_air_date: Optional[str], parsed_end_episode: Optional[int]):
+        if parsed_path.is_symlink():
+            return
         ovr = overrides_by_file.get(str(parsed_path)) or {}
         season = ovr.get("season") if ovr.get("season") is not None else parsed_season
         episode = ovr.get("episode") if ovr.get("episode") is not None else parsed_episode
@@ -468,9 +477,17 @@ def plan_series_rename(
             if season is not None and episode is not None
             else None
         )
+        # Explicit episode IDs and daily filenames select the same provider
+        # episode as the builder, even when S/E cannot be parsed from the name.
+        external_id = ovr.get("external_id")
+        if external_id or (parsed_air_date and ovr.get("episode") is None):
+            for (candidate_season, candidate_episode), candidate in episodes_by_se.items():
+                matches = (str(candidate.get("id")) == str(external_id) if external_id
+                           else candidate.get("aired") == parsed_air_date)
+                if matches:
+                    season, episode, ep_meta = candidate_season, candidate_episode, candidate
+                    break
         ep_title = (ep_meta or {}).get("name") or ""
-        if ep_meta is not None and parsed_air_date is None:
-            parsed_air_date = (ep_meta.get("aired") or "")
         mi = mi_svc.probe_file(parsed_path)
         quality_full = mi_svc.build_quality_full(stem, mi)
         # v0.11.7: anime fansub names sometimes use a bracket layout that
@@ -496,6 +513,10 @@ def plan_series_rename(
             else:
                 template = standard_template
 
+        # Metadata air dates enrich a chosen template; they must not turn
+        # every standard episode into a daily episode in Auto mode.
+        if ep_meta is not None and parsed_air_date is None:
+            parsed_air_date = ep_meta.get("aired") or ""
         ctx = build_context(
             title=title,
             year=year,
@@ -503,6 +524,9 @@ def plan_series_rename(
             tmdb_id=tmdb_id,
             season=int(season) if season is not None else None,
             episode=int(episode) if episode is not None else None,
+            end_episode=(int(episode) + parsed_end_episode - parsed_episode
+                         if episode is not None and parsed_end_episode is not None
+                         and parsed_end_episode > parsed_episode else None),
             episode_title=ep_title,
             air_date=parsed_air_date or "",
             release_group=release_group,
@@ -516,11 +540,14 @@ def plan_series_rename(
         target_dir = parsed_path.parent
         dst = str(target_dir / new_name)
         conflict: Optional[str] = None
-        if dst in seen:
+        if os.path.normcase(dst) in seen:
             conflict = "duplicate"
-        elif Path(dst) != parsed_path and Path(dst).exists():
+        elif Path(dst) != parsed_path and os.path.lexists(dst):
             conflict = "exists"
-        seen.add(dst)
+        elif any(os.path.lexists(parsed_path.parent / f"{Path(dst).stem}{suffix}")
+                 for _, suffix in _companion_files_for(parsed_path) if Path(dst).stem != parsed_path.stem):
+            conflict = "exists"
+        seen.add(os.path.normcase(dst))
         plan.append(
             RenamePlanItem(
                 folder_path=str(folder_p),
@@ -541,7 +568,7 @@ def plan_series_rename(
                 ovr = overrides_by_file.get(str(parsed.path)) or {}
                 if ovr.get("season") is None or ovr.get("episode") is None:
                     continue
-            _emit(parsed.path, snum, parsed.episode, parsed.air_date)
+            _emit(parsed.path, snum, parsed.episode, parsed.air_date, parsed.end_episode)
 
     # Loose root files (anime / OVA layouts).
     for parsed in list_season_episodes(folder_p):
@@ -549,7 +576,7 @@ def plan_series_rename(
             ovr = overrides_by_file.get(str(parsed.path)) or {}
             if ovr.get("season") is None or ovr.get("episode") is None:
                 continue
-        _emit(parsed.path, parsed.season or 1, parsed.episode, parsed.air_date)
+        _emit(parsed.path, parsed.season or 1, parsed.episode, parsed.air_date, parsed.end_episode)
 
     return plan
 
@@ -573,7 +600,7 @@ def plan_movie_rename(
         return plan
     from .parser import VIDEO_EXT  # local import to avoid cycle
     for f in sorted(folder_p.iterdir()):
-        if not f.is_file():
+        if not f.is_file() or f.is_symlink():
             continue
         ext = f.suffix.lower()
         if ext not in VIDEO_EXT:
@@ -597,11 +624,14 @@ def plan_movie_rename(
             new_name = f"{new_name}{ext}"
         dst = str(folder_p / new_name)
         conflict: Optional[str] = None
-        if dst in seen:
+        if os.path.normcase(dst) in seen:
             conflict = "duplicate"
-        elif Path(dst) != f and Path(dst).exists():
+        elif Path(dst) != f and os.path.lexists(dst):
             conflict = "exists"
-        seen.add(dst)
+        elif any(os.path.lexists(f.parent / f"{Path(dst).stem}{suffix}")
+                 for _, suffix in _companion_files_for(f) if Path(dst).stem != f.stem):
+            conflict = "exists"
+        seen.add(os.path.normcase(dst))
         plan.append(
             RenamePlanItem(
                 folder_path=str(folder_p),
@@ -701,49 +731,50 @@ def apply_rename_plan(plan: Iterable[RenamePlanItem], *,
             failed.append({"src": item.src, "dst": item.dst,
                            "reason": "cross-folder rename refused"})
             continue
-        if not src_p.exists():
+        if not is_within_folder(src_p.parent, Path(item.folder_path)):
+            failed.append({"src": item.src, "dst": item.dst,
+                           "reason": "source outside media folder"})
+            continue
+        if src_p.is_symlink() or not src_p.is_file():
             failed.append({"src": item.src, "reason": "source missing"})
             continue
         # Snapshot companions BEFORE moving the video, since some are
         # detected via stem-prefix and the stem is about to change.
         companions = _companion_files_for(src_p)
         new_stem = dst_p.stem
+        moves = [(src_p, dst_p)] + [
+            (source, source.parent / f"{new_stem}{suffix}")
+            for source, suffix in companions
+            if source.name != f"{new_stem}{suffix}"
+        ]
+        collision = next((target for _, target in moves if os.path.lexists(target)), None)
+        if collision is not None:
+            skipped.append({"src": item.src, "dst": item.dst,
+                            "reason": f"destination exists: {collision.name}"})
+            continue
+        completed: list[tuple[Path, Path]] = []
         try:
-            os.replace(src_p, dst_p)
-            try:
-                db.rename_episode_file_override(
-                    item.folder_path, item.src, item.dst,
-                )
-            except Exception as de:  # noqa: BLE001
-                logger.warning(
-                    "override row move failed {} -> {}: {}",
-                    item.src, item.dst, de,
-                )
+            for source, target in moves:
+                if source.is_symlink() or not is_within_folder(source.parent, Path(item.folder_path)):
+                    raise ValueError("linked or out-of-folder source refused")
+                _rename_without_overwrite(source, target)
+                completed.append((source, target))
+            db.rename_episode_file_override(item.folder_path, item.src, item.dst)
             renamed.append({"src": item.src, "dst": item.dst})
-            # Move every companion to match the new stem. We don't fail the
-            # parent rename if a companion can't be moved - we just record it.
-            for comp_src, suffix in companions:
-                comp_dst = comp_src.parent / f"{new_stem}{suffix}"
-                if comp_dst == comp_src:
-                    continue
-                if comp_dst.exists():
-                    companions_failed.append({
-                        "src": str(comp_src), "dst": str(comp_dst),
-                        "reason": "destination exists",
-                    })
-                    continue
-                try:
-                    os.replace(comp_src, comp_dst)
-                    companions_moved.append({
-                        "src": str(comp_src), "dst": str(comp_dst),
-                    })
-                except Exception as ce:  # noqa: BLE001
-                    companions_failed.append({
-                        "src": str(comp_src), "dst": str(comp_dst),
-                        "reason": str(ce),
-                    })
+            companions_moved.extend({"src": str(source), "dst": str(target)}
+                                    for source, target in completed[1:])
         except Exception as e:  # noqa: BLE001
-            failed.append({"src": item.src, "dst": item.dst, "reason": str(e)})
+            rollback_errors = []
+            for source, target in reversed(completed):
+                try:
+                    _rename_without_overwrite(target, source)
+                except OSError as rollback_error:
+                    rollback_errors.append(f"{target}: {rollback_error}")
+            reason = str(e)
+            if rollback_errors:
+                reason += "; partial rename; rollback failed: " + "; ".join(rollback_errors)
+                logger.error("{}", reason)
+            failed.append({"src": item.src, "dst": item.dst, "reason": reason})
 
     return {
         "renamed": renamed,
@@ -752,3 +783,21 @@ def apply_rename_plan(plan: Iterable[RenamePlanItem], *,
         "companions_moved": companions_moved,
         "companions_failed": companions_failed,
     }
+
+
+def _rename_without_overwrite(source: Path, target: Path) -> None:
+    """Move a file without replacing a destination created after the preview.
+
+    Windows rename already refuses existing destinations. POSIX rename does
+    not, so atomically create a hard link first. Unsupported filesystems fail
+    safely with the source intact rather than falling back to an unsafe move.
+    """
+    if os.name == "nt":
+        os.rename(source, target)
+        return
+    os.link(source, target, follow_symlinks=False)
+    try:
+        source.unlink()
+    except OSError:
+        target.unlink()
+        raise

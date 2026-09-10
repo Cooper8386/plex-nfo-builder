@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { useConfirm } from "./ConfirmDialog";
+import { useConfirm } from "./confirm";
 
 export default function Sidebar(props: {
   activeLibrary: string | null;
@@ -11,14 +11,18 @@ export default function Sidebar(props: {
 }) {
   const qc = useQueryClient();
   const confirmDlg = useConfirm();
-  const { data, isLoading } = useQuery({
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const { data, isLoading, error } = useQuery({
     queryKey: ["libraries"],
     queryFn: () => api.libraries.list(),
     refetchInterval: 30_000,
   });
   const all = data?.libraries ?? [];
   const [showDisabled, setShowDisabled] = useState(false);
-  const visible = showDisabled ? all : all.filter((l) => Number(l.enabled) === 1);
+  const visible = showDisabled
+    ? all
+    : all.filter((l) => Number(l.enabled) === 1);
   const disabledCount = all.filter((l) => Number(l.enabled) !== 1).length;
 
   // If the active library is no longer visible, deselect it.
@@ -27,12 +31,26 @@ export default function Sidebar(props: {
   // /detail/<name>?path=... briefly sees an empty list, deselects the
   // active library, and dumps the user back on the "Select a library"
   // screen.
+  const { activeLibrary, onSelectLibrary } = props;
   useEffect(() => {
-    if (!props.activeLibrary) return;
+    if (!activeLibrary) return;
     if (isLoading || !data) return;
-    const stillThere = all.some((l) => l.name === props.activeLibrary);
-    if (!stillThere) props.onSelectLibrary(null);
-  }, [data, isLoading, props.activeLibrary]);
+    const stillThere = data.libraries.some((l) => l.name === activeLibrary);
+    if (!stillThere) onSelectLibrary(null);
+  }, [data, isLoading, activeLibrary, onSelectLibrary]);
+
+  async function perform(action: () => Promise<unknown>) {
+    if (working) return;
+    setWorking(true);
+    setActionError(null);
+    try {
+      await action();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorking(false);
+    }
+  }
 
   async function setEnabled(name: string, enabled: boolean) {
     await api.libraries.update(name, { enabled });
@@ -66,13 +84,26 @@ export default function Sidebar(props: {
 
   if (props.collapsed) {
     return (
-      <aside className="w-12 shrink-0 border-r border-slate-800 bg-slate-950 flex flex-col items-center py-3 gap-2">
+      <aside
+        aria-label="Libraries"
+        className="w-12 shrink-0 border-r border-slate-800 bg-slate-950 flex flex-col items-center py-3 gap-2"
+      >
         <button
           onClick={props.onToggle}
           title="Show libraries"
+          aria-label="Show libraries"
           className="w-8 h-8 rounded hover:bg-slate-800 flex items-center justify-center text-slate-400 hover:text-white"
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <line x1="3" y1="6" x2="21" y2="6" />
             <line x1="3" y1="12" x2="21" y2="12" />
             <line x1="3" y1="18" x2="21" y2="18" />
@@ -84,6 +115,8 @@ export default function Sidebar(props: {
             key={l.name}
             onClick={() => props.onSelectLibrary(l.name)}
             title={l.name}
+            aria-label={l.name}
+            disabled={Number(l.enabled) !== 1}
             className={`w-8 h-8 rounded flex items-center justify-center text-xs font-semibold uppercase ${
               props.activeLibrary === l.name
                 ? "bg-indigo-600 text-white"
@@ -98,7 +131,7 @@ export default function Sidebar(props: {
   }
 
   return (
-    <aside className="w-60 shrink-0 border-r border-slate-800 bg-slate-950 flex flex-col">
+    <aside aria-label="Libraries" className="library-sidebar">
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
           Libraries
@@ -106,25 +139,49 @@ export default function Sidebar(props: {
         <div className="flex items-center gap-1">
           <button
             className="text-xs text-slate-400 hover:text-indigo-400 px-1.5 py-0.5 rounded hover:bg-slate-800"
-            onClick={async () => {
-              await api.libraries.detect();
-              qc.invalidateQueries({ queryKey: ["libraries"] });
-            }}
+            disabled={working}
+            onClick={() =>
+              perform(async () => {
+                await api.libraries.detect();
+                qc.invalidateQueries({ queryKey: ["libraries"] });
+              })
+            }
             title="Detect new libraries in /media"
           >
-            rescan
+            {working ? "Working…" : "Detect"}
           </button>
           <button
             onClick={props.onToggle}
             title="Collapse sidebar"
+            aria-label="Collapse sidebar"
             className="w-6 h-6 rounded hover:bg-slate-800 flex items-center justify-center text-slate-500 hover:text-white"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <polyline points="15 18 9 12 15 6" />
             </svg>
           </button>
         </div>
       </div>
+      <button
+        onClick={() => onSelectLibrary(null)}
+        className="text-xs text-left text-slate-400 px-4 py-4 border-b border-slate-800 hover:text-indigo-300"
+      >
+        All libraries
+      </button>
+      {(actionError || error) && (
+        <p role="alert" className="text-xs text-rose-300 px-4 py-3">
+          {actionError ?? error?.message}
+        </p>
+      )}
       <div className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
         {visible.length === 0 && (
           <div className="text-xs text-slate-500 px-2 py-4">
@@ -135,8 +192,10 @@ export default function Sidebar(props: {
         )}
         {visible.map((l) => {
           const enabled = Number(l.enabled) === 1;
-          const override = (l.metadata_source as string | null | undefined) || "";
-          const effective = (l.effective_metadata_source as string | undefined) || "";
+          const override =
+            (l.metadata_source as string | null | undefined) || "";
+          const effective =
+            (l.effective_metadata_source as string | undefined) || "";
           return (
             <LibraryRow
               key={l.name}
@@ -147,9 +206,13 @@ export default function Sidebar(props: {
               effectiveSource={effective}
               active={props.activeLibrary === l.name}
               onSelect={() => props.onSelectLibrary(l.name)}
-              onToggleEnabled={() => setEnabled(l.name, !enabled)}
-              onRemove={() => removeLib(l.name)}
-              onSetMetadataSource={(src) => setMetadataSource(l.name, src)}
+              onToggleEnabled={() =>
+                perform(() => setEnabled(l.name, !enabled))
+              }
+              onRemove={() => perform(() => removeLib(l.name))}
+              onSetMetadataSource={(src) =>
+                perform(() => setMetadataSource(l.name, src))
+              }
             />
           );
         })}
@@ -199,7 +262,10 @@ function LibraryRow({
   useEffect(() => {
     if (!open) return;
     function onDoc(e: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+      if (
+        wrapperRef.current &&
+        !wrapperRef.current.contains(e.target as Node)
+      ) {
         setOpen(false);
       }
     }
@@ -211,10 +277,11 @@ function LibraryRow({
     <div ref={wrapperRef} className="relative group">
       <button
         onClick={onSelect}
+        aria-current={active ? "page" : undefined}
         disabled={!enabled}
         className={`w-full flex items-center justify-between pl-3 pr-9 py-2 rounded-md text-sm transition ${
           active
-            ? "bg-indigo-600 text-white shadow-sm"
+            ? "bg-indigo-950 text-indigo-200 border-l-2 border-indigo-400"
             : enabled
               ? "text-slate-300 hover:bg-slate-900 hover:text-white"
               : "text-slate-500 italic cursor-not-allowed"
@@ -236,8 +303,12 @@ function LibraryRow({
           setOpen((v) => !v);
         }}
         title="Library options"
+        aria-label={`Options for ${name}`}
+        aria-expanded={open}
         className={`absolute top-1/2 -translate-y-1/2 right-1 w-7 h-7 rounded flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 ${
-          open ? "bg-slate-800 text-white" : "opacity-0 group-hover:opacity-100 focus:opacity-100"
+          open
+            ? "bg-slate-800 text-white"
+            : "opacity-60 group-hover:opacity-100 focus:opacity-100"
         } ${active ? "text-indigo-100 hover:bg-indigo-700" : ""}`}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -263,6 +334,7 @@ function LibraryRow({
           </div>
           <div className="px-3 pb-1.5">
             <select
+              aria-label={`Metadata source for ${name}`}
               value={metadataSource || ""}
               onChange={(e) => {
                 const v = e.target.value;
@@ -277,8 +349,13 @@ function LibraryRow({
             </select>
             {effectiveSource && (
               <div className="mt-1 text-[10px] text-slate-500">
-                Currently using: <span className="text-slate-300 uppercase">{effectiveSource}</span>
-                {!metadataSource && <span className="text-slate-600"> (inherited)</span>}
+                Currently using:{" "}
+                <span className="text-slate-300 uppercase">
+                  {effectiveSource}
+                </span>
+                {!metadataSource && (
+                  <span className="text-slate-600"> (inherited)</span>
+                )}
               </div>
             )}
           </div>

@@ -20,6 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from loguru import logger
 from rapidfuzz import fuzz
 
@@ -28,6 +29,7 @@ from ..config import effective_metadata_source
 from .parser import (
     detect_season_dirs,
     folder_looks_like_movie,
+    folder_root_videos,
     is_video,
     parse_folder_name,
     parse_movie_filename,
@@ -51,7 +53,17 @@ def _folder_kind(folder: Path) -> Optional[str]:
         return "series"
     if folder_looks_like_movie(folder):
         return "movie"
+    if folder_root_videos(folder):
+        return "series"
     return None
+
+
+def _bind_explicit_tag(folder: Path, kind: str, provider: str, external_id: str,
+                       title: str, year: Optional[int], language: Optional[str]) -> dict:
+    """Provider outages must never replace an explicit ID with a fuzzy hit."""
+    db.upsert_binding(str(folder), kind, provider, external_id, title=title,
+                      year=year, language=language, respect_lock=True)
+    return {"id": external_id, "name": title, "year": year}
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +93,7 @@ async def auto_match_series(folder: Path, language: Optional[str] = None,
                 return data
         except Exception as e:
             logger.warning("series_extended {} failed: {}", pf.external_id, e)
+        return _bind_explicit_tag(folder, "series", "tvdb", pf.external_id, pf.title, pf.year, language)
 
     # If folder is tagged with a TMDB id but we're in TVDB mode, store a
     # TMDB binding so NFO can still emit the tmdb uniqueid \u2014 then return.
@@ -124,6 +137,8 @@ async def auto_match_series(folder: Path, language: Optional[str] = None,
 async def auto_match_movie(folder: Path, language: Optional[str] = None,
                            threshold: int = 85) -> Optional[dict]:
     pf = parse_folder_name(folder.name)
+    if _folder_kind(folder) == "series":
+        return await auto_match_series(folder, language=language, threshold=threshold)
     # Folder-id shortcut first \u2014 the folder name is the most reliable signal.
     if pf.provider == "tvdb" and pf.external_id and pf.external_id.isdigit():
         client = get_client()
@@ -135,6 +150,7 @@ async def auto_match_movie(folder: Path, language: Optional[str] = None,
                 return data
         except Exception as e:
             logger.warning("movie_extended {} failed: {}", pf.external_id, e)
+        return _bind_explicit_tag(folder, "movie", "tvdb", pf.external_id, pf.title, pf.year, language)
     if pf.provider == "tmdb" and pf.external_id and pf.external_id.isdigit():
         # Trust the folder tag and return early. Try to enrich via TMDB.
         try:
@@ -167,6 +183,8 @@ async def auto_match_movie(folder: Path, language: Optional[str] = None,
                     return data
             except Exception:
                 pass
+            return _bind_explicit_tag(folder, "movie", "tvdb", eid, pm.title or pf.title,
+                                      pm.year or pf.year, language)
         if provider == "tmdb" and eid and eid.isdigit():
             try:
                 t = get_tmdb_client()
@@ -206,10 +224,15 @@ async def auto_match_movie(folder: Path, language: Optional[str] = None,
 def _pick_best(results: list[dict], title: str, year: Optional[int]) -> Optional[dict]:
     if not results:
         return None
-    scored: list[tuple[int, dict]] = []
-    for r in results:
-        name = r.get("name") or r.get("translations", {}).get("eng") or r.get("title") or ""
-        if not name:
+    scored: list[tuple[float, dict]] = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        r = dict(result)
+        translations = r.get("translations")
+        translated = translations.get("eng") if isinstance(translations, dict) else None
+        name = r.get("name") or translated or r.get("title") or ""
+        if not isinstance(name, str) or not name:
             continue
         score = fuzz.token_set_ratio(title.lower(), name.lower())
         if year and r.get("year"):
@@ -222,7 +245,7 @@ def _pick_best(results: list[dict], title: str, year: Optional[int]) -> Optional
             except (TypeError, ValueError):
                 pass
         r["_score"] = min(score, 100)
-        scored.append((r["_score"], r))
+        scored.append((score, r))
     if not scored:
         return None
     scored.sort(key=lambda t: t[0], reverse=True)
@@ -301,6 +324,8 @@ async def manual_search(query: str, type_: str = "series",
 async def auto_match_series_tmdb(folder: Path, language: Optional[str] = None,
                                   threshold: int = 85) -> Optional[dict]:
     pf = parse_folder_name(folder.name)
+    if pf.provider == "tvdb" and pf.external_id and pf.external_id.isdigit():
+        return await auto_match_series(folder, language=language, threshold=threshold)
     client = get_tmdb_client()
 
     # Route mismatched folders to the movie matcher (e.g. a Radarr movie
@@ -321,19 +346,20 @@ async def auto_match_series_tmdb(folder: Path, language: Optional[str] = None,
                                   title=data.get("name"), year=pf.year, language=language, respect_lock=True)
                 return data
         except Exception as e:
-            logger.warning("TMDB tv_details {} failed: {} \u2014 retrying as movie id", pf.external_id, e)
-            try:
-                mv = await client.movie_details(pf.external_id, language=language)
-                if mv:
-                    db.upsert_binding(str(folder), "movie", "tmdb", str(mv.get("id")),
-                                      title=mv.get("title") or mv.get("name"),
-                                      year=pf.year, language=language, respect_lock=True)
-                    return mv
-            except Exception as e2:
-                logger.warning("TMDB movie_details fallback for {} failed: {}", pf.external_id, e2)
-            db.upsert_binding(str(folder), "series", "tmdb", pf.external_id,
-                              title=pf.title, year=pf.year, language=language, respect_lock=True)
-            return {"id": pf.external_id, "name": pf.title, "year": pf.year}
+            logger.warning("TMDB tv_details {} failed: {}", pf.external_id, e)
+            # Only a missing TV record supports trying the movie namespace.
+            # Timeouts, rate limits, and server errors provide no such evidence.
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404:
+                try:
+                    mv = await client.movie_details(pf.external_id, language=language)
+                    if mv:
+                        db.upsert_binding(str(folder), "movie", "tmdb", str(mv.get("id")),
+                                          title=mv.get("title") or mv.get("name"),
+                                          year=pf.year, language=language, respect_lock=True)
+                        return mv
+                except Exception as e2:
+                    logger.warning("TMDB movie_details fallback for {} failed: {}", pf.external_id, e2)
+        return _bind_explicit_tag(folder, "series", "tmdb", pf.external_id, pf.title, pf.year, language)
 
     best = await _search_with_year_fallback(
         lambda yr: client.search(pf.title, type_="tv", year=yr,
@@ -354,6 +380,10 @@ async def auto_match_series_tmdb(folder: Path, language: Optional[str] = None,
 async def auto_match_movie_tmdb(folder: Path, language: Optional[str] = None,
                                  threshold: int = 85) -> Optional[dict]:
     pf = parse_folder_name(folder.name)
+    if _folder_kind(folder) == "series":
+        return await auto_match_series_tmdb(folder, language=language, threshold=threshold)
+    if pf.provider == "tvdb" and pf.external_id and pf.external_id.isdigit():
+        return await auto_match_movie(folder, language=language, threshold=threshold)
     client = get_tmdb_client()
 
     # Folder-tag fast path.
@@ -367,15 +397,15 @@ async def auto_match_movie_tmdb(folder: Path, language: Optional[str] = None,
                 return data
         except Exception as e:
             logger.warning("TMDB movie_details {} failed: {}", pf.external_id, e)
-            db.upsert_binding(str(folder), "movie", "tmdb", pf.external_id,
-                              title=pf.title, year=pf.year, language=language, respect_lock=True)
-            return {"id": pf.external_id, "name": pf.title, "year": pf.year}
+        return _bind_explicit_tag(folder, "movie", "tmdb", pf.external_id, pf.title, pf.year, language)
 
     main_video = next((f for f in folder.iterdir() if f.is_file() and is_video(f)), None)
     if main_video:
         pm = parse_movie_filename(main_video)
         provider = pm.provider
         eid = pm.external_id
+        if provider == "tvdb" and eid and eid.isdigit():
+            return await auto_match_movie(folder, language=language, threshold=threshold)
         if provider == "tmdb" and eid and eid.isdigit():
             try:
                 data = await client.movie_details(eid, language=language)
@@ -387,6 +417,8 @@ async def auto_match_movie_tmdb(folder: Path, language: Optional[str] = None,
                     return data
             except Exception:
                 pass
+            return _bind_explicit_tag(folder, "movie", "tmdb", eid, pm.title or pf.title,
+                                      pm.year or pf.year, language)
 
     best = await _search_with_year_fallback(
         lambda yr: client.search(pf.title, type_="movie", year=yr,
@@ -409,10 +441,13 @@ def _pick_best_tmdb(results: list[dict], title: str, year: Optional[int],
                     kind: str) -> Optional[dict]:
     if not results:
         return None
-    scored: list[tuple[int, dict]] = []
-    for r in results:
+    scored: list[tuple[float, dict]] = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        r = dict(result)
         name = r.get("name") or r.get("title") or r.get("original_name") or r.get("original_title") or ""
-        if not name:
+        if not isinstance(name, str) or not name:
             continue
         score = fuzz.token_set_ratio(title.lower(), name.lower())
         date = r.get("first_air_date") if kind == "tv" else r.get("release_date")
@@ -430,7 +465,7 @@ def _pick_best_tmdb(results: list[dict], title: str, year: Optional[int],
         except (TypeError, ValueError):
             pass
         r["_score"] = min(score, 100)
-        scored.append((r["_score"], r))
+        scored.append((score, r))
     if not scored:
         return None
     scored.sort(key=lambda t: t[0], reverse=True)
