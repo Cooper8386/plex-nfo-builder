@@ -103,11 +103,13 @@ function Header({
       <div className="text-xs text-slate-500">Loading watcher status…</div>
     );
   }
-  const dot = status.running
-    ? "bg-emerald-500"
-    : status.enabled
-      ? "bg-amber-500"
-      : "bg-slate-600";
+  const dot = status.paused_for_snapshot
+    ? "bg-amber-500"
+    : status.running
+      ? "bg-emerald-500"
+      : status.enabled
+        ? "bg-amber-500"
+        : "bg-slate-600";
   return (
     <div className="flex flex-wrap items-center gap-3">
       <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -115,11 +117,13 @@ function Header({
         Watcher
       </h2>
       <Pill>
-        {status.running
-          ? "Running"
-          : status.enabled
-            ? "Enabled, not running"
-            : "Disabled"}
+        {status.paused_for_snapshot
+          ? "Paused for library snapshot"
+          : status.running
+            ? "Running"
+            : status.enabled
+              ? "Enabled, not running"
+              : "Disabled"}
       </Pill>
       <Pill>{status.debounce_seconds}s debounce</Pill>
       <Pill>{status.watched_paths.length} path(s)</Pill>

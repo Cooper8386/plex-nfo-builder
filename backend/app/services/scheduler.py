@@ -146,6 +146,7 @@ class Scheduler:
         self._last_fire: dict[int, str] = {}
         # Active per-schedule asyncio.Task so manual triggers don't pile up.
         self._running: dict[int, asyncio.Task] = {}
+        self._snapshot_pauses = 0
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -174,6 +175,20 @@ class Scheduler:
 
     # -- main tick loop -----------------------------------------------------
 
+    @property
+    def paused_for_snapshot(self) -> bool:
+        return self._snapshot_pauses > 0
+
+    def pause_for_snapshot(self) -> None:
+        self._snapshot_pauses += 1
+
+    async def wait_idle(self) -> None:
+        await asyncio.gather(*(asyncio.shield(task) for task in list(self._running.values())),
+                             return_exceptions=True)
+
+    def resume_after_snapshot(self) -> None:
+        self._snapshot_pauses -= 1
+
     async def _loop(self) -> None:
         # Sleep until the next minute boundary so cron fires at :00 seconds.
         while not self._stop.is_set():
@@ -193,6 +208,8 @@ class Scheduler:
 
     async def tick(self, now: datetime) -> None:
         """Inspect persisted schedules and run anything due at ``now``."""
+        if self.paused_for_snapshot:
+            return
         rows = db.list_schedules()
         if not rows:
             return
@@ -227,6 +244,8 @@ class Scheduler:
         row = db.get_schedule(sched_id)
         if not row:
             return False
+        if self.paused_for_snapshot:
+            raise ValueError("Scheduled jobs are paused while a library snapshot runs")
         d = dict(row)
         self._launch(sched_id, d.get("library"), d.get("action") or "")
         return True
@@ -234,6 +253,8 @@ class Scheduler:
     # -- dispatching --------------------------------------------------------
 
     def _launch(self, sched_id: int, library: Optional[str], action: str) -> None:
+        if self.paused_for_snapshot:
+            return
         existing = self._running.get(sched_id)
         if existing and not existing.done():
             logger.info("Schedule {} already running, skip", sched_id)

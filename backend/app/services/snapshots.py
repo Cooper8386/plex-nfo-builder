@@ -19,6 +19,7 @@ from ..config import CONFIG_DIR, MEDIA_ROOT
 from . import jobs
 from .async_io import run_in_thread
 from .parser import VIDEO_EXT
+from .snapshot_automation import paused_automation
 
 # Include formats the scanner does not index, plus audio and disc images.
 MEDIA_EXTENSIONS = VIDEO_EXT | {
@@ -78,8 +79,8 @@ def list_snapshots(name: str) -> list[dict]:
     return snapshots
 
 
-def _files(folder: Path) -> dict[Path, os.stat_result]:
-    """Fail closed on unreadable directories and links rather than publish a partial backup."""
+def _files(folder: Path) -> dict[Path, tuple[Path, os.stat_result]]:
+    """Dereference library-local file links; fail rather than publish a partial backup."""
     files = {}
 
     def fail(error: OSError) -> None:
@@ -89,14 +90,22 @@ def _files(folder: Path) -> dict[Path, os.stat_result]:
         for name in dirs + names:
             path = Path(directory) / name
             info = path.lstat()
-            if stat.S_ISLNK(info.st_mode) or path.resolve() != path:
-                raise ValueError(f"Snapshot cannot include symbolic links: {path.relative_to(folder)}")
+            try:
+                source = path.resolve(strict=True)
+            except RuntimeError as error:
+                raise ValueError(f"Snapshot cannot include cyclic symbolic links: {path.relative_to(folder)}") from error
+            if not source.is_relative_to(folder):
+                raise ValueError(f"Snapshot cannot include symbolic links outside the library: {path.relative_to(folder)}")
+            if stat.S_ISLNK(info.st_mode) or source != path:
+                info = source.stat()
+                if stat.S_ISDIR(info.st_mode):
+                    raise ValueError(f"Snapshot cannot include directory symbolic links: {path.relative_to(folder)}")
             if stat.S_ISDIR(info.st_mode):
                 continue
             if not stat.S_ISREG(info.st_mode):
                 raise ValueError(f"Snapshot cannot include special files: {path.relative_to(folder)}")
-            if path.suffix.lower() not in MEDIA_EXTENSIONS:
-                files[path] = info
+            if path.suffix.lower() not in MEDIA_EXTENSIONS and source.suffix.lower() not in MEDIA_EXTENSIONS:
+                files[path] = source, info
     return files
 
 
@@ -121,16 +130,16 @@ def create_snapshot(name: str, job: dict) -> dict:
         job["total"] = len(files)
         with zipfile.ZipFile(temporary, "x", compression=zipfile.ZIP_DEFLATED,
                              compresslevel=6, allowZip64=True, strict_timestamps=False) as archive:
-            for path, original in files.items():
-                # Recheck containment immediately before opening; O_NOFOLLOW also
-                # rejects a final-component symlink swapped in after the walk.
-                if path.resolve() != path or library_path(name) != folder:
+            for path, (source_path, original) in files.items():
+                # Pin the resolved target while retaining the original archive name.
+                # O_NOFOLLOW rejects a target replaced by a link after the walk.
+                if path.resolve(strict=True) != source_path or library_path(name) != folder:
                     raise ValueError("Library changed during snapshot; pause file activity and retry")
                 flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-                with os.fdopen(os.open(path, flags), "rb") as source:
+                with os.fdopen(os.open(source_path, flags), "rb") as source:
                     if _identity(os.fstat(source.fileno())) != _identity(original):
                         raise ValueError("Library changed during snapshot; pause file activity and retry")
-                    info = zipfile.ZipInfo.from_file(path, path.relative_to(folder).as_posix(),
+                    info = zipfile.ZipInfo.from_file(source_path, path.relative_to(folder).as_posix(),
                                                     strict_timestamps=False)
                     info.compress_type = zipfile.ZIP_DEFLATED
                     with archive.open(info, "w", force_zip64=True) as target:
@@ -139,7 +148,8 @@ def create_snapshot(name: str, job: dict) -> dict:
                         raise ValueError("Library changed during snapshot; pause file activity and retry")
                 job["progress"] += 1
             current = _files(folder)
-            if {p: _identity(s) for p, s in files.items()} != {p: _identity(s) for p, s in current.items()}:
+            if ({p: (target, _identity(s)) for p, (target, s) in files.items()}
+                    != {p: (target, _identity(s)) for p, (target, s) in current.items()}):
                 raise ValueError("Library changed during snapshot; pause file activity and retry")
             metadata = {"library": name, "created_at": created.isoformat(), "file_count": len(files)}
             archive.comment = json.dumps(metadata).encode("utf-8")
@@ -160,7 +170,10 @@ def start_snapshot(name: str) -> str:
         job = jobs.get_job(job_id)
         assert job is not None
         try:
-            snapshot = await run_in_thread(create_snapshot, name, job)
+            job["messages"].append("Pausing watcher and scheduled jobs; waiting for active work to finish")
+            async with paused_automation():
+                job["messages"].append("Automation paused; copying library metadata")
+                snapshot = await run_in_thread(create_snapshot, name, job)
             job["messages"].append(f"Saved {snapshot['file_count']} files to {snapshot['filename']}")
             job.update(status="completed", finished_at=int(time.time()))
         except (OSError, ValueError, zipfile.BadZipFile) as error:
@@ -169,4 +182,5 @@ def start_snapshot(name: str) -> str:
             job.update(status="error", finished_at=int(time.time()))
         return job_id
 
-    return jobs.start(folder, "library_snapshot", run)
+    # A snapshot must not consume a build slot while it waits for queued builds.
+    return jobs.start(folder, "library_snapshot", run, use_build_slot=False)

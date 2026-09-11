@@ -82,9 +82,14 @@ function LibrarySnapshots({ library }: { library: string }) {
           artwork, subtitles, metadata, and hidden files. Video and audio files
           are excluded. Folder paths are preserved.
         </p>
+        <p className="text-sm text-slate-400 mt-3">
+          Snapshots automatically pause the watcher and scheduled jobs across all
+          libraries, then wait for active automation and queued builds to finish.
+          Their previous states resume after all snapshots finish, including on failure.
+        </p>
         <p className="text-sm text-amber-300 mt-3">
-          Pause builds, imports, scheduled jobs, the watcher, and cleanup until
-          the snapshot finishes. Wait for a completed ZIP before removing sidecars.
+          Pause imports, manual builds, other file changes, and cleanup until the snapshot finishes.
+          Wait for a completed ZIP before removing sidecars.
         </p>
         <button
           type="button"
@@ -177,8 +182,9 @@ function LibrarySnapshots({ library }: { library: string }) {
         </p>
         <p className="mt-2">
           Snapshots contain files only, not application settings or database
-          records. Symbolic links are not followed; a library containing them
-          cannot be snapshotted.
+          records. File symlinks within the library are saved as regular files.
+          Broken links, directory links, and links outside the library fail the snapshot;
+          links to media files are excluded.
         </p>
       </details>
     </div>

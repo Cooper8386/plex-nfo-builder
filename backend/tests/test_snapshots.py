@@ -179,7 +179,7 @@ def test_background_snapshot_coalesces_clicks_and_reports_failure(library, monke
         await jobs.wait_build(first)
         job = jobs.get_job(first)
         assert job["status"] == "error" and job["finished_at"] is not None
-        assert "disk full" in job["messages"][0]
+        assert "disk full" in job["messages"][-1]
         await jobs.shutdown_builds()
 
     asyncio.run(run())

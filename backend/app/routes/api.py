@@ -2918,7 +2918,8 @@ def _validate_schedule(cron: Optional[str], action: Optional[str]) -> None:
 
 @router.get("/schedules")
 def schedules_list():
-    return {"schedules": [dict(r) for r in db.list_schedules()]}
+    return {"schedules": [dict(r) for r in db.list_schedules()],
+            "paused_for_snapshot": _scheduler.paused_for_snapshot}
 
 
 @router.post("/schedules")
@@ -2962,7 +2963,11 @@ def schedules_delete(sched_id: int):
 
 @router.post("/schedules/{sched_id}/run")
 async def schedules_run(sched_id: int):
-    if not _scheduler.run_now(sched_id):
+    try:
+        started = _scheduler.run_now(sched_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if not started:
         raise HTTPException(status_code=404, detail="schedule not found")
     return {"ok": True, "started": True}
 

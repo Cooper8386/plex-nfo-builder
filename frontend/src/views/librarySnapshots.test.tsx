@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, BuildJob, LibrarySnapshots } from "../lib/api";
 import { clearToken, setToken } from "../lib/auth";
+import { ConfirmProvider } from "../components/ConfirmDialog";
 import SettingsView from "./SettingsView";
 
 const empty: LibrarySnapshots = {
@@ -27,7 +28,7 @@ function mount() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  render(<QueryClientProvider client={client}><SettingsView /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><ConfirmProvider><SettingsView /></ConfirmProvider></QueryClientProvider>);
 }
 
 beforeEach(() => {
@@ -118,5 +119,34 @@ describe("library snapshots settings", () => {
     expect(await screen.findByText(/No libraries found/)).toBeVisible();
     expect(list).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Create snapshot" })).not.toBeInTheDocument();
+  });
+
+  it("shows a temporary watcher pause without changing its enabled setting", async () => {
+    localStorage.setItem("pnb.settings.section", "watcher");
+    vi.spyOn(api.watcher, "status").mockResolvedValue({
+      available: true, enabled: true, running: true, paused_for_snapshot: true,
+      debounce_seconds: 30, watched_paths: ["/media/TV"], pending_count: 2, in_flight_count: 0,
+    });
+    mount();
+    expect(await screen.findByText("Paused for library snapshot")).toBeVisible();
+    expect(screen.getByRole("checkbox")).toBeChecked();
+    expect(screen.queryByText("Running")).not.toBeInTheDocument();
+  });
+
+  it("blocks manual scheduled runs during a snapshot while keeping enabled settings", async () => {
+    localStorage.setItem("pnb.settings.section", "schedules");
+    vi.spyOn(api.schedules, "list").mockResolvedValue({
+      paused_for_snapshot: true,
+      schedules: [{
+        id: 1, library: "TV & Anime", cron: "0 3 * * *", action: "full", enabled: 1,
+        last_run: null, last_status: null, last_message: null, created_at: 0, updated_at: 0,
+      }],
+    });
+    mount();
+    expect(await screen.findByText(/Paused for library snapshot/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
+    for (const checkbox of screen.getAllByRole("checkbox", { name: "Enabled" })) {
+      expect(checkbox).toBeChecked();
+    }
   });
 });

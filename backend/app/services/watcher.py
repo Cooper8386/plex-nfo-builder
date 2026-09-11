@@ -226,6 +226,7 @@ class Watcher:
         self._events_lock = threading.Lock()
         self._watched_paths: list[str] = []
         self._enabled = False
+        self._snapshot_pauses = 0
         # Protect against concurrent start/stop/reload calls.
         self._lifecycle_lock = threading.Lock()
         # v0.13.1: hard cap on concurrent _process_folder runs. Constructed
@@ -346,13 +347,33 @@ class Watcher:
         self.stop()
         await asyncio.gather(*running, return_exceptions=True)
 
+    def pause_for_snapshot(self) -> None:
+        """Suspend dispatch while retaining incoming events for the next debounce pass."""
+        self._snapshot_pauses += 1
+        for state in list(self._pending.values()):
+            if state.timer is not None:
+                state.timer.cancel()
+                state.timer = None
+
+    async def wait_idle(self) -> None:
+        await asyncio.gather(*(asyncio.shield(task) for task in list(self._running.values())),
+                             return_exceptions=True)
+
+    def resume_after_snapshot(self) -> None:
+        self._snapshot_pauses -= 1
+        if self._snapshot_pauses or not self._enabled or self._loop is None or self._loop.is_closed():
+            return
+        for folder, state in list(self._pending.items()):
+            self._schedule_debounce(state.library, folder, str(folder), True)
+
     # ----- introspection --------------------------------------------------
 
     def status(self) -> dict[str, Any]:
         return {
             "available": _WATCHDOG_AVAILABLE,
             "enabled": effective_watcher_enabled(),
-            "running": bool(self._observer is not None and self._enabled),
+            "running": bool(self._observer is not None and self._enabled and not self._snapshot_pauses),
+            "paused_for_snapshot": bool(self._snapshot_pauses),
             "debounce_seconds": effective_watcher_debounce_seconds(),
             "watched_paths": list(self._watched_paths),
             "pending_count": len(self._pending),
@@ -475,11 +496,14 @@ class Watcher:
                     state.timer.cancel()
                 except Exception:
                     pass
-        state.timer = self._loop.call_later(
-            debounce, self._fire_debounce, show_folder,
-        )
+        if not self._snapshot_pauses:
+            state.timer = self._loop.call_later(
+                debounce, self._fire_debounce, show_folder,
+            )
 
     def _fire_debounce(self, show_folder: Path) -> None:
+        if self._snapshot_pauses:
+            return
         state = self._pending.pop(show_folder, None)
         if state is None:
             return

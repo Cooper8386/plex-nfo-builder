@@ -14,18 +14,28 @@ Snapshot storage must be outside `MEDIA_ROOT`.
 The archive preserves paths relative to the selected library root and includes
 all regular non-media files, including hidden sidecars, foreign NFOs, artwork,
 subtitles, and other companion files. Known video, audio, and disc-image
-extensions are excluded, case-insensitively. Symlinks and special files cause
-the snapshot to fail rather than silently produce an incomplete backup.
+extensions are excluded, case-insensitively. File symlinks whose targets stay
+inside the selected library are copied as regular files at the link's original
+path. Links to media files are excluded. Broken links, directory links, links
+outside the library, and special files cause the snapshot to fail rather than
+silently produce an incomplete backup.
 Unreadable or changing files also fail the snapshot; existing ZIPs remain safe.
 These archives cover files in the library, not the application's database,
 settings, or custom uploads under `/config`.
 
-Pause the watcher, scheduled builds, imports, and other file changes while
-creating a snapshot. This is a file copy, not an atomic filesystem snapshot.
-Do not begin cleanup until a completed snapshot appears in the list.
+Snapshots automatically pause watcher dispatch and scheduled jobs across all
+libraries and wait for active automation and queued/running builds to finish
+before copying. Incoming watcher events are retained for processing afterward.
+The previous runtime states resume after the last active snapshot completes,
+fails, or is cancelled; saved enable settings are unchanged.
 
-To restore, pause those activities again, download the ZIP, and extract its
-contents into the **original library root**, replacing the matching metadata
+Pause imports, manual builds, other file changes, and cleanup while creating a snapshot.
+This is a file copy, not an atomic filesystem snapshot. Do not begin cleanup
+until a completed snapshot appears in the list.
+
+To restore, pause the watcher, schedules, builds, and all other library writes,
+download the ZIP, and extract its contents into the **original library root**,
+replacing the matching metadata
 files. The archive does not rename or restore media files, so keep the original
 media filenames and folder layout. Extraction does not remove newer files;
 use the existing cleanup preview if you need to remove generated metadata first.

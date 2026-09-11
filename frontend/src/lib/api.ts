@@ -143,6 +143,7 @@ export type WatcherStatus = {
   available: boolean;
   enabled: boolean;
   running: boolean;
+  paused_for_snapshot?: boolean;
   debounce_seconds: number;
   watched_paths: string[];
   pending_count: number;
@@ -917,7 +918,7 @@ export const api = {
       ),
   },
   schedules: {
-    list: () => J<{ schedules: Schedule[] }>(fetch("/api/schedules")),
+    list: () => J<{ schedules: Schedule[]; paused_for_snapshot?: boolean }>(fetch("/api/schedules")),
     create: (body: {
       library?: string | null;
       cron: string;

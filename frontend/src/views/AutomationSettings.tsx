@@ -1,6 +1,6 @@
 import { errorMessage } from "../lib/errors";
 import { useEffect, useMemo, useState } from "react";
-import { api, Library, Schedule, ScheduleAction } from "../lib/api";
+import { api, Library, Schedule, ScheduleAction, WatcherStatus } from "../lib/api";
 import { useConfirm } from "../components/confirm";
 import {
   Card,
@@ -12,15 +12,7 @@ import {
 } from "./SettingsControls";
 
 export function WatcherPane() {
-  const [status, setStatus] = useState<null | {
-    available: boolean;
-    enabled: boolean;
-    running: boolean;
-    debounce_seconds: number;
-    watched_paths: string[];
-    pending_count: number;
-    in_flight_count: number;
-  }>(null);
+  const [status, setStatus] = useState<WatcherStatus | null>(null);
   const [debounce, setDebounce] = useState<number>(30);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -155,7 +147,9 @@ export function WatcherPane() {
             <Card>
               <CardLabel>Status</CardLabel>
               <div className="text-sm text-slate-100">
-                {status.running ? (
+                {status.paused_for_snapshot ? (
+                  <span className="text-amber-300">Paused for library snapshot</span>
+                ) : status.running ? (
                   <span className="text-emerald-300">Running</span>
                 ) : status.enabled ? (
                   <span className="text-amber-300">Enabled, not running</span>
@@ -239,6 +233,7 @@ function fmtTimestamp(ts: number | null): string {
 export function SchedulesSection() {
   const confirmDlg = useConfirm();
   const [items, setItems] = useState<Schedule[] | null>(null);
+  const [pausedForSnapshot, setPausedForSnapshot] = useState(false);
   const [libs, setLibs] = useState<Library[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -261,6 +256,7 @@ export function SchedulesSection() {
         api.libraries.list(),
       ]);
       setItems(s.schedules);
+      setPausedForSnapshot(!!s.paused_for_snapshot);
       setLibs(l.libraries);
     } catch (e: unknown) {
       setError(errorMessage(e));
@@ -269,6 +265,13 @@ export function SchedulesSection() {
 
   useEffect(() => {
     reload();
+    const timer = setInterval(() => {
+      api.schedules.list().then((result) => {
+        setItems(result.schedules);
+        setPausedForSnapshot(!!result.paused_for_snapshot);
+      }).catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
   }, []);
 
   const create = async () => {
@@ -344,6 +347,12 @@ export function SchedulesSection() {
         title="Schedules"
         subtitle="Periodically scan, auto-match, and build NFOs for new or changed items. Cron expressions are evaluated in UTC. A schedule with no library applies to every enabled library."
       />
+      {pausedForSnapshot && (
+        <p role="status" className="mb-4 text-sm text-amber-300">
+          Paused for library snapshot. Schedules resume automatically afterward;
+          enabled settings are unchanged.
+        </p>
+      )}
 
       <div className="bg-slate-900/60 border border-slate-800 rounded-md p-3 mb-4">
         <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">
@@ -439,6 +448,7 @@ export function SchedulesSection() {
               libs={libs}
               sch={sch}
               busy={busy}
+              pausedForSnapshot={pausedForSnapshot}
               onUpdate={(body) => update(sch.id, body)}
               onRemove={() => remove(sch.id)}
               onRun={() => runNow(sch.id)}
@@ -454,6 +464,7 @@ function ScheduleRow({
   libs,
   sch,
   busy,
+  pausedForSnapshot,
   onUpdate,
   onRemove,
   onRun,
@@ -461,6 +472,7 @@ function ScheduleRow({
   libs: Library[];
   sch: Schedule;
   busy: boolean;
+  pausedForSnapshot: boolean;
   onUpdate: (body: {
     library?: string | null;
     cron?: string;
@@ -551,7 +563,7 @@ function ScheduleRow({
         <button
           type="button"
           onClick={onRun}
-          disabled={busy}
+          disabled={busy || pausedForSnapshot}
           className="text-xs px-2 py-0.5 bg-indigo-700 hover:bg-indigo-600 rounded disabled:opacity-50"
         >
           Run now

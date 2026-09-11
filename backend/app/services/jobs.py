@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from contextlib import nullcontext
 from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ def list_jobs() -> list[dict]:
     return sorted(_jobs.values(), key=lambda job: job["started_at"], reverse=True)[:200]
 
 
-def start(folder: Path, kind: str, build: Callable[[str], Awaitable[str]]) -> str:
+def start(folder: Path, kind: str, build: Callable[[str], Awaitable[str]], *, use_build_slot: bool = True) -> str:
     """Coalesce duplicate clicks and cap builds from every API/watcher/schedule."""
     global _slots
     folder = folder.resolve()
@@ -55,7 +56,7 @@ def start(folder: Path, kind: str, build: Callable[[str], Awaitable[str]]) -> st
 
     async def run() -> None:
         try:
-            async with slots:
+            async with slots if use_build_slot else nullcontext():
                 _jobs[job_id]["status"] = "running"
                 with logger.contextualize(job=job_id):
                     await build(job_id)
@@ -81,6 +82,12 @@ async def wait_build(job_id: str) -> None:
     if task := _tasks.get(job_id):
         # A watcher reload must not cancel a separately owned file write.
         await asyncio.shield(task)
+
+
+async def wait_for_builds() -> None:
+    """Drain queued and running builds after automation has stopped submitting work."""
+    await asyncio.gather(*(asyncio.shield(task) for job_id, task in list(_tasks.items())
+                           if _jobs[job_id]["kind"] != "library_snapshot"), return_exceptions=True)
 
 
 def start_followup(operation: Coroutine[Any, Any, None]) -> None:
