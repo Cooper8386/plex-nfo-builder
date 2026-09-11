@@ -1,0 +1,172 @@
+"""Persistent, library-scoped ZIP backups of non-media files."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import time
+import uuid
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from loguru import logger
+
+from ..config import CONFIG_DIR, MEDIA_ROOT
+from . import jobs
+from .async_io import run_in_thread
+from .parser import VIDEO_EXT
+
+# Include formats the scanner does not index, plus audio and disc images.
+MEDIA_EXTENSIONS = VIDEO_EXT | {
+    ".3g2", ".3gp", ".asf", ".divx", ".f4v", ".m2t", ".m2ts", ".m2v", ".mp2", ".mpeg", ".mpg",
+    ".mts", ".mxf", ".ogm", ".ogv", ".rm", ".rmvb", ".vob", ".wtv", ".iso", ".img",
+    ".h264", ".h265", ".hevc", ".ssif", ".evo",
+    ".aac", ".ac3", ".aif", ".aiff", ".alac", ".ape", ".dff", ".dsf", ".dts", ".eac3", ".flac",
+    ".m4a", ".m4b", ".mka", ".mp3", ".oga", ".ogg", ".opus", ".pcm", ".wav", ".wma", ".wv",
+}
+SNAPSHOT_ID = re.compile(r"\d{8}T\d{12}Z-[0-9a-f]{32}")
+
+
+def library_path(name: str) -> Path:
+    if not name or name in {".", ".."} or any(c in name for c in "/\\:"):
+        raise ValueError("Choose a single library")
+    root = MEDIA_ROOT.resolve()
+    folder = root / name
+    if folder.is_symlink() or folder.resolve() != folder or folder.parent != root:
+        raise ValueError("Library must be a directory directly inside MEDIA_ROOT, without symlinks")
+    return folder
+
+
+def storage_path(name: str) -> Path:
+    library_path(name)
+    base = CONFIG_DIR.resolve() / "library-snapshots"
+    folder = base / hashlib.sha256(name.encode("utf-8")).hexdigest()
+    if base.is_symlink() or folder.is_symlink() or folder.resolve() != folder:
+        raise ValueError("Snapshot storage must not contain symlinks")
+    if folder.is_relative_to(MEDIA_ROOT.resolve()):
+        raise ValueError("Snapshot storage must be outside MEDIA_ROOT; move CONFIG_DIR outside it")
+    return folder
+
+
+def download_path(name: str, snapshot_id: str) -> Path:
+    if not SNAPSHOT_ID.fullmatch(snapshot_id):
+        raise ValueError("Invalid snapshot ID")
+    path = storage_path(name) / f"{snapshot_id}.zip"
+    if path.is_symlink() or not path.is_file():
+        raise FileNotFoundError("Snapshot not found")
+    return path
+
+
+def list_snapshots(name: str) -> list[dict]:
+    snapshots = []
+    for path in sorted(storage_path(name).glob("*.zip"), reverse=True):
+        if path.is_symlink() or not SNAPSHOT_ID.fullmatch(path.stem):
+            continue
+        try:
+            with zipfile.ZipFile(path) as archive:
+                metadata = json.loads(archive.comment)
+            snapshots.append({
+                "id": path.stem, "filename": path.name, "created_at": metadata["created_at"],
+                "file_count": metadata["file_count"], "size_bytes": path.stat().st_size,
+            })
+        except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
+            logger.warning("Cannot read library snapshot: {}", path)
+    return snapshots
+
+
+def _files(folder: Path) -> dict[Path, os.stat_result]:
+    """Fail closed on unreadable directories and links rather than publish a partial backup."""
+    files = {}
+
+    def fail(error: OSError) -> None:
+        raise error
+
+    for directory, dirs, names in os.walk(folder, onerror=fail, followlinks=False):
+        for name in dirs + names:
+            path = Path(directory) / name
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or path.resolve() != path:
+                raise ValueError(f"Snapshot cannot include symbolic links: {path.relative_to(folder)}")
+            if stat.S_ISDIR(info.st_mode):
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError(f"Snapshot cannot include special files: {path.relative_to(folder)}")
+            if path.suffix.lower() not in MEDIA_EXTENSIONS:
+                files[path] = info
+    return files
+
+
+def _identity(info: os.stat_result) -> tuple:
+    # Windows stat/fstat can report different creation times for the same file.
+    changed = info.st_ctime_ns if os.name == "posix" else None
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, changed
+
+
+def create_snapshot(name: str, job: dict) -> dict:
+    folder = library_path(name)
+    if not folder.is_dir():
+        raise FileNotFoundError("Library directory not found")
+    storage = storage_path(name)
+    storage.mkdir(parents=True, exist_ok=True)
+    created = datetime.now(timezone.utc)
+    snapshot_id = f"{created.strftime('%Y%m%dT%H%M%S%fZ')}-{uuid.uuid4().hex}"
+    destination = storage / f"{snapshot_id}.zip"
+    temporary = storage / f"{snapshot_id}.partial"
+    try:
+        files = _files(folder)
+        job["total"] = len(files)
+        with zipfile.ZipFile(temporary, "x", compression=zipfile.ZIP_DEFLATED,
+                             compresslevel=6, allowZip64=True, strict_timestamps=False) as archive:
+            for path, original in files.items():
+                # Recheck containment immediately before opening; O_NOFOLLOW also
+                # rejects a final-component symlink swapped in after the walk.
+                if path.resolve() != path or library_path(name) != folder:
+                    raise ValueError("Library changed during snapshot; pause file activity and retry")
+                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+                with os.fdopen(os.open(path, flags), "rb") as source:
+                    if _identity(os.fstat(source.fileno())) != _identity(original):
+                        raise ValueError("Library changed during snapshot; pause file activity and retry")
+                    info = zipfile.ZipInfo.from_file(path, path.relative_to(folder).as_posix(),
+                                                    strict_timestamps=False)
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    with archive.open(info, "w", force_zip64=True) as target:
+                        shutil.copyfileobj(source, target, length=1024 * 1024)
+                    if _identity(os.fstat(source.fileno())) != _identity(original):
+                        raise ValueError("Library changed during snapshot; pause file activity and retry")
+                job["progress"] += 1
+            current = _files(folder)
+            if {p: _identity(s) for p, s in files.items()} != {p: _identity(s) for p, s in current.items()}:
+                raise ValueError("Library changed during snapshot; pause file activity and retry")
+            metadata = {"library": name, "created_at": created.isoformat(), "file_count": len(files)}
+            archive.comment = json.dumps(metadata).encode("utf-8")
+        # Publish only closed archives; an interrupted run never replaces a saved ZIP.
+        with temporary.open("r+b") as completed:
+            os.fsync(completed.fileno())
+        temporary.replace(destination)
+        return {"id": snapshot_id, "filename": destination.name, **metadata,
+                "size_bytes": destination.stat().st_size}
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def start_snapshot(name: str) -> str:
+    folder = library_path(name)
+
+    async def run(job_id: str) -> str:
+        job = jobs.get_job(job_id)
+        assert job is not None
+        try:
+            snapshot = await run_in_thread(create_snapshot, name, job)
+            job["messages"].append(f"Saved {snapshot['file_count']} files to {snapshot['filename']}")
+            job.update(status="completed", finished_at=int(time.time()))
+        except (OSError, ValueError, zipfile.BadZipFile) as error:
+            logger.exception("Library snapshot failed: {}", name)
+            job["messages"].append(f"Snapshot failed: {error}")
+            job.update(status="error", finished_at=int(time.time()))
+        return job_id
+
+    return jobs.start(folder, "library_snapshot", run)

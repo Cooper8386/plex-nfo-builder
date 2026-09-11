@@ -222,6 +222,20 @@ export type BuildJob = {
   messages: string[];
 };
 
+export type LibrarySnapshot = {
+  id: string;
+  filename: string;
+  created_at: string;
+  file_count: number;
+  size_bytes: number;
+};
+
+export type LibrarySnapshots = {
+  snapshots: LibrarySnapshot[];
+  storage_path: string;
+  jobs: BuildJob[];
+};
+
 const J = <T>(p: Promise<Response>): Promise<T> =>
   p.then(async (r) => {
     if (!r.ok) {
@@ -272,6 +286,22 @@ export const api = {
     ),
   libraries: {
     list: () => J<{ libraries: Library[] }>(fetch("/api/libraries")),
+    snapshots: {
+      list: (name: string) =>
+        J<LibrarySnapshots>(
+          fetch(`/api/libraries/${encodeURIComponent(name)}/snapshots`),
+        ),
+      create: (name: string) =>
+        J<{ job_id: string }>(
+          fetch(`/api/libraries/${encodeURIComponent(name)}/snapshots`, {
+            method: "POST",
+          }),
+        ),
+      downloadUrl: (name: string, id: string) =>
+        mediaUrl(
+          `/api/libraries/${encodeURIComponent(name)}/snapshots/${encodeURIComponent(id)}/download`,
+        ),
+    },
     detect: () =>
       J<{ libraries: any[] }>(
         fetch("/api/libraries/detect", { method: "POST" }),

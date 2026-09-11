@@ -8,6 +8,7 @@ previewed file renaming when your library needs tidying.
 - Automatic or manual matching, episode mapping, and metadata/artwork overrides.
 - Persistent bindings and recoverable sidecars beside your media.
 - Library browsing, scheduled builds, filesystem watching, and cleanup previews.
+- Per-library ZIP snapshots of sidecars and metadata in **Settings → Libraries**.
 
 ## Installation
 

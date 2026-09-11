@@ -20,6 +20,7 @@ from .config import CONFIG_DIR, MEDIA_ROOT, SettingsError, env
 from .logging_setup import setup_logging
 from .routes.api import router as api_router
 from .routes.settings import router as settings_router
+from .routes.snapshots import router as snapshots_router
 from .services import scanner
 from .services import builder
 from .services.async_io import run_in_thread
@@ -175,6 +176,7 @@ async def settings_unavailable(request: Request, error: SettingsError):
 
 app.include_router(api_router)
 app.include_router(settings_router)
+app.include_router(snapshots_router)
 
 
 # Serve the built frontend if present

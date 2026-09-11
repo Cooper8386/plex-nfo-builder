@@ -2,6 +2,36 @@
 
 [Installation](../README.md) · [Development](development.md) · [Release history](CHANGELOG.md)
 
+## Library snapshots
+
+Open **Settings → Libraries**, select one library, and choose **Create snapshot**
+before cleaning its metadata. Wait for the background job to complete. Each ZIP
+is retained under `/config/library-snapshots/` (or your `CONFIG_DIR`) and can be
+downloaded from the same tab. Snapshots are never automatically rotated or
+deleted; keep `/config` persistent and allow enough free space for each backup.
+Snapshot storage must be outside `MEDIA_ROOT`.
+
+The archive preserves paths relative to the selected library root and includes
+all regular non-media files, including hidden sidecars, foreign NFOs, artwork,
+subtitles, and other companion files. Known video, audio, and disc-image
+extensions are excluded, case-insensitively. Symlinks and special files cause
+the snapshot to fail rather than silently produce an incomplete backup.
+Unreadable or changing files also fail the snapshot; existing ZIPs remain safe.
+These archives cover files in the library, not the application's database,
+settings, or custom uploads under `/config`.
+
+Pause the watcher, scheduled builds, imports, and other file changes while
+creating a snapshot. This is a file copy, not an atomic filesystem snapshot.
+Do not begin cleanup until a completed snapshot appears in the list.
+
+To restore, pause those activities again, download the ZIP, and extract its
+contents into the **original library root**, replacing the matching metadata
+files. The archive does not rename or restore media files, so keep the original
+media filenames and folder layout. Extraction does not remove newer files;
+use the existing cleanup preview if you need to remove generated metadata first.
+Rescan the library afterward to recover sidecar state and update file status,
+then resume automation.
+
 ## Container configuration
 
 Use the Compose example in the [README](../README.md#installation). Both

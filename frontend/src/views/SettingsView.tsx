@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Settings, UpdateSetting, settingsPatch } from "./settingsModel";
 import { WatcherPane, SchedulesSection } from "./AutomationSettings";
+import LibrariesSettings from "./LibrariesSettings";
 import {
   Card,
   CardLabel,
@@ -14,6 +15,7 @@ import {
 } from "./SettingsControls";
 
 type SectionKey =
+  | "libraries"
   | "metadata"
   | "providers"
   | "artwork"
@@ -25,6 +27,11 @@ type SectionKey =
   | "about";
 
 const SECTIONS: { key: SectionKey; label: string; description: string }[] = [
+  {
+    key: "libraries",
+    label: "Libraries",
+    description: "Snapshots and backups",
+  },
   {
     key: "metadata",
     label: "Metadata",
@@ -180,8 +187,9 @@ export default function SettingsView({
     }
   };
 
-  // Schedules and Watcher have their own UI and don't need the save bar.
+  // Action panes save independently and don't need the settings save bar.
   const showSaveBar =
+    section !== "libraries" &&
     section !== "schedules" &&
     section !== "about" &&
     section !== "watcher" &&
@@ -236,6 +244,7 @@ export default function SettingsView({
             }}
           >
             <fieldset disabled={saving} className="min-w-0">
+              {section === "libraries" && <LibrariesSettings />}
               {section === "metadata" && <MetadataPane s={s} update={update} />}
               {section === "providers" && (
                 <ProvidersPane

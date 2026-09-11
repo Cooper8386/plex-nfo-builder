@@ -23,6 +23,50 @@ test.beforeEach(async ({ page, request }) => {
   ).toBeVisible();
 });
 
+test("library snapshots create and retain scoped ZIP backups", async ({ page, request }, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const existing = await request.get("http://127.0.0.1:8000/api/libraries/Series/snapshots", {
+    headers: { "X-API-Token": "pnb-local-qa" },
+  });
+  expect(existing.ok()).toBeTruthy();
+  const before = await existing.json();
+  expect(before.storage_path).toContain("pnb-qa-");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("navigation", { name: "Settings categories" })
+    .getByRole("button", { name: /Libraries/ }).click();
+  await page.getByRole("combobox", { name: "Library", exact: true }).selectOption("Series");
+  const downloads = page.getByRole("link", { name: /^Download ZIP / });
+  await expect(downloads).toHaveCount(before.snapshots.length);
+  await page.getByRole("button", { name: "Create snapshot", exact: true }).click();
+  await expect(downloads).toHaveCount(before.snapshots.length + 1);
+  await expect(page.getByRole("button", { name: "Create snapshot", exact: true })).toBeEnabled();
+  await expect(page.getByText(/Snapshot completed/).first()).toBeVisible();
+
+  const archive = downloads.first();
+  const archiveUrl = (await archive.getAttribute("href"))!;
+  expect(archiveUrl).toContain("/api/libraries/Series/snapshots/");
+  const downloadEvent = page.waitForEvent("download");
+  await archive.click();
+  const download = await downloadEvent;
+  expect(download.suggestedFilename()).toMatch(/^Series-.*\.zip$/);
+  const savedZip = info.outputPath("snapshot.zip");
+  await download.saveAs(savedZip);
+  expect((await readFile(savedZip)).subarray(0, 4).toString("hex")).toBe("504b0304");
+
+  await page.reload();
+  await page.getByRole("combobox", { name: "Library", exact: true }).selectOption("Series");
+  await expect(page.locator(`a[href="${archiveUrl}"]`)).toBeVisible();
+  await page.getByRole("combobox", { name: "Library", exact: true }).selectOption("Movies");
+  await expect(page.getByText("No snapshots for Movies yet.")).toBeVisible();
+  await expect(downloads).toHaveCount(0);
+  await page.getByRole("combobox", { name: "Library", exact: true }).selectOption("Series");
+  await expect(downloads).toHaveCount(before.snapshots.length + 1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.screenshot({ path: `test-results/library-snapshots-${info.project.name}.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
 test("sidebar options fit narrow widths and remain reachable at the bottom", async ({ page }, info) => {
   await page.route("**/api/libraries", async (route) => {
     const response = await route.fetch();
