@@ -19,6 +19,7 @@ from xml.etree import ElementTree as ET
 
 from .. import __version__, db
 from .artwork import absolutize_tvdb_url, movie_image_urls, series_image_urls
+from .ratings import write_ratings
 from .tmdb import image_url as _tmdb_image
 
 
@@ -124,6 +125,53 @@ def _emit_genres(root: ET.Element, source_genres: list, folder_path: Optional[st
             pass
 
 
+def _emit_people(root: ET.Element, record: dict, provider: str) -> None:
+    """Emit cast portraits and Plex-supported director/writer credits."""
+    people: list[tuple[dict, str]] = []
+    if provider == "tvdb":
+        for person in record.get("characters") or []:
+            if not isinstance(person, dict):
+                continue
+            kind = str(person.get("peopleType") or "Actor").lower()
+            tag = "director" if kind == "director" else "credits" if kind in {"writer", "screenwriter"} else "actor"
+            if tag == "actor" and kind not in {"actor", "guest star", "guest actor", "voice actor", "self"}:
+                continue
+            people.append((person, tag))
+    else:
+        credits = record.get("credits") or {}
+        for group in (credits.get("cast"), credits.get("guest_stars"), record.get("guest_stars")):
+            people.extend((person, "actor") for person in group or [] if isinstance(person, dict))
+        for group in (credits.get("crew"), record.get("crew")):
+            for person in group or []:
+                if not isinstance(person, dict):
+                    continue
+                if person.get("job") == "Director":
+                    people.append((person, "director"))
+                elif person.get("department") == "Writing" or person.get("job") in {"Writer", "Screenplay", "Story"}:
+                    people.append((person, "credits"))
+    seen: set[tuple[str, str, str]] = set()
+    order = 0
+    for person, tag in people:
+        name = person.get("personName" if provider == "tvdb" else "name")
+        role = person.get("name" if provider == "tvdb" else "character") or ""
+        key = (tag, name or "", role if tag == "actor" else "")
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        if tag != "actor":
+            _el(root, tag, name)
+            continue
+        actor = ET.SubElement(root, "actor")
+        _el(actor, "name", name)
+        _el(actor, "role", role)
+        _el(actor, "order", order)
+        order += 1
+        thumb = (absolutize_tvdb_url(person.get("image") or person.get("personImgURL"))
+                 if provider == "tvdb" else _tmdb_image(person.get("profile_path"), "w500"))
+        if thumb:
+            _el(actor, "thumb", thumb)
+
+
 # ----- Series ---------------------------------------------------------------
 
 def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[str],
@@ -184,6 +232,8 @@ def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[st
                 continue
             if _uid(root, rm.get("id"), provider=slug) is not None:
                 emitted_uid_types.add(slug)
+    if "imdb" not in emitted_uid_types and _uid(root, s.get("imdb_id"), provider="imdb") is not None:
+        emitted_uid_types.add("imdb")
     if manual_secondary:
         sp, sid = manual_secondary
         sp = (sp or "").lower()
@@ -206,24 +256,8 @@ def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[st
     if urls.get("background"):
         _el(fanart, "thumb", urls["background"])
 
-    # actors
-    for c in (s.get("characters") or []):
-        if not isinstance(c, dict):
-            continue
-        actor = ET.SubElement(root, "actor")
-        _el(actor, "name", c.get("personName") or "")
-        _el(actor, "role", c.get("name") or "")
-        # v0.11.14: TVDB character objects expose two image fields —
-        # `image` is the character/role art (often null) and
-        # `personImgURL` is the actor's headshot. Plex shows whichever
-        # we put in <thumb>. Previously we only used `image`, so cast
-        # entries whose role art was missing rendered as initials in
-        # Plex even when the actor portrait was set on TVDB. Fall back
-        # to the headshot when the role art isn't present, matching
-        # TVDB's own site behaviour.
-        thumb = c.get("image") or c.get("personImgURL")
-        if thumb:
-            _el(actor, "thumb", absolutize_tvdb_url(thumb) or "")
+    _emit_people(root, s, "tvdb")
+    write_ratings(root, s, provider="tvdb")
 
     return _pretty(root, {"tvdb_id": s.get("id")})
 
@@ -252,20 +286,13 @@ def build_episode_nfo(episode_extended: dict, *, language: str, fallbacks: list[
     if e.get("runtime"):
         _el(root, "runtime", e.get("runtime"))
     _uid(root, e.get("id"), provider="tvdb", default=True)
+    _uid(root, e.get("imdb_id"), provider="imdb")
     # episode thumbnail: TVDB CDN URL (Plex caches it; local <stem>-thumb.jpg
     # is also written by the artwork pipeline as a fallback)
     if e.get("image"):
         _el(root, "thumb", absolutize_tvdb_url(e["image"]) or "")
-    for c in (e.get("characters") or []):
-        if isinstance(c, dict) and c.get("personName"):
-            actor = ET.SubElement(root, "actor")
-            _el(actor, "name", c["personName"])
-            _el(actor, "role", c.get("name") or "")
-            # v0.11.14: include actor portrait, falling back from role
-            # art to person headshot. See series builder for rationale.
-            thumb = c.get("image") or c.get("personImgURL")
-            if thumb:
-                _el(actor, "thumb", absolutize_tvdb_url(thumb) or "")
+    _emit_people(root, e, "tvdb")
+    write_ratings(root, e, provider="tvdb")
     return _pretty(root, {"tvdb_id": e.get("id")})
 
 
@@ -315,6 +342,8 @@ def build_movie_nfo(movie_extended: dict, *, language: str, fallbacks: list[str]
                 continue
             if _uid(root, rm.get("id"), provider=slug) is not None:
                 emitted_uid_types.add(slug)
+    if "imdb" not in emitted_uid_types and _uid(root, m.get("imdb_id"), provider="imdb") is not None:
+        emitted_uid_types.add("imdb")
     if manual_secondary:
         sp, sid = manual_secondary
         sp = (sp or "").lower()
@@ -335,16 +364,8 @@ def build_movie_nfo(movie_extended: dict, *, language: str, fallbacks: list[str]
     if urls.get("background"):
         _el(fanart, "thumb", urls["background"])
 
-    for c in (m.get("characters") or []):
-        if isinstance(c, dict) and c.get("personName"):
-            actor = ET.SubElement(root, "actor")
-            _el(actor, "name", c["personName"])
-            _el(actor, "role", c.get("name") or "")
-            # v0.11.14: include actor portrait, falling back from role
-            # art to person headshot. See series builder for rationale.
-            thumb = c.get("image") or c.get("personImgURL")
-            if thumb:
-                _el(actor, "thumb", absolutize_tvdb_url(thumb) or "")
+    _emit_people(root, m, "tvdb")
+    write_ratings(root, m, provider="tvdb")
     return _pretty(root, {"tvdb_id": m.get("id")})
 
 
@@ -411,7 +432,7 @@ def build_series_nfo_tmdb(tv: dict, *, language: str, fallbacks: list[str],
     ext = tv.get("external_ids") or {}
     if _uid(root, ext.get("tvdb_id"), provider="tvdb") is not None:
         emitted_uid_types.add("tvdb")
-    if _uid(root, ext.get("imdb_id"), provider="imdb") is not None:
+    if _uid(root, ext.get("imdb_id") or tv.get("imdb_id"), provider="imdb") is not None:
         emitted_uid_types.add("imdb")
     if manual_secondary:
         sp, sid = manual_secondary
@@ -432,15 +453,8 @@ def build_series_nfo_tmdb(tv: dict, *, language: str, fallbacks: list[str],
     if background:
         _el(fanart, "thumb", background)
 
-    cast = ((tv.get("credits") or {}).get("cast") or [])
-    for c in cast[:30]:
-        if not isinstance(c, dict) or not c.get("name"):
-            continue
-        actor = ET.SubElement(root, "actor")
-        _el(actor, "name", c.get("name"))
-        _el(actor, "role", c.get("character") or "")
-        if c.get("profile_path"):
-            _el(actor, "thumb", _tmdb_image(c["profile_path"], "w185"))
+    _emit_people(root, tv, "tmdb")
+    write_ratings(root, tv, provider="tmdb")
 
     return _pretty(root, {"tvdb_id": tv.get("external_ids", {}).get("tvdb_id") or ""})
 
@@ -462,8 +476,13 @@ def build_episode_nfo_tmdb(ep: dict, *, language: str, fallbacks: list[str],
     if ep.get("runtime"):
         _el(root, "runtime", ep.get("runtime"))
     _uid(root, ep.get("id"), provider="tmdb", default=True)
+    external_ids = ep.get("external_ids") or {}
+    _uid(root, external_ids.get("imdb_id") or ep.get("imdb_id"), provider="imdb")
+    _uid(root, external_ids.get("tvdb_id"), provider="tvdb")
     if ep.get("still_path"):
         _el(root, "thumb", _tmdb_image(ep["still_path"], "original"))
+    _emit_people(root, ep, "tmdb")
+    write_ratings(root, ep, provider="tmdb")
     return _pretty(root, {"tvdb_id": ""})
 
 
@@ -502,7 +521,7 @@ def build_movie_nfo_tmdb(mv: dict, *, language: str, fallbacks: list[str],
     emitted_uid_types: set[str] = set()
     if _uid(root, mv.get("id"), provider="tmdb", default=True) is not None:
         emitted_uid_types.add("tmdb")
-    if _uid(root, mv.get("imdb_id"), provider="imdb") is not None:
+    if _uid(root, mv.get("imdb_id") or (mv.get("external_ids") or {}).get("imdb_id"), provider="imdb") is not None:
         emitted_uid_types.add("imdb")
     ext = mv.get("external_ids") or {}
     if _uid(root, ext.get("tvdb_id"), provider="tvdb") is not None:
@@ -525,15 +544,8 @@ def build_movie_nfo_tmdb(mv: dict, *, language: str, fallbacks: list[str],
     if background:
         _el(fanart, "thumb", background)
 
-    cast = ((mv.get("credits") or {}).get("cast") or [])
-    for c in cast[:30]:
-        if not isinstance(c, dict) or not c.get("name"):
-            continue
-        actor = ET.SubElement(root, "actor")
-        _el(actor, "name", c.get("name"))
-        _el(actor, "role", c.get("character") or "")
-        if c.get("profile_path"):
-            _el(actor, "thumb", _tmdb_image(c["profile_path"], "w185"))
+    _emit_people(root, mv, "tmdb")
+    write_ratings(root, mv, provider="tmdb")
 
     return _pretty(root, {"tvdb_id": (mv.get("external_ids") or {}).get("tvdb_id") or ""})
 

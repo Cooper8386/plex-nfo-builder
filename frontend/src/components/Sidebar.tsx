@@ -305,7 +305,7 @@ function LibraryRow({
         title="Library options"
         aria-label={`Options for ${name}`}
         aria-expanded={open}
-        className={`absolute top-1/2 -translate-y-1/2 right-1 w-7 h-7 rounded flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 ${
+        className={`absolute top-1 right-1 w-7 h-7 rounded flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 ${
           open
             ? "bg-slate-800 text-white"
             : "opacity-60 group-hover:opacity-100 focus:opacity-100"
@@ -318,7 +318,7 @@ function LibraryRow({
         </svg>
       </button>
       {open && (
-        <div className="absolute right-1 top-full mt-1 z-30 w-56 rounded-md border border-slate-700 bg-slate-900 shadow-lg py-1 text-sm">
+        <div role="group" aria-label={`Library options for ${name}`} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 shadow-lg py-1 text-sm">
           <button
             className="w-full text-left px-3 py-1.5 hover:bg-slate-800"
             onClick={() => {
@@ -343,7 +343,7 @@ function LibraryRow({
               onClick={(e) => e.stopPropagation()}
               className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs"
             >
-              <option value="">Default (global setting)</option>
+              <option value="">Default (global)</option>
               <option value="tvdb">TVDB</option>
               <option value="tmdb">TMDB</option>
             </select>

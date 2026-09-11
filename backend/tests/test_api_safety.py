@@ -56,6 +56,54 @@ def test_missing_and_escaping_paths_rejected(client, tmp_path):
     assert http.post("/api/items/clean", json={"folder_path": str(media)}, headers=headers).status_code == 400
 
 
+def test_single_item_auto_match_writes_binding_without_building(client, monkeypatch):
+    http, media = client
+    folder = media / "TV" / "Example"
+    folder.mkdir(parents=True)
+    video = folder / "Example S01E01.mkv"
+    video.write_bytes(b"original video")
+    async def match(path, **kwargs):
+        db.upsert_binding(str(path), "series", "tvdb", "1", title="Example")
+        return {"id": 1, "name": "Example"}
+    monkeypatch.setattr(matcher, "auto_match_series", match)
+    monkeypatch.setattr(api, "effective_metadata_source", lambda _: "tvdb")
+    monkeypatch.setattr(api.build_svc, "start_build", lambda *a, **k: pytest.fail("Matching must not build"))
+    response = http.post("/api/match/auto-bulk", headers={"X-API-Token": "test-secret"},
+                         json={"folder_paths": [str(folder)]})
+    assert response.status_code == 200 and response.json()["matched"] == 1
+    assert db.get_binding(str(folder))["external_id"] == "1"
+    assert video.read_bytes() == b"original video"
+    assert not list(folder.rglob("*.nfo"))
+    assert not list(folder.rglob("*.jpg"))
+
+
+@pytest.mark.parametrize("change", [None, "primary", "secondary", "unmatched"])
+def test_secondary_discovery_persists_and_preserves_concurrent_matches(client, monkeypatch, change):
+    http, media = client
+    folder = media / "TV" / "Example"
+    folder.mkdir(parents=True)
+    db.upsert_binding(str(folder), "series", "tmdb", "1")
+    async def discover(binding):
+        if change == "primary":
+            db.upsert_binding(str(folder), "series", "tmdb", "3")
+        elif change == "secondary":
+            db.set_binding_secondary(str(folder), "tvdb", "4")
+        return None if change == "unmatched" else "2"
+    monkeypatch.setattr(matcher, "discover_secondary", discover)
+    response = http.post("/api/match/secondary/discover", headers={"X-API-Token": "test-secret"},
+                         json={"folder_path": str(folder)})
+    assert response.status_code == (409 if change in ("primary", "secondary") else 200)
+    binding = db.get_binding(str(folder))
+    assert binding["secondary_external_id"] == {None: "2", "primary": None,
+                                                 "secondary": "4", "unmatched": None}[change]
+    if change is None:
+        assert any('"secondary_external_id": "2"' in p.read_text(encoding="utf-8")
+                   for p in folder.iterdir() if p.is_file())
+        monkeypatch.setattr(matcher, "discover_secondary", AsyncMock(side_effect=AssertionError("Keep saved link")))
+        assert http.post("/api/match/secondary/discover", headers={"X-API-Token": "test-secret"},
+                         json={"folder_path": str(folder)}).json()["secondary_external_id"] == "2"
+
+
 def test_switching_provider_requires_new_provider_id(client):
     http, media = client
     folder = media / "TV" / "Show"

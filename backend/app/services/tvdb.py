@@ -5,13 +5,14 @@ Reference: https://thetvdb.github.io/v4-api/
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any, Optional
 
 import httpx
 from loguru import logger
 
-from ..config import effective_tvdb_credentials, get_user_settings
+from ..config import effective_tmdb_credentials, effective_tvdb_credentials, get_user_settings
 from ..db import cache_get, cache_set
 from .provider_http import retry_delay
 
@@ -181,14 +182,9 @@ class TVDBClient:
         return d.get("artworks") if isinstance(d, dict) and "artworks" in d else d if isinstance(d, list) else []  # type: ignore[return-value]
 
     async def person_image(self, people_id: int | str, *, force: bool = False) -> Optional[str]:
-        """Return the actor's default headshot URL (the `image` field on
-        the People record), or None if missing.
-
-        Used as a fallback for character entries on /series/.../extended
-        whose `personImgURL` is empty: TVDB renders those by looking at
-        the underlying person record, and so should we. Cached on the
-        normal TTL because headshots almost never change.
-        """
+        """Find a headshot on TVDB, then TMDB using the person's exact IMDb ID."""
+        if not re.fullmatch(r"[1-9][0-9]*", str(people_id)):
+            return None
         try:
             data = await self._get(
                 f"/people/{people_id}",
@@ -201,8 +197,34 @@ class TVDBClient:
         d = data.get("data") or {}
         if not isinstance(d, dict):
             return None
-        img = d.get("image") or None
-        return img if isinstance(img, str) and img else None
+        if isinstance(d.get("image"), str) and d["image"]:
+            return d["image"]
+        try:
+            extended = await self._get(f"/people/{people_id}/extended", ttl=self._ttl(), force=force)
+            person = extended.get("data") or {}
+            if person.get("image"):
+                return person["image"]
+            for character in person.get("characters") or []:
+                if isinstance(character, dict) and character.get("personImgURL"):
+                    return character["personImgURL"]
+            imdb_id = next((str(remote.get("id")) for remote in person.get("remoteIds") or []
+                            if isinstance(remote, dict) and "imdb" in str(remote.get("sourceName")).lower()
+                            and re.fullmatch(r"nm[0-9]+", str(remote.get("id")))), None)
+            if imdb_id and effective_tmdb_credentials():
+                from .tmdb import get_client as get_tmdb_client, image_url
+
+                tmdb = get_tmdb_client()
+                found = await tmdb._get(f"/find/{imdb_id}", params={"external_source": "imdb_id"},
+                                        ttl=tmdb._ttl(), force=force)
+                matches = found.get("person_results") or []
+                if len(matches) == 1:
+                    if matches[0].get("profile_path"):
+                        return image_url(matches[0]["profile_path"], "w500")
+                    if matches[0].get("id"):
+                        return await tmdb.person_image(matches[0]["id"], force=force)
+        except Exception as error:
+            logger.warning("TVDB portrait fallback failed for {}: {}", people_id, error)
+        return None
 
     async def movie_extended(self, movie_id: int | str, *, force: bool = False) -> dict:
         data = await self._get(

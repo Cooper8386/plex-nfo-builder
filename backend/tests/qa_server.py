@@ -33,6 +33,7 @@ def main() -> None:
             TVDB_API_KEY="",
             TVDB_PIN="",
             TMDB_API_KEY="",
+            OMDB_API_KEY="",
             FANART_API_KEY="",
         )
         from app import db
@@ -97,6 +98,7 @@ def main() -> None:
                     "firstAired": "2024-01-01",
                     "overview": "A fictional series for isolated interface testing.",
                     "genres": [{"name": "Drama"}],
+                    "remoteIds": [{"sourceName": "TheMovieDB.com", "id": str(20000 + index)}],
                     "artworks": [],
                     "seasons": [],
                 }
@@ -136,6 +138,7 @@ def main() -> None:
                             "type": "series",
                             "limit": 20,
                             "language": "eng",
+                            "year": 2024,
                         },
                         {
                             "data": [

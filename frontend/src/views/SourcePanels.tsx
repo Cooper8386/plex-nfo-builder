@@ -1,5 +1,5 @@
 import { errorMessage } from "../lib/errors";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type MatchResult } from "../lib/api";
 
@@ -9,10 +9,12 @@ import { providerPageUrl } from "./mediaLinks";
 export function BindEmptyState({
   path,
   detectedKind,
+  defaultProvider,
   onBound,
 }: {
   path: string;
   detectedKind: "series" | "movie";
+  defaultProvider?: "tvdb" | "tmdb";
   onBound: () => void;
 }) {
   return (
@@ -27,6 +29,7 @@ export function BindEmptyState({
       <MatchPanel
         path={path}
         detectedKind={detectedKind}
+        defaultProvider={defaultProvider}
         onBound={onBound}
         initialOpen
       />
@@ -38,17 +41,19 @@ export function BindEmptyState({
 export function MatchPanel({
   path,
   detectedKind,
+  defaultProvider = "tvdb",
   onBound,
   initialOpen,
 }: {
   path: string;
   detectedKind: "series" | "movie";
+  defaultProvider?: "tvdb" | "tmdb";
   onBound: () => void;
   initialOpen?: boolean;
 }) {
   const qc = useQueryClient();
   const [kind, setKind] = useState(detectedKind);
-  const [provider, setProvider] = useState<"tvdb" | "tmdb">("tvdb");
+  const [provider, setProvider] = useState<"tvdb" | "tmdb">(defaultProvider);
   const [title, setTitle] = useState("");
   const [search, setSearch] = useState<{
     title: string;
@@ -211,6 +216,9 @@ export function MatchPanel({
           );
         })}
       </div>
+      <p className="text-xs text-slate-400 mt-2">
+        Matching saves the source only. Build NFOs when you're ready to write metadata and artwork.
+      </p>
     </section>
   );
 }
@@ -250,6 +258,28 @@ export function SecondarySourcePanel({
   const [pasteId, setPasteId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [matches, setMatches] = useState<MatchResult[]>([]);
+  const attemptedDiscovery = useRef(false);
+
+  const discover = useCallback(async () => {
+    setBusy(true);
+    setMsg("Looking for a linked source…");
+    try {
+      const result = await api.match.discoverSecondary(path);
+      setMsg(result.found ? `${otherLabel} source linked.` :
+        `No exact ${otherLabel} link found. Search or paste an ID below.`);
+      if (result.found) onChanged();
+    } catch (error) {
+      setMsg(`Discovery failed: ${errorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [path, otherLabel, onChanged]);
+
+  useEffect(() => {
+    if (attemptedDiscovery.current) return;
+    attemptedDiscovery.current = true;
+    if (!hasSecondary) void discover();
+  }, [hasSecondary, discover]);
 
   const linkUrl = providerPageUrl(secondaryProvider, secondaryExternalId, kind);
 
@@ -349,8 +379,11 @@ export function SecondarySourcePanel({
         ) : (
           <>
             <span className="text-xs text-slate-500">
-              No manual {otherLabel} id linked.
+              No {otherLabel} id linked.
             </span>
+            <button disabled={busy} className="btn" onClick={discover}>
+              {busy ? "Discovering…" : "Discover source"}
+            </button>
             <button
               disabled={busy}
               className="text-xs px-2 py-0.5 rounded border border-slate-700 hover:bg-slate-800 disabled:opacity-50"
@@ -362,11 +395,9 @@ export function SecondarySourcePanel({
         )}
       </div>
       <p className="text-xs text-slate-500 mt-2">
-        Pin a {otherLabel} id when {primaryProvider.toUpperCase()}'s record
-        doesn't cross-reference {otherLabel}. Used for cross-provider artwork,
-        fanart.tv lookups, and the NFO{" "}
-        <code className="text-slate-400">&lt;uniqueid&gt;</code> tag. Persists
-        in the sidecar.
+        Finds {otherLabel} through provider cross-references and shared IMDb IDs.
+        Search or paste an ID if no exact link exists. Saved links supply artwork
+        and metadata IDs when you build.
       </p>
 
       {open && (

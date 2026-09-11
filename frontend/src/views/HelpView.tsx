@@ -147,48 +147,49 @@ export default function HelpView() {
         </Bullets>
       </Section>
 
-      <Section title="Actor portraits in .actors/">
+      <Section title="Cast, crew, and portraits">
         <p>
-          From v0.11.17, every build also downloads each cast member's headshot
-          to <Code>{"{show_folder}/.actors/{Actor Name}.jpg"}</Code> alongside{" "}
-          <Code>tvshow.nfo</Code> / <Code>movie.nfo</Code>. This is the Kodi /
-          Jellyfin / Plex convention for local actor images and Plex's{" "}
-          <i>Local Media Assets</i> agent reads them directly.
+          Builds include cast and guest stars in show, movie, and episode NFOs,
+          with actor photo URLs and separate director/writer credits. Missing
+          photos are checked against provider people records and image galleries.
+          With both provider keys configured, exact IMDb person links can supply
+          a photo from the other provider.
         </p>
-        <Bullets>
-          <li>
-            <b>Why this exists.</b> Even with a correct{" "}
-            <Code>&lt;thumb&gt;</Code> URL in the NFO, Plex's online TV agent
-            re-scrapes cast directly from TVDB seconds after a build finishes
-            and will <i>overwrite</i> the portrait with whatever the actor's
-            People record carries. For voice-acting credits on shows like RWBY —
-            where the lead VAs' People records have a blank image — that
-            overwrite turns the portrait back into initials. Local{" "}
-            <Code>.actors/</Code> files survive every subsequent online-agent
-            overwrite, so the portrait sticks.
-          </li>
-          <li>
-            <b>Applies everywhere.</b> TVDB and TMDB, series and movies. TMDB
-            uses the <Code>profile_path</Code> field at <Code>w185</Code>; TVDB
-            uses the per-show character image (falling back to the headshot via
-            the v0.11.15 hydrator).
-          </li>
-          <li>
-            <b>Limits.</b> Capped at 60 portraits per build with 8 concurrent
-            downloads, so a show with hundreds of bit-part credits can't tie up
-            a build. Filenames are sanitized for cross-platform safety —{" "}
-            <Code>{'<>:"|?*/\\'}</Code> and control characters get replaced with{" "}
-            <Code>_</Code> — but spaces and unicode pass through unchanged
-            because Plex matches the filename stem against the literal name in
-            the NFO.
-          </li>
-          <li>
-            <b>If a show still has missing portraits</b> after upgrading, run a{" "}
-            <i>Force rebuild</i> on it and then trigger Plex's{" "}
-            <i>Refresh Metadata</i> on the show. The freshly-written{" "}
-            <Code>.actors/</Code> files are picked up on the next scan.
-          </li>
-        </Bullets>
+        <p>
+          Available cast and crew portraits are also saved under{" "}
+          <Code>.actors/</Code>. These files are useful for compatible media
+          readers; they do not guarantee that a Plex online provider will use
+          the same photo. Missing provider photos remain blank.
+        </p>
+        <p>
+          Plex's NFO agent reads actor photos from each actor's{" "}
+          <Code>&lt;thumb&gt;</Code> URL. Crew photo display depends on the Plex
+          provider. After rebuilding, refresh the item's metadata in Plex.
+          TMDB builds refresh portrait lookups on Force rebuild; TVDB builds
+          retain the portrait cache to reduce rate limiting.
+        </p>
+        <p>
+          Plex Discover filmography links require cast supplied by an online
+          provider; NFO cast does not provide them. See the{" "}
+          <a className="text-indigo-300 underline" href="https://support.plex.tv/articles/using-nfo-metadata-files-with-plex/"
+            target="_blank" rel="noreferrer">Plex NFO guide</a> for provider setup.
+        </p>
+      </Section>
+
+      <Section title="IMDb, Rotten Tomatoes, and other ratings">
+        <p>
+          Add an optional <b>OMDb API key</b> in <b>Settings → Providers</b>,
+          save, and rebuild a title to include available IMDb, Rotten Tomatoes
+          critic, and Metacritic ratings. TMDB's own user rating needs no OMDb key.
+        </p>
+        <p>
+          Lookups use linked IMDb IDs. Episode lookups use the episode's ID, or
+          the series ID plus its season and episode numbers. Missing ratings
+          stay absent; a series rating is never copied onto an episode.
+          OMDb coverage varies by title and media type, especially for TV and
+          episode Rotten Tomatoes scores. API limits or unavailable ratings do
+          not stop the rest of the build.
+        </p>
       </Section>
 
       <Section title="Per-provider artwork language filter">
@@ -410,8 +411,9 @@ export default function HelpView() {
       <Section title="The 60-second tour">
         <Ol>
           <li>
-            <b>Set your API keys.</b> In <Code>Settings</Code>, paste at least a
-            TVDB API key. TMDB and fanart.tv are optional but improve artwork.
+            <b>Set your API keys.</b> In <Code>Settings → Providers</Code>, add
+            a TVDB or TMDB key and choose that source under Metadata. Add both
+            for more artwork and portrait coverage. fanart.tv and OMDb are optional.
           </li>
           <li>
             <b>Add libraries.</b> Anything one level under <Code>/media</Code>{" "}
@@ -420,9 +422,10 @@ export default function HelpView() {
             link if you add new ones.
           </li>
           <li>
-            <b>Match shows.</b> Open a library, then either click{" "}
-            <Code>Auto-match all</Code> at the top, or open a show and search
-            manually under the <Code>overview</Code> tab.
+            <b>Match a title.</b> Open a show or movie and click{" "}
+            <Code>Auto-match only</Code>, or search under Overview and choose{" "}
+            <Code>Match title</Code>. Matching saves the source without generating
+            NFOs or downloading artwork. A source lock protects manual matches.
           </li>
           <li>
             <b>Build NFOs.</b> From the show's detail view, click{" "}
@@ -433,9 +436,9 @@ export default function HelpView() {
             for them.
           </li>
           <li>
-            <b>Point Plex at the same folder.</b> In Plex, the library should
-            have the agent set to "Personal Media" (or any agent that reads
-            local NFOs first) so Plex picks up the metadata you generated.
+            <b>Point Plex at the same folder.</b> Select Plex NFO Movie or
+            Plex NFO Series, or configure the NFO provider in a custom metadata
+            agent. Refresh metadata after building to import the new files.
           </li>
         </Ol>
       </Section>
@@ -454,8 +457,9 @@ export default function HelpView() {
             protection.
           </li>
           <li>
-            <b>Force rebuild</b> bypasses the metadata cache and re-fetches
-            everything from the upstream provider. Use it when:
+            <b>Force rebuild</b> refreshes provider metadata, ratings, and
+            artwork. TVDB builds retain the portrait cache to reduce rate
+            limiting. Use it when:
             <Bullets>
               <li>
                 a show was recently added/edited on TVDB or TMDB and you want
@@ -835,39 +839,23 @@ export default function HelpView() {
         </p>
       </Section>
 
-      <Section title="Manual secondary TMDB / TVDB id">
+      <Section title="Secondary TMDB / TVDB source">
         <p>
-          Sometimes the primary provider's record doesn't list the other
-          source's id. A TVDB show that has no TMDB cross-link, or a TMDB movie
-          that has no TVDB id on file. The cross-provider artwork resolver and
-          fanart.tv lookup both rely on that cross-id, so missing it means
-          weaker artwork and an incomplete <Code>&lt;uniqueid&gt;</Code> block
-          in the NFO.
+          Opening a matched title's Overview automatically checks for the other
+          provider through direct cross-references and shared IMDb IDs. An exact
+          link is saved as the secondary source without building files. Existing
+          secondary links are kept. Both provider keys may be needed for discovery.
         </p>
         <p>
-          Open the show or movie, scroll to the <b>Secondary source</b> panel on
-          the Overview tab, and either:
+          If no exact link exists, use <b>Discover source</b> to retry, or search
+          and paste an ID in the Secondary source panel. Ambiguous results need
+          a manual choice. You can edit or clear a saved link; reopening the
+          Overview may discover a cleared link again.
         </p>
-        <Bullets>
-          <li>
-            <b>Paste</b> the id directly if you already know it (e.g. you looked
-            the title up on themoviedb.org and grabbed the number from the URL).
-          </li>
-          <li>
-            Or <b>search</b> the other provider in-place — same search box you
-            use for the main matcher, but pre-pointed at the other source. Click{" "}
-            <b>Link</b> on the right hit.
-          </li>
-        </Bullets>
         <p>
-          Once linked you'll see a chip like <Code>tmdb-12345</Code> with an
-          external-link button to the source page, plus <b>Edit</b> and{" "}
-          <b>Clear</b>. The pinned id is used the next time you build NFOs for
-          that folder: cross-provider artwork lookups prefer it, fanart.tv uses
-          it, and the NFO emits a matching{" "}
-          <Code>&lt;uniqueid type="tmdb"&gt;</Code> (or <Code>type="tvdb"</Code>
-          ) tag. The id is mirrored into
-          <Code>.plex-nfo-builder.json</Code> so it survives a DB wipe.
+          The secondary source supplies artwork and metadata IDs on the next
+          build and is saved in <Code>.plex-nfo-builder.json</Code> for recovery.
+          The primary source continues to supply titles, descriptions, and cast.
         </p>
       </Section>
 

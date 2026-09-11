@@ -398,6 +398,7 @@ export const api = {
       J<{
         path: string;
         library_kind: string | null;
+        metadata_source?: "tvdb" | "tmdb";
         binding: any;
         state: any;
         artwork_files: string[];
@@ -614,6 +615,17 @@ export const api = {
           body: JSON.stringify(body),
         }),
       ),
+    discoverSecondary: (folder_path: string) =>
+      J<{
+        ok: true;
+        found: boolean;
+        secondary_provider: string | null;
+        secondary_external_id: string | null;
+      }>(fetch("/api/match/secondary/discover", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ folder_path }),
+      })),
   },
   build: (
     folder_path: string,

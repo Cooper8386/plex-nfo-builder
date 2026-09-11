@@ -51,6 +51,7 @@ environment credentials.
 | `TVDB_API_KEY` | Unset | TVDB key; alternatively set it in Settings → Providers. |
 | `TVDB_PIN` | Unset | Optional TVDB subscriber PIN. |
 | `TMDB_API_KEY` | Unset | TMDB key; alternatively set it in Settings → Providers. |
+| `OMDB_API_KEY` | Unset | Optional OMDb key for IMDb, Rotten Tomatoes critics, and Metacritic ratings; alternatively set it in Settings → Providers. |
 | `FANART_API_KEY` | Unset | Optional fanart.tv artwork key. |
 | `MEDIA_ROOT` | `/media` | Root containing library directories; normally leave the default and change the host mount. |
 | `CONFIG_DIR` | `/config` | Persistent state directory; normally leave the default and change the host mount. |
@@ -95,7 +96,7 @@ in the settings API; configured indicators also account for environment keys.
 | Category | Options |
 | --- | --- |
 | Metadata | Primary TVDB/TMDB source, preferred language (`eng`), fallback languages (`eng`), cache TTL (168 hours), auto-match threshold (85), foreign NFO overwrite (off), orphan sweep after builds (on). |
-| Providers | TVDB key/PIN, TMDB key and supplementary artwork (on), fanart.tv key and artwork (on). |
+| Providers | TVDB key/PIN, TMDB key and supplementary artwork (on), fanart.tv key and artwork (on), optional OMDb ratings key. |
 | Artwork | Preferred artwork source (`auto`), provider language allowlists (empty means all), language-less artwork (allowed). |
 | Plex | Server URL/token, connection test, automatic refresh (off), refresh delay (5 seconds), Builder-to-Plex path mappings. |
 | Renaming | Enable file renaming (on), standard/daily/anime/movie templates and stored folder templates. |
@@ -139,9 +140,17 @@ indicator, Settings → About, and `GET /api/version` identify the installed bui
 
 A matched title links to its TVDB/TMDB page. Metadata overrides for series,
 seasons, and episodes include title, sort title, original title, tagline,
-and plot; empty values fall back to provider metadata. The **Secondary
-source** panel can pin or search for another provider's ID when a cross-link
-is absent. That ID supports additional artwork, fanart.tv, and NFO unique IDs.
+and plot; empty values fall back to provider metadata. **Auto-match only**
+saves the primary binding without generating NFOs or downloading artwork;
+manual **Match title** does the same. Source locks protect manual matches.
+
+Opening a matched title's Overview automatically checks for a **Secondary
+source** using direct provider links and exact shared IMDb IDs. An existing
+secondary link is preserved. Discovery may need both provider keys; if no
+exact link exists, retry with **Discover source**, or search/paste an ID.
+A cleared link can be discovered again when Overview reopens. The saved ID
+supports additional artwork, fanart.tv, and NFO unique IDs on the next build;
+the primary provider still supplies titles, descriptions, and cast.
 
 Each bound folder's `.plex-nfo-builder.json` sidecar carries its binding,
 overrides, artwork selections, and episode mapping. It can restore those
@@ -187,6 +196,23 @@ unless **Overwrite foreign NFOs** is explicitly enabled.
    - Anime/fansub: `[Group] Title - 03 [1080p].mkv` (treated as S01E03; pick a different season per file via the inline picker if your fansub bundles multiple seasons)
 
    The **Episodes** tab on a series lists every local file as its own row, lets you set a per-file season/episode/external-id override, and lets you rename the files to your template once they're mapped correctly. Overrides survive renames and rebuilds.
+
+## Ratings
+
+TMDB builds include the provider's user score and vote count. For additional
+ratings, add an [OMDb API key](https://www.omdbapi.com/apikey.aspx) in
+**Settings → Providers**, then rebuild the media. Available IMDb, Rotten
+Tomatoes critics, and Metacritic scores are written to show, movie, and
+episode NFOs, with source names and score scales preserved.
+
+Lookups use provider-linked IMDb IDs. Episodes without an IMDb ID use the
+series IMDb ID and the matched episode's season/episode numbers; the response
+must identify that episode. Missing ratings stay absent, and a show rating
+is never copied onto an episode. OMDb coverage varies, especially for TV
+critic scores; audience scores are not supplied by this integration. API
+failures leave the rest of the build intact. Normal builds reuse cached
+ratings; **Force rebuild** refreshes them. Which rating badges appear in Plex
+depends on its metadata agent and support for the NFO fields.
 
 ## Episode mapping & renaming
 
@@ -326,7 +352,26 @@ restoring the database does not lose them.
 
 NFO artwork references use provider URLs in `<thumb>` / `<fanart><thumb>` tags when available. Plex prefers the local file (when the *Local Media Assets* agent is enabled), but can always fall back to the URL if a local file is missing or unreadable across your mount.
 
-**Actor portraits in `.actors/`**. After every build the app downloads each cast member's headshot to `{show_folder}/.actors/{Actor Name}.jpg` (Kodi / Jellyfin / Plex convention). Plex's *Local Media Assets* agent reads those files directly and they survive subsequent online-agent re-scrapes — without them, Plex's online TV agent re-fetches cast straight from TVDB after our NFO write and overwrites the `<thumb>` URLs with whatever the actor's People record has (which is sometimes nothing, leaving the actor as initials in the UI). Applies to TVDB and TMDB, series and movies; capped at 60 portraits per build with 8 concurrent downloads.
+**Cast, crew, and portraits.** Show, movie, and episode NFOs include cast
+and guest stars with actor photo URLs, plus separate director/writer credits.
+Missing photos are checked against provider people records and galleries.
+When both provider keys are available, exact IMDb person links can supply a
+photo from the other provider. Lookups never choose a person by name alone.
+TMDB portrait URLs use `w500`; available photos are also downloaded to
+`{item_folder}/.actors/{Actor Name}.jpg`. Recurring people share downloads
+within a series build. Provider coverage and lookup limits still apply.
+Normal builds reuse the provider cache. Force rebuild refreshes missing
+portrait lookups for TMDB builds; TVDB builds retain the portrait cache to
+reduce rate limiting.
+
+Plex's NFO agent uses the `<thumb>` URL inside each `<actor>` entry.
+The `.actors/` files support compatible local-image readers; they do not
+guarantee that a Plex online provider uses or preserves the same photo.
+Crew photo display depends on the Plex provider. Refresh an item's metadata
+in Plex after rebuilding. Plex Discover filmography links require cast from
+an online provider rather than NFO cast. See the
+[Plex NFO guide](https://support.plex.tv/articles/using-nfo-metadata-files-with-plex/)
+for agent setup and supported tags.
 
 For TMDB-supplied artwork, the auto-resolver reads each title's TMDB *original language* and includes that flag in its image request alongside `null,en`, so anime, K-dramas, and other foreign-language titles actually surface their fan-uploaded posters instead of coming up empty. The manual artwork picker requests **all** languages from TMDB so you see every uploaded image when you're hand-picking.
 

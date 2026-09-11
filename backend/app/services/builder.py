@@ -50,7 +50,8 @@ from .parser import (
 )
 from .scanner import _has_provenance, scan_movie_folder, scan_series_folder
 from .sidecar import write_sidecar
-from .tmdb import get_client as get_tmdb_client, image_url as tmdb_image_url
+from .ratings import hydrate_ratings
+from .tmdb import credit_people, get_client as get_tmdb_client, image_url as tmdb_image_url
 from .tvdb import get_client
 
 
@@ -250,6 +251,7 @@ async def _download_actor_portraits_tvdb(
     log,
     force: bool,
     limit: int = 60,
+    seen: Optional[set[str]] = None,
 ) -> None:
     """Save actor headshots to ``{folder}/.actors/{Actor Name}.jpg``.
 
@@ -272,7 +274,9 @@ async def _download_actor_portraits_tvdb(
     """
     if not isinstance(characters, list) or not characters:
         return
-    seen: set[str] = set()
+    if seen is None:
+        seen = set()
+    queued: set[str] = set()
     targets: list[tuple[Path, str]] = []
     for c in characters:
         if not isinstance(c, dict):
@@ -285,9 +289,9 @@ async def _download_actor_portraits_tvdb(
         if not url:
             continue
         fname = _sanitize_actor_filename(name)
-        if fname in seen:
+        if fname in seen or fname in queued:
             continue
-        seen.add(fname)
+        queued.add(fname)
         dest = folder / ".actors" / f"{fname}.jpg"
         targets.append((dest, url))
         if len(targets) >= limit:
@@ -304,8 +308,9 @@ async def _download_actor_portraits_tvdb(
     results = await asyncio.gather(
         *(_one(d, u) for d, u in targets), return_exceptions=True
     )
-    for r in results:
+    for (dest, _), r in zip(targets, results):
         if r is True:
+            seen.add(dest.stem)
             written += 1
     log.info(
         "Wrote {}/{} actor portraits to .actors/ (TVDB)",
@@ -320,15 +325,18 @@ async def _download_actor_portraits_tmdb(
     log,
     force: bool,
     limit: int = 60,
+    seen: Optional[set[str]] = None,
 ) -> None:
     """TMDB variant of :func:`_download_actor_portraits_tvdb`.
 
     Consumes the ``credits.cast`` shape from TMDB v3 and downloads each
-    actor's ``profile_path`` (rendered at w185) into ``.actors/``.
+    actor's ``profile_path`` (rendered at w500) into ``.actors/``.
     """
     if not isinstance(cast, list) or not cast:
         return
-    seen: set[str] = set()
+    if seen is None:
+        seen = set()
+    queued: set[str] = set()
     targets: list[tuple[Path, str]] = []
     for c in cast:
         if not isinstance(c, dict):
@@ -339,13 +347,13 @@ async def _download_actor_portraits_tmdb(
         path = c.get("profile_path")
         if not path:
             continue
-        url = tmdb_image_url(path, "w185")
+        url = tmdb_image_url(path, "w500")
         if not url:
             continue
         fname = _sanitize_actor_filename(name)
-        if fname in seen:
+        if fname in seen or fname in queued:
             continue
-        seen.add(fname)
+        queued.add(fname)
         dest = folder / ".actors" / f"{fname}.jpg"
         targets.append((dest, url))
         if len(targets) >= limit:
@@ -362,8 +370,9 @@ async def _download_actor_portraits_tmdb(
     results = await asyncio.gather(
         *(_one(d, u) for d, u in targets), return_exceptions=True
     )
-    for r in results:
+    for (dest, _), r in zip(targets, results):
         if r is True:
+            seen.add(dest.stem)
             written += 1
     log.info(
         "Wrote {}/{} actor portraits to .actors/ (TMDB)",
@@ -460,6 +469,7 @@ async def build_series(folder: Path, *, force: bool = False,
         await _hydrate_tvdb_character_thumbs(
             data.get("characters"), log=log, force=force
         )
+        await hydrate_ratings(data, kind="series", provider="tvdb", log=log, force=force)
         nfo_text = build_series_nfo(
             data, language=lang, fallbacks=fallbacks,
             translation=series_translation,
@@ -503,6 +513,7 @@ async def build_series(folder: Path, *, force: bool = False,
         # Local episode files by season — collect mapping for artwork pipeline.
         unmatched: list[str] = []
         episode_local_map: dict[int, dict] = {}  # tvdb episode id -> ep with _local_path
+        portrait_names: set[str] = set()
         episode_directories = [*detect_season_dirs(folder), folder]
         job["total"] = 1 + sum(len(list_season_episodes(directory)) for directory in episode_directories)
         for sd in episode_directories:
@@ -577,6 +588,7 @@ async def build_series(folder: Path, *, force: bool = False,
                     log=log,
                     force=force,
                 )
+                await hydrate_ratings(full_ep, kind="episode", provider="tvdb", series=data, log=log, force=force)
                 ep_text = build_episode_nfo(
                     full_ep, language=lang, fallbacks=fallbacks,
                     translation=ep_translation,
@@ -584,6 +596,9 @@ async def build_series(folder: Path, *, force: bool = False,
                 )
                 nfo_path = parsed.path.with_suffix(".nfo")
                 _atomic_write_text(nfo_path, ep_text)
+                await _download_actor_portraits_tvdb(
+                    folder, full_ep.get("characters"), log=log, force=force, seen=portrait_names,
+                )
                 # remember local path for thumbnail download
                 marker = dict(ep)
                 marker["_local_path"] = str(parsed.path)
@@ -611,7 +626,7 @@ async def build_series(folder: Path, *, force: bool = False,
         # `.actors/{Actor Name}.jpg` files are read by Plex's Local
         # Media Assets agent and survive subsequent online overwrites.
         await _download_actor_portraits_tvdb(
-            folder, data.get("characters"), log=log, force=force,
+            folder, data.get("characters"), log=log, force=force, seen=portrait_names,
         )
         # v0.11.10: sweep orphaned NFO/thumb companions before the rescan so
         # the DB's nfo-state counts reflect the post-sweep reality. See
@@ -787,6 +802,7 @@ async def build_movie(folder: Path, *, force: bool = False,
         await _hydrate_tvdb_character_thumbs(
             data.get("characters"), log=log, force=force
         )
+        await hydrate_ratings(data, kind="movie", provider="tvdb", log=log, force=force)
         nfo_text = build_movie_nfo(
             data, language=lang, fallbacks=fallbacks,
             translation=movie_translation,
@@ -966,6 +982,8 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
         if preferred_overrides:
             log.info("Preferred artwork source override applied for {} slot(s): {}",
                      len(preferred_overrides), sorted(preferred_overrides.keys()))
+        await client.hydrate_credits(data, force=force)
+        await hydrate_ratings(data, kind="series", provider="tmdb", log=log, force=force)
         nfo_text = build_series_nfo_tmdb(data, language=lang, fallbacks=fallbacks,
                                          folder_path=str(folder),
                                          extra_artwork={
@@ -981,6 +999,7 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
         log.info("Wrote tvshow.nfo (TMDB tv_id={})", data.get("id"))
 
         unmatched: list[str] = []
+        portrait_names: set[str] = set()
         for snum, parsed_list in local_seasons.items():
             try:
                 season_data = await season_payload(snum)
@@ -1044,9 +1063,23 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
                     unmatched.append(parsed.path.name)
                     job["progress"] += 1
                     continue
+                try:
+                    episode_season = ep.get("season_number", snum)
+                    episode_details = await client.tv_episode(
+                        data["id"], int(episode_season), int(ep["episode_number"]), language=lang, force=force,
+                    )
+                    ep = {**ep, **episode_details}
+                except Exception as error:
+                    log.warning("TMDB episode credits unavailable for {} ({}); keeping season metadata",
+                                ep.get("id"), type(error).__name__)
+                await client.hydrate_credits(ep, force=force)
+                await hydrate_ratings(ep, kind="episode", provider="tmdb", series=data, log=log, force=force)
                 ep_text = build_episode_nfo_tmdb(ep, language=lang, fallbacks=fallbacks,
                                                   overrides=nfo_overrides)
                 _atomic_write_text(parsed.path.with_suffix(".nfo"), ep_text)
+                await _download_actor_portraits_tmdb(
+                    folder, credit_people(ep), log=log, force=force, seen=portrait_names,
+                )
                 # Episode thumbnail next to the file.
                 #
                 # v0.11.9: TMDB ships multiple stills per episode and the
@@ -1087,9 +1120,9 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
             await _download_url(clearlogo, folder / "clearlogo.png", force=force)
         # v0.11.17: see TVDB series build for the rationale on `.actors/`.
         try:
-            tmdb_cast = ((data.get("credits") or {}).get("cast") or [])
+            tmdb_cast = credit_people(data)
             await _download_actor_portraits_tmdb(
-                folder, tmdb_cast[:30], log=log, force=force,
+                folder, tmdb_cast, log=log, force=force, seen=portrait_names,
             )
         except Exception as e:
             log.warning("Actor portrait download (TMDB series): {}", e)
@@ -1200,6 +1233,8 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
         if preferred_overrides:
             log.info("Preferred artwork source override applied for {} slot(s): {}",
                      len(preferred_overrides), sorted(preferred_overrides.keys()))
+        await client.hydrate_credits(data, force=force)
+        await hydrate_ratings(data, kind="movie", provider="tmdb", log=log, force=force)
         nfo_text = build_movie_nfo_tmdb(data, language=lang, fallbacks=fallbacks,
                                         folder_path=str(folder),
                                         extra_artwork={
@@ -1223,9 +1258,9 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
             await _download_url(banner, folder / "banner.jpg", force=force)
         # v0.11.17: see TVDB series build for the rationale on `.actors/`.
         try:
-            tmdb_cast = ((data.get("credits") or {}).get("cast") or [])
+            tmdb_cast = credit_people(data)
             await _download_actor_portraits_tmdb(
-                folder, tmdb_cast[:30], log=log, force=force,
+                folder, tmdb_cast, log=log, force=force,
             )
         except Exception as e:
             log.warning("Actor portrait download (TMDB movie): {}", e)

@@ -941,6 +941,7 @@ async def item_detail(path: str):
         "provider_used": provider_used,
         "tags": tags_payload,
         "library_kind": library_kind,
+        "metadata_source": effective_metadata_source(p.parent.name),
     }
 
 
@@ -1178,6 +1179,40 @@ class SecondaryIn(BaseModel):
     # Pass provider+external_id to set; pass both as null/empty to clear.
     provider: Optional[str] = None    # 'tvdb' | 'tmdb'
     external_id: Optional[str] = None
+
+
+class DiscoverSecondaryIn(BaseModel):
+    folder_path: str
+
+
+@router.post("/match/secondary/discover")
+async def match_discover_secondary(payload: DiscoverSecondaryIn):
+    p = _safe_item_folder(payload.folder_path)
+    binding = db.get_binding(str(p))
+    if not binding:
+        raise HTTPException(status_code=400, detail="Match a primary provider before discovering a secondary source")
+    if binding["secondary_external_id"]:
+        return {"ok": True, "found": True, "secondary_provider": binding["secondary_provider"],
+                "secondary_external_id": binding["secondary_external_id"]}
+    try:
+        external_id = await matcher.discover_secondary(dict(binding))
+    except (TVDBError, TMDBError, HTTPError) as error:
+        logger.warning("Secondary source discovery failed ({})", error.__class__.__name__)
+        raise HTTPException(status_code=502, detail="Secondary lookup unavailable. Check provider credentials or retry.") from error
+    provider = "tmdb" if binding["provider"] == "tvdb" else "tvdb"
+    if external_id:
+        saved = db.set_binding_secondary(
+            str(p), provider, external_id,
+            expected_primary=(binding["provider"], binding["external_id"], binding["kind"]),
+        )
+        if not saved:
+            raise HTTPException(status_code=409, detail="Source match changed during discovery. Refresh and retry.")
+        try:
+            sidecar_svc.write_sidecar(p)
+        except Exception as error:
+            logger.warning("sidecar after secondary discovery {}: {}", p, error)
+    return {"ok": True, "found": bool(external_id),
+            "secondary_provider": provider if external_id else None, "secondary_external_id": external_id}
 
 
 @router.post("/match/secondary")

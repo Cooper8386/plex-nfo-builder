@@ -33,7 +33,7 @@ const SECTIONS: { key: SectionKey; label: string; description: string }[] = [
   {
     key: "providers",
     label: "Providers",
-    description: "TVDB, TMDB, fanart.tv keys",
+    description: "Metadata, artwork, ratings keys",
   },
   {
     key: "artwork",
@@ -92,6 +92,7 @@ export default function SettingsView({
   const [apiKey, setApiKey] = useState("");
   const [pin, setPin] = useState("");
   const [tmdbKey, setTmdbKey] = useState("");
+  const [omdbKey, setOmdbKey] = useState("");
   const [fanartKey, setFanartKey] = useState("");
   const [plexToken, setPlexToken] = useState("");
   const [saving, setSaving] = useState(false);
@@ -110,6 +111,7 @@ export default function SettingsView({
     !!apiKey ||
     !!pin ||
     !!tmdbKey ||
+    !!omdbKey ||
     !!fanartKey ||
     !!plexToken;
   useEffect(() => {
@@ -153,6 +155,7 @@ export default function SettingsView({
       if (apiKey) body.tvdb_api_key = apiKey;
       if (pin) body.tvdb_pin = pin;
       if (tmdbKey) body.tmdb_api_key = tmdbKey;
+      if (omdbKey) body.omdb_api_key = omdbKey;
       if (fanartKey) body.fanart_api_key = fanartKey;
       if (plexToken) body.plex_token = plexToken;
       await api.settings.set(body);
@@ -164,6 +167,7 @@ export default function SettingsView({
       setApiKey("");
       setPin("");
       setTmdbKey("");
+      setOmdbKey("");
       setFanartKey("");
       setPlexToken("");
       setSavedMsg("Saved.");
@@ -243,6 +247,8 @@ export default function SettingsView({
                   setPin={setPin}
                   tmdbKey={tmdbKey}
                   setTmdbKey={setTmdbKey}
+                  omdbKey={omdbKey}
+                  setOmdbKey={setOmdbKey}
                   fanartKey={fanartKey}
                   setFanartKey={setFanartKey}
                   onClearCache={async () => {
@@ -301,6 +307,7 @@ export default function SettingsView({
                   setApiKey("");
                   setPin("");
                   setTmdbKey("");
+                  setOmdbKey("");
                   setFanartKey("");
                   setPlexToken("");
                   setSavedMsg(null);
@@ -440,6 +447,8 @@ function ProvidersPane({
   setPin,
   tmdbKey,
   setTmdbKey,
+  omdbKey,
+  setOmdbKey,
   fanartKey,
   setFanartKey,
   onClearCache,
@@ -452,6 +461,8 @@ function ProvidersPane({
   setPin: (v: string) => void;
   tmdbKey: string;
   setTmdbKey: (v: string) => void;
+  omdbKey: string;
+  setOmdbKey: (v: string) => void;
   fanartKey: string;
   setFanartKey: (v: string) => void;
   onClearCache: () => void;
@@ -460,7 +471,7 @@ function ProvidersPane({
     <>
       <PaneHeader
         title="Providers"
-        subtitle="API keys for the metadata and artwork providers."
+        subtitle="API keys for the metadata, artwork, and ratings providers."
       />
 
       <SubHeader>TVDB</SubHeader>
@@ -514,6 +525,29 @@ function ProvidersPane({
           onChange={(e) => update("tmdb_artwork_enabled", e.target.checked)}
         />
       </Field>
+
+      <Divider />
+      <SubHeader>OMDb ratings</SubHeader>
+      <Field
+        label={`OMDb API key${s.omdb_api_key_configured ? " (configured)" : ""}`}
+      >
+        <input
+          type="password"
+          autoComplete="off"
+          className="bg-slate-800 px-2 py-1 rounded w-80"
+          value={omdbKey}
+          placeholder={
+            s.omdb_api_key_configured
+              ? "leave blank to keep current"
+              : "optional API key"
+          }
+          onChange={(e) => setOmdbKey(e.target.value)}
+        />
+      </Field>
+      <p className="text-xs text-slate-500 xl:ml-56 xl:pl-3 mb-4">
+        Adds IMDb, Rotten Tomatoes, and Metacritic ratings when OMDb has them.
+        Availability varies by title; episode ratings may be unavailable.
+      </p>
 
       <Divider />
       <SubHeader>fanart.tv</SubHeader>

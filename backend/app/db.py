@@ -500,7 +500,8 @@ def upsert_binding(folder_path: str, kind: str, provider: str, external_id: str,
 
 
 def set_binding_secondary(folder_path: str, provider: Optional[str],
-                          external_id: Optional[str]) -> None:
+                          external_id: Optional[str], *,
+                          expected_primary: Optional[tuple[str, str, str]] = None) -> bool:
     """Set or clear the manual secondary provider id on a binding.
 
     Pass ``provider=None`` (or empty ``external_id``) to clear.
@@ -510,10 +511,16 @@ def set_binding_secondary(folder_path: str, provider: Optional[str],
     c = conn()
     with _lock:
         row = c.execute(
-            "SELECT provider FROM bindings WHERE folder_path = ?", (folder_path,)
+            "SELECT * FROM bindings WHERE folder_path = ?", (folder_path,)
         ).fetchone()
         if not row:
-            return
+            return False
+        # Discovery must not replace a manual link or attach an old lookup to a new match.
+        if expected_primary is not None and (
+            (row["provider"], row["external_id"], row["kind"]) != expected_primary
+            or row["secondary_external_id"]
+        ):
+            return False
         primary = (row["provider"] or "").lower()
         if not provider or not external_id:
             sec_p, sec_id = None, None
@@ -529,6 +536,7 @@ def set_binding_secondary(folder_path: str, provider: Optional[str],
             "WHERE folder_path = ?",
             (sec_p, sec_id, int(time.time()), folder_path),
         )
+        return True
 
 
 def set_binding_lock(folder_path: str, locked: bool) -> None:

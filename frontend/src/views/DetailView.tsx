@@ -32,6 +32,7 @@ type Detail = {
   provider_episode_count: number | null;
   provider_used: string | null;
   library_kind?: string | null;
+  metadata_source?: "tvdb" | "tmdb";
   tags: { tvdb: string[]; tmdb: string[]; custom: string[] };
 };
 
@@ -162,6 +163,27 @@ export default function DetailView({
   seasonPosters.sort((a, b) => Number(a.season) - Number(b.season));
   const slot = (name: string) => filesByName[name];
   const fileSrc = (p: string) => `${api.artwork.fileUrl(p)}&t=${cacheBust}`;
+
+  const doAutoMatch = async () => {
+    setBusy(true);
+    setMsg("Matching source…");
+    try {
+      const result = await api.match.autoBulk({ folder_paths: [path] });
+      const match = result.results[0];
+      setMsg(result.matched ? "Source matched. No NFOs or artwork built." :
+        match?.error ? `Match failed: ${match.error}` :
+        "No confident match found. Search for the title below.");
+      setTab("overview");
+      setShowMatcher(!result.matched);
+      for (const key of ["detail", "episodes", "artwork-candidates", "nfo-explain"])
+        await qc.invalidateQueries({ queryKey: [key, path] });
+      await qc.invalidateQueries({ queryKey: ["items"] });
+    } catch (error) {
+      setMsg(`Match failed: ${errorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const doBuild = async (force: boolean) => {
     setBusy(true);
@@ -397,6 +419,15 @@ export default function DetailView({
       {/* Action row — primary actions inline, everything secondary tucked in overflow menu */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <button
+          disabled={controlsBusy || !!binding?.source_locked}
+          title={binding?.source_locked ? "Source locked. Use Change match to choose another title." :
+            `Match using ${(detail.data.metadata_source ?? "tvdb").toUpperCase()} without building files.`}
+          className="btn"
+          onClick={doAutoMatch}
+        >
+          Auto-match only
+        </button>
+        <button
           disabled={controlsBusy}
           title="Generate NFO files and download artwork. Uses cached metadata when available."
           className="btn btn-primary"
@@ -505,6 +536,7 @@ export default function DetailView({
             <BindEmptyState
               path={path}
               detectedKind={matchDefaultKind}
+              defaultProvider={detail.data.metadata_source}
               onBound={() =>
                 qc.invalidateQueries({ queryKey: ["detail", path] })
               }
@@ -513,6 +545,7 @@ export default function DetailView({
             <MatchPanel
               path={path}
               detectedKind={matchDefaultKind}
+              defaultProvider={binding.provider}
               onBound={() => {
                 qc.invalidateQueries({ queryKey: ["detail", path] });
                 setShowMatcher(false);
@@ -531,6 +564,7 @@ export default function DetailView({
 
           {binding && (
             <SecondarySourcePanel
+              key={`${path}-${binding.kind}-${binding.provider}-${binding.external_id}`}
               path={path}
               kind={kind}
               primaryProvider={(binding.provider as "tvdb" | "tmdb") ?? "tvdb"}

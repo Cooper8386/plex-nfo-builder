@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 from .. import __version__
 from ..config import (
     MEDIA_ROOT, UserSettings, effective_fanart_credentials,
-    effective_tmdb_credentials, effective_tvdb_credentials,
+    effective_tmdb_credentials, effective_tvdb_credentials, effective_omdb_credentials,
     get_user_settings, save_user_settings,
 )
 from ..services.watcher import watcher as _watcher
@@ -56,7 +56,7 @@ async def get_settings():
     s = get_user_settings()
     payload = s.model_dump()
     # Never echo secret values back to the UI; surface a hint instead.
-    for key in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "fanart_api_key", "plex_token"):
+    for key in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "omdb_api_key", "fanart_api_key", "plex_token"):
         had = bool(payload.get(key))
         payload.pop(key, None)
         payload[f"{key}_configured"] = had
@@ -65,6 +65,7 @@ async def get_settings():
         tvdb_api_key_configured=bool(tvdb_key),
         tvdb_pin_configured=bool(tvdb_pin),
         tmdb_api_key_configured=bool(effective_tmdb_credentials()),
+        omdb_api_key_configured=bool(effective_omdb_credentials()),
         fanart_api_key_configured=bool(effective_fanart_credentials()),
     )
     return payload
@@ -81,6 +82,7 @@ class SettingsIn(BaseModel):
     auto_match_threshold: Optional[int] = None
     metadata_source: Optional[str] = None
     tmdb_api_key: Optional[str] = None
+    omdb_api_key: Optional[str] = None
     fanart_api_key: Optional[str] = None
     fanart_enabled: Optional[bool] = None
     tmdb_artwork_enabled: Optional[bool] = None
@@ -119,7 +121,7 @@ async def update_settings(payload: SettingsIn):
     data = s.model_dump()
     for k, v in payload.model_dump(exclude_unset=True).items():
         # Treat empty-string secret fields as 'leave unchanged' rather than wiping.
-        if k in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "fanart_api_key", "plex_token") and v == "":
+        if k in ("tvdb_api_key", "tvdb_pin", "tmdb_api_key", "omdb_api_key", "fanart_api_key", "plex_token") and v == "":
             continue
         if k == "plex_path_mappings" and v is not None:
             cleaned = []

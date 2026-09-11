@@ -32,6 +32,7 @@ export type Settings = {
   tvdb_api_key_configured: boolean;
   tvdb_pin_configured: boolean;
   tmdb_api_key_configured: boolean;
+  omdb_api_key_configured?: boolean;
   fanart_api_key_configured: boolean;
   plex_token_configured: boolean;
 };

@@ -502,19 +502,21 @@ def test_build_honors_file_mapping_and_root_daily_episodes(
     monkeypatch.setattr(builder, "auto_match_series_tmdb", match)
 
     for name in ("resolve_preferred_artwork_series", "download_series_canonical", "_download_url",
-                 "_download_actor_portraits_tvdb", "_download_actor_portraits_tmdb", "_hydrate_tvdb_character_thumbs"):
+                 "_download_actor_portraits_tvdb", "_download_actor_portraits_tmdb", "_hydrate_tvdb_character_thumbs",
+                 "hydrate_ratings"):
         monkeypatch.setattr(builder, name, nothing)
     season_calls = []
 
     async def tvdb_series(*args, **kwargs):
-        return {"id": 42, "name": "Show", "seasons": []}
+        return {"id": 42, "name": "Show", "seasons": [], "characters": [{"personName": "Lead"}]}
 
     async def tvdb_episodes(*args, **kwargs):
         return [{"id": 101, "seasonNumber": 1, "number": 1, "name": "Wrong"},
                 {"id": 107, "seasonNumber": 2, "number": 7, "name": "Chosen", "aired": "2020-01-07"}]
 
     async def tvdb_episode(identifier, **kwargs):
-        return next(episode for episode in await tvdb_episodes() if episode["id"] == identifier)
+        episode = next(episode for episode in await tvdb_episodes() if episode["id"] == identifier)
+        return {**episode, "characters": [{"personName": "Guest"}]}
 
     async def tmdb_series(*args, **kwargs):
         return {"id": 42, "name": "Show", "seasons": [{"season_number": 1}, {"season_number": 2}]}
@@ -527,7 +529,34 @@ def test_build_honors_file_mapping_and_root_daily_episodes(
 
     monkeypatch.setattr(builder, "get_client", lambda: SimpleNamespace(
         series_extended=tvdb_series, series_episodes=tvdb_episodes, episode_extended=tvdb_episode, best_translation=nothing))
-    monkeypatch.setattr(builder, "get_tmdb_client", lambda: SimpleNamespace(tv_details=tmdb_series, tv_season=tmdb_season))
+    async def tmdb_episode(identifier, season, episode, **kwargs):
+        assert (identifier, season, episode) == (42, 2, 7)
+        return {"credits": {"cast": [{"name": "Guest"}]}}
+
+    async def hydrate(record, *, force):
+        assert force is True
+        record.setdefault("credits", {"cast": [{"name": "Lead"}]})
+        record["credits"]["cast"][0]["profile_path"] = "/portrait.jpg"
+
+    async def hydrate_tvdb(people, **kwargs):
+        for person in people or []:
+            person["personImgURL"] = "https://images.example/portrait.jpg"
+
+    async def fill_ratings(record, *, kind, provider, log, force, **kwargs):
+        assert force is True
+        record["_ratings"] = {"imdb": {"value": 9.1 if kind == "episode" else 8.7, "max": 10}}
+
+    portraits = []
+
+    async def save_portraits(folder, people, **kwargs):
+        portraits.extend(person.get("personName") or person["name"] for person in people or [])
+
+    monkeypatch.setattr(builder, "hydrate_ratings", fill_ratings)
+    monkeypatch.setattr(builder, "_hydrate_tvdb_character_thumbs", hydrate_tvdb)
+    monkeypatch.setattr(builder, "_download_actor_portraits_tvdb", save_portraits)
+    monkeypatch.setattr(builder, "_download_actor_portraits_tmdb", save_portraits)
+    monkeypatch.setattr(builder, "get_tmdb_client", lambda: SimpleNamespace(
+        tv_details=tmdb_series, tv_season=tmdb_season, tv_episode=tmdb_episode, hydrate_credits=hydrate))
     job_id = asyncio.run(builder.build_series(folder, force=True))
     job = builder.get_job(job_id)
     assert job["status"] == "completed", job["messages"]
@@ -535,6 +564,97 @@ def test_build_honors_file_mapping_and_root_daily_episodes(
     assert generated.findtext("title") == "Chosen"
     assert generated.findtext("uniqueid") == "107"
     assert generated.find("uniqueid").get("type") == provider
+    assert generated.findtext("actor/name") == "Guest"
+    assert generated.findtext("actor/thumb").endswith("/portrait.jpg")
+    assert ET.parse(folder / "tvshow.nfo").findtext("actor/thumb").endswith("/portrait.jpg")
+    assert portraits == ["Guest", "Lead"]
+    assert generated.findtext("ratings/rating[@name='imdb']/value") == "9.1"
+    assert ET.parse(folder / "tvshow.nfo").findtext("ratings/rating[@name='imdb']/value") == "8.7"
     assert scanner._scan_nfo_state(folder, 1, "series")[0] == "complete"
     assert len(season_calls) == len(set(season_calls))
     assert matching_calls == ([] if binding_mode == "bound" else [provider])
+
+
+@pytest.mark.parametrize("provider", ["tvdb", "tmdb"])
+def test_movie_build_hydrates_cast_before_nfo_and_saves_local_portrait(tmp_path, isolated_db, monkeypatch, provider):
+    folder = tmp_path / "Movie"
+    folder.mkdir()
+    video = folder / "Movie.mkv"
+    video.touch()
+    db.upsert_binding(str(folder), "movie", provider, "42")
+    monkeypatch.setattr(builder, "MEDIA_ROOT", tmp_path)
+    monkeypatch.setattr(builder, "get_user_settings", UserSettings)
+    monkeypatch.setattr(builder, "job_logger", lambda _: SimpleNamespace(
+        **{name: lambda *args: None for name in ("info", "warning", "error", "exception")}))
+    monkeypatch.setattr(builder, "close_job_logger", lambda _: None)
+    for name in ("_maybe_sweep_orphans", "_maybe_schedule_plex_refresh"):
+        monkeypatch.setattr(builder, name, lambda *args: None)
+
+    async def nothing(*args, **kwargs):
+        return {}
+
+    for name in ("resolve_preferred_artwork_movie", "download_movie_canonical", "hydrate_ratings"):
+        monkeypatch.setattr(builder, name, nothing)
+
+    async def details(*args, **kwargs):
+        return {"id": 42, "name": "Movie", "characters": [{"personName": "Lead"}],
+                "credits": {"cast": [{"name": "Lead"}]}}
+
+    async def hydrate_tmdb(record, *, force):
+        assert force is True
+        record["credits"]["cast"][0]["profile_path"] = "/portrait.jpg"
+
+    async def hydrate_tvdb(people, **kwargs):
+        people[0]["personImgURL"] = "https://images.example/portrait.jpg"
+
+    async def fill_ratings(record, **kwargs):
+        assert kwargs["kind"] == "movie" and kwargs["provider"] == provider and kwargs["force"] is True
+        record["_ratings"] = {"imdb": {"value": 8.1, "max": 10}}
+
+    downloads = []
+
+    async def download(url, dest, **kwargs):
+        if url:
+            downloads.append(dest)
+        return bool(url)
+
+    monkeypatch.setattr(builder, "_download_url", download)
+    monkeypatch.setattr(builder, "hydrate_ratings", fill_ratings)
+    monkeypatch.setattr(builder, "_hydrate_tvdb_character_thumbs", hydrate_tvdb)
+    monkeypatch.setattr(builder, "get_client", lambda: SimpleNamespace(movie_extended=details, best_translation=nothing))
+    monkeypatch.setattr(builder, "get_tmdb_client", lambda: SimpleNamespace(
+        movie_details=details, hydrate_credits=hydrate_tmdb))
+    job_id = asyncio.run(builder.build_movie(folder, force=True))
+    assert builder.get_job(job_id)["status"] == "completed", builder.get_job(job_id)["messages"]
+    assert ET.parse(video.with_suffix(".nfo")).findtext("actor/thumb").endswith("/portrait.jpg")
+    assert ET.parse(video.with_suffix(".nfo")).findtext("ratings/rating[@name='imdb']/value") == "8.1"
+    assert folder / ".actors" / "Lead.jpg" in downloads
+
+
+@pytest.mark.parametrize("provider", ["tmdb", "tvdb"])
+def test_failed_episode_portrait_does_not_hide_working_series_portrait(tmp_path, monkeypatch, provider):
+    calls = []
+
+    async def download(url, dest, **kwargs):
+        calls.append(url)
+        return "good" in url
+
+    monkeypatch.setattr(builder, "_download_url", download)
+    download_people = getattr(builder, f"_download_actor_portraits_{provider}")
+    seen = set()
+    log = SimpleNamespace(info=lambda *args: None)
+
+    def person(url):
+        return ({"name": "Lead", "profile_path": url} if provider == "tmdb"
+                else {"personName": "Lead", "personImgURL": url})
+
+    async def run():
+        bad = person("https://images.example/bad.jpg")
+        await download_people(tmp_path, [bad, bad], force=True, log=log, seen=seen)
+        assert seen == set()
+        good = person("https://images.example/good.jpg")
+        await download_people(tmp_path, [good], force=True, log=log, seen=seen)
+        await download_people(tmp_path, [good], force=True, log=log, seen=seen)
+        assert seen == {"Lead"}
+        assert len(calls) == 2
+    asyncio.run(run())

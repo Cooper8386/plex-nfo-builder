@@ -8,12 +8,13 @@ keys with `tmdb:` so they don't collide with TVDB entries.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, Optional
 
 import httpx
 from loguru import logger
 
-from ..config import effective_tmdb_credentials, get_user_settings
+from ..config import effective_tmdb_credentials, effective_tvdb_credentials, get_user_settings
 from ..db import cache_get, cache_set
 from .provider_http import retry_delay
 
@@ -141,6 +142,14 @@ def image_url(path: Optional[str], size: str = "original") -> Optional[str]:
     return f"{IMG_BASE}/{size}{path}"
 
 
+def credit_people(record: dict) -> list[dict]:
+    """People attached to this title or episode, including guest cast and crew."""
+    credits = record.get("credits") or {}
+    return [person for group in (credits.get("cast"), credits.get("guest_stars"),
+                                 record.get("guest_stars"), credits.get("crew"), record.get("crew"))
+            for person in (group or []) if isinstance(person, dict)]
+
+
 class TMDBClient:
     def __init__(self) -> None:
         self._client = httpx.AsyncClient(
@@ -156,7 +165,7 @@ class TMDBClient:
     # ---- Core request -------------------------------------------------------
 
     async def _get(self, path: str, params: Optional[dict] = None,
-                   *, ttl: int = 0, force: bool = False) -> dict:
+                   *, ttl: int = 0, force: bool = False) -> Any:
         full_params = dict(params or {})
         # Don't include api_key in cache key — switching keys shouldn't invalidate cache.
         cache_params = {k: v for k, v in full_params.items() if k != "api_key"}
@@ -194,7 +203,9 @@ class TMDBClient:
                 data = r.json()
             except ValueError as error:
                 raise TMDBError("Provider returned invalid JSON") from error
-            if not isinstance(data, dict):
+            language_list = (path == "/configuration/languages" and isinstance(data, list)
+                             and all(isinstance(row, dict) for row in data))
+            if not isinstance(data, dict) and not language_list:
                 raise TMDBError("Provider returned an unexpected response shape")
             if ttl != 0:
                 cache_set(key, data, ttl=ttl)
@@ -292,6 +303,68 @@ class TMDBClient:
         return await self._get(
             f"/tv/{tv_id}/season/{season}", params=params, ttl=self._ttl(), force=force
         )
+
+    async def tv_episode(self, tv_id: int | str, season: int, episode: int, *,
+                         language: Optional[str] = None, force: bool = False) -> dict:
+        return await self._get(
+            f"/tv/{tv_id}/season/{season}/episode/{episode}",
+            params={"language": self._lang_param(language), "append_to_response": "external_ids,credits"},
+            ttl=self._ttl(), force=force,
+        )
+
+    async def person_image(self, person_id: int | str, *, force: bool = False) -> Optional[str]:
+        """Use the person's image gallery, then a TVDB image linked by IMDb ID."""
+        if not re.fullmatch(r"[1-9][0-9]*", str(person_id)):
+            return None
+        data = await self._get(f"/person/{person_id}",
+                               params={"append_to_response": "images,external_ids"}, ttl=self._ttl(), force=force)
+        if data.get("profile_path"):
+            return image_url(data["profile_path"], "w500")
+        for profile in (data.get("images") or {}).get("profiles") or []:
+            if isinstance(profile, dict) and profile.get("file_path"):
+                return image_url(profile["file_path"], "w500")
+        imdb_id = (data.get("external_ids") or {}).get("imdb_id") or data.get("imdb_id")
+        if re.fullmatch(r"nm[0-9]+", str(imdb_id)) and effective_tvdb_credentials()[0]:
+            from .tvdb import get_client as get_tvdb_client
+
+            client = get_tvdb_client()
+            matches = await client._get(f"/search/remoteid/{imdb_id}", ttl=client._ttl(), force=force)
+            people = [match["people"] for match in matches.get("data") or []
+                      if isinstance(match, dict) and isinstance(match.get("people"), dict)]
+            if len(people) == 1 and people[0].get("image"):
+                from .artwork import absolutize_tvdb_url
+
+                return absolutize_tvdb_url(people[0]["image"])
+        return None
+
+    async def hydrate_credits(self, record: dict, *, force: bool = False) -> None:
+        """Fill missing images once per person, with bounded concurrent requests."""
+        people = credit_people(record)
+        known = {str(person["id"]): person["profile_path"] for person in people
+                 if person.get("id") and person.get("profile_path")}
+        missing: dict[str, list[dict]] = {}
+        for person in people:
+            if person.get("profile_path") or not person.get("id"):
+                continue
+            person_id = str(person["id"])
+            if person_id in known:
+                person["profile_path"] = known[person_id]
+            else:
+                missing.setdefault(person_id, []).append(person)
+        sem = asyncio.Semaphore(4)
+
+        async def fill(person_id: str, entries: list[dict]) -> None:
+            async with sem:
+                try:
+                    url = await self.person_image(person_id, force=force)
+                    if url:
+                        for person in entries:
+                            person["profile_path"] = url
+                except Exception as error:
+                    logger.warning("TMDB portrait lookup failed for {}: {}", person_id, error)
+
+        # ponytail: cap missing people per payload; raise if very large casts need full hydration.
+        await asyncio.gather(*(fill(person_id, entries) for person_id, entries in list(missing.items())[:60]))
 
     # ---- Images -------------------------------------------------------------
     #

@@ -82,9 +82,9 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("Scheduler failed to stop cleanly: {}", e)
         await builder.shutdown_builds()
-        from .services import tvdb, tmdb, fanart
+        from .services import tvdb, tmdb, fanart, ratings
         try:
-            for provider in (tvdb, tmdb, fanart):
+            for provider in (tvdb, tmdb, fanart, ratings):
                 await provider.close_client()
         finally:
             db.close()

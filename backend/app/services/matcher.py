@@ -18,6 +18,7 @@ v0.9.0 hardening:
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Optional
 
 import httpx
@@ -41,6 +42,68 @@ from .tvdb import get_client
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _numeric_id(value) -> Optional[str]:
+    text = str(value or "").strip()
+    return text if text.isascii() and text.isdigit() and int(text) > 0 else None
+
+
+async def discover_secondary(binding: dict) -> Optional[str]:
+    """Resolve the other provider through exact cross-references, never title guesses."""
+    provider, kind = binding["provider"], binding["kind"]
+    external_id = _numeric_id(binding["external_id"])
+    if not external_id or provider not in ("tvdb", "tmdb") or kind not in ("series", "movie"):
+        return None
+    if provider == "tmdb":
+        client = get_tmdb_client()
+        data = (await client.tv_details(external_id) if kind == "series"
+                else await client.movie_details(external_id))
+        external = data.get("external_ids") or {}
+        direct = _numeric_id(external.get("tvdb_id"))
+        if direct:
+            return direct
+        imdb = external.get("imdb_id") or data.get("imdb_id")
+        if not isinstance(imdb, str) or not re.fullmatch(r"tt\d+", imdb, re.ASCII):
+            return None
+        tvdb = get_client()
+        response = await tvdb._get(f"/search/remoteid/{imdb}", ttl=tvdb._ttl())
+        ids = {
+            eid for row in response.get("data") or [] if isinstance(row, dict)
+            and isinstance(row.get(kind), dict)
+            if (eid := _numeric_id(row[kind].get("id")))
+        }
+        return next(iter(ids)) if len(ids) == 1 else None
+
+    tvdb = get_client()
+    data = (await tvdb.series_extended(external_id) if kind == "series"
+            else await tvdb.movie_extended(external_id))
+    imdb = None
+    for remote in data.get("remoteIds") or []:
+        if not isinstance(remote, dict):
+            continue
+        name = str(remote.get("sourceName") or "").lower().replace(" ", "")
+        if "tmdb" in name or "moviedb" in name or "moviedatabase" in name:
+            direct = _numeric_id(remote.get("id"))
+            if direct:
+                return direct
+        if "imdb" in name:
+            value = remote.get("id")
+            if isinstance(value, str) and re.fullmatch(r"tt\d+", value, re.ASCII):
+                imdb = value
+    tmdb = get_tmdb_client()
+    lookups = [(external_id, "tvdb_id")] if kind == "series" else []
+    if imdb:
+        lookups.append((imdb, "imdb_id"))
+    for value, source in lookups:
+        response = await tmdb._get(f"/find/{value}", params={"external_source": source}, ttl=tmdb._ttl())
+        ids = {
+            eid for row in response.get("tv_results" if kind == "series" else "movie_results") or []
+            if isinstance(row, dict) and (eid := _numeric_id(row.get("id")))
+        }
+        if len(ids) == 1:
+            return next(iter(ids))
+    return None
 
 
 def _folder_kind(folder: Path) -> Optional[str]:

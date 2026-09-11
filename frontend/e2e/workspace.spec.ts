@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 // Run only against backend/tests/qa_server.py (fictional, temporary media).
@@ -21,6 +21,72 @@ test.beforeEach(async ({ page, request }) => {
   await expect(
     page.getByRole("heading", { name: "Media libraries", exact: true }),
   ).toBeVisible();
+});
+
+test("sidebar options fit narrow widths and remain reachable at the bottom", async ({ page }, info) => {
+  await page.route("**/api/libraries", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({
+      json: {
+        ...payload,
+        libraries: Array.from({ length: 24 }, (_, index) => ({
+          ...payload.libraries[0],
+          name: `Menu ${index + 1}`,
+          enabled: 1,
+          effective_metadata_source: "tmdb",
+        })),
+      },
+    });
+  });
+  if (info.project.name === "desktop") {
+    await page.setViewportSize({ width: 800, height: 480 });
+  }
+  await page.reload();
+  const showLibraries = page.getByRole("button", { name: "Show libraries", exact: true });
+  if (await showLibraries.isVisible()) await showLibraries.click();
+  const sidebar = page.getByRole("complementary", { name: "Libraries", exact: true });
+
+  for (const name of ["Menu 1", "Menu 24"]) {
+    await page.getByRole("button", { name: `Options for ${name}`, exact: true }).click();
+    const menu = page.getByRole("group", { name: `Library options for ${name}`, exact: true });
+    await menu.scrollIntoViewIfNeeded();
+    await expect(menu).toBeInViewport({ ratio: 1 });
+    const bounds = (await menu.boundingBox())!;
+    const sidebarBounds = (await sidebar.boundingBox())!;
+    expect(bounds.x).toBeGreaterThanOrEqual(sidebarBounds.x);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(sidebarBounds.x + sidebarBounds.width);
+    await expect(menu.getByRole("combobox")).toBeInViewport({ ratio: 1 });
+    await expect(menu.getByRole("button", { name: "Remove from app…" })).toBeInViewport({ ratio: 1 });
+  }
+  await page.screenshot({ path: `test-results/sidebar-${info.project.name}.png` });
+});
+
+test("media page matches without building and automatically links secondary source", async ({ page, request }, info) => {
+  const fixture = JSON.parse(await readFile(join(process.cwd(), "../.qa/fixture.json"), "utf8"));
+  const nfoPath = join(fixture.series_path, "tvshow.nfo");
+  const before = await stat(nfoPath);
+  const unbind = await request.post(
+    `http://127.0.0.1:8000/api/match/unbind?folder_path=${encodeURIComponent(fixture.series_path)}`,
+    { headers: { "X-API-Token": "pnb-local-qa" } },
+  );
+  expect(unbind.ok()).toBeTruthy();
+  const builds: string[] = [];
+  page.on("request", (req) => { if (req.url().includes("/api/build")) builds.push(req.url()); });
+  await page.getByRole("button", { name: /TV series Series.*Open library/i }).click();
+  await page.getByRole("button", { name: "Open Aurora", exact: true }).click();
+  await expect(page.getByText("This folder isn't bound yet")).toBeVisible();
+  await page.getByRole("button", { name: "Auto-match only" }).click();
+  await expect(page.getByText("Source matched. No NFOs or artwork built.")).toBeVisible();
+  await expect(page.getByText("tmdb-20000", { exact: true })).toBeVisible();
+  const detail = await request.get(
+    `http://127.0.0.1:8000/api/items/detail?path=${encodeURIComponent(fixture.series_path)}`,
+    { headers: { "X-API-Token": "pnb-local-qa" } },
+  );
+  expect((await detail.json()).binding.secondary_external_id).toBe("20000");
+  expect((await stat(nfoPath)).mtimeMs).toBe(before.mtimeMs);
+  expect(builds).toEqual([]);
+  await page.screenshot({ path: `test-results/source-discovery-${info.project.name}.png`, fullPage: true });
 });
 
 test("browse, filter, sort, empty state, scan and scoped destructive preview", async ({

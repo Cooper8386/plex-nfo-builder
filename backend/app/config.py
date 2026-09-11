@@ -21,6 +21,7 @@ class EnvSettings(BaseSettings):
     tvdb_api_key: Optional[str] = Field(default=None)
     tvdb_pin: Optional[str] = Field(default=None)
     tmdb_api_key: Optional[str] = Field(default=None)
+    omdb_api_key: Optional[str] = Field(default=None)
     fanart_api_key: Optional[str] = Field(default=None)
     log_level: str = Field(default="INFO")
     listen_host: str = Field(default="0.0.0.0")
@@ -61,6 +62,7 @@ class UserSettings(BaseModel):
     tvdb_api_key: Optional[str] = None  # overrides env
     tvdb_pin: Optional[str] = None
     tmdb_api_key: Optional[str] = None  # overrides env
+    omdb_api_key: Optional[str] = None  # optional IMDb/Rotten Tomatoes ratings
     fanart_api_key: Optional[str] = None  # overrides env
     auto_match_threshold: int = Field(default=85, ge=0, le=100)
     # v0.5.0: alternate metadata + artwork sources
@@ -182,6 +184,11 @@ def effective_tvdb_credentials() -> tuple[Optional[str], Optional[str]]:
 def effective_tmdb_credentials() -> Optional[str]:
     s = get_user_settings()
     return s.tmdb_api_key or env.tmdb_api_key or os.environ.get("TMDB_API_KEY")
+
+
+def effective_omdb_credentials() -> Optional[str]:
+    s = get_user_settings()
+    return s.omdb_api_key or env.omdb_api_key or os.environ.get("OMDB_API_KEY")
 
 
 def effective_fanart_credentials() -> Optional[str]:
