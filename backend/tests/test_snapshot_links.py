@@ -1,7 +1,9 @@
 """Legacy artwork links become portable files without escaping the selected library."""
 import os
+import json
 import stat
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -59,13 +61,13 @@ def test_media_links_and_disguised_media_targets_are_excluded(library):
         assert archive.read("poster.png") == b"artwork"
 
 
-@pytest.mark.parametrize("kind", ["other_library", "outside", "broken", "directory", "cycle", "special"])
+@pytest.mark.parametrize("kind", ["other_library", "outside", "missing_outside", "directory", "cycle", "special"])
 def test_unsafe_links_fail_without_publishing(library, tmp_path, kind):
     target = library / "target.png"
     if kind == "other_library":
         target = library.parent / "Movies" / "poster.png"
         target.parent.mkdir()
-    elif kind == "outside":
+    elif kind in {"outside", "missing_outside"}:
         target = tmp_path / "private.png"
     elif kind == "cycle":
         target = library / "clearart.png"
@@ -76,12 +78,81 @@ def test_unsafe_links_fail_without_publishing(library, tmp_path, kind):
         if not hasattr(os, "mkfifo"):
             pytest.skip("Named pipes require POSIX")
         os.mkfifo(target)
-    elif kind not in {"broken", "cycle"}:
+    elif kind not in {"missing_outside", "cycle"}:
         target.write_bytes(b"private artwork")
     link(library / "clearart.png", target, directory=kind == "directory")
     with pytest.raises((OSError, ValueError)):
         snapshots.create_snapshot("TV", {"progress": 0})
     assert not list(snapshots.storage_path("TV").iterdir())
+
+
+def test_already_broken_artwork_link_warns_and_preserves_existing_metadata(library):
+    show = library / "A Certain Scientific Railgun (2009) {tvdb-114921}"
+    show.mkdir()
+    alias = show / "clearart.png"
+    link(alias, Path(".artwork") / "clearart" / "62754780-eng.png")
+    (show / "tvshow.nfo").write_bytes(b"saved metadata")
+    (show / "episode.mkv").write_bytes(b"media")
+    job = {"progress": 0, "messages": []}
+    saved = snapshots.create_snapshot("TV", job)
+    assert saved["file_count"] == 1 and saved["skipped_link_count"] == 1
+    assert job["progress"] == job["total"] == 1
+    assert "Skipped broken link:" in job["messages"][0] and "clearart.png" in job["messages"][0]
+    assert alias.is_symlink() and not alias.exists()  # Source library is untouched.
+    with zipfile.ZipFile(snapshots.download_path("TV", saved["id"])) as archive:
+        assert archive.namelist() == [f"{show.name}/tvshow.nfo"]
+        assert archive.read(archive.namelist()[0]) == b"saved metadata"
+        assert json.loads(archive.comment)["skipped_link_count"] == 1
+    assert snapshots.list_snapshots("TV")[0]["skipped_link_count"] == 1
+
+
+@pytest.mark.parametrize("change", ["target_created", "link_removed", "link_retargeted", "valid_target_removed"])
+def test_links_changing_during_snapshot_still_fail(library, monkeypatch, change):
+    (library / "tvshow.nfo").write_bytes(b"metadata")
+    target = library / "missing.png"
+    if change == "valid_target_removed":
+        target.write_bytes(b"artwork")
+    alias = library / "clearart.png"
+    link(alias, target)
+    copy = snapshots.shutil.copyfileobj
+    changed = False
+
+    def copy_and_change(source, destination, **kwargs):
+        nonlocal changed
+        copy(source, destination, **kwargs)
+        if changed:
+            return
+        changed = True
+        if change == "target_created":
+            target.write_bytes(b"new artwork")
+        elif change == "link_removed":
+            alias.unlink()
+        elif change == "link_retargeted":
+            alias.unlink()
+            alias.symlink_to(library / "another-missing.png")
+        else:
+            target.unlink()
+
+    monkeypatch.setattr(snapshots.shutil, "copyfileobj", copy_and_change)
+    with pytest.raises((OSError, ValueError)):
+        snapshots.create_snapshot("TV", {"progress": 0})
+    assert not list(snapshots.storage_path("TV").glob("*.zip"))
+
+
+def test_regular_file_disappearing_during_scan_is_not_skipped(library, monkeypatch):
+    path = library / "tvshow.nfo"
+    path.write_bytes(b"metadata")
+    resolve = type(path).resolve
+
+    def disappear(candidate, *args, **kwargs):
+        if candidate == path and kwargs.get("strict"):
+            path.unlink()
+        return resolve(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(type(path), "resolve", disappear)
+    with pytest.raises(FileNotFoundError):
+        snapshots.create_snapshot("TV", {"progress": 0})
+    assert not list(snapshots.storage_path("TV").glob("*.zip"))
 
 
 @pytest.mark.parametrize("change", ["retarget_before_open", "retarget_during_copy", "target_content"])

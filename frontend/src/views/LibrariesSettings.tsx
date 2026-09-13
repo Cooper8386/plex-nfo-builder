@@ -132,6 +132,14 @@ function LibrarySnapshots({ library }: { library: string }) {
                 />
               )}
               {job.messages.length > 0 && <p className="text-xs mt-1 break-words">{job.messages[job.messages.length - 1]}</p>}
+              {job.messages.length > 1 && (
+                <details className="text-xs mt-2">
+                  <summary className="cursor-pointer">Snapshot details</summary>
+                  <ul className="mt-2 space-y-1 break-words">
+                    {job.messages.slice(0, -1).map((message, index) => <li key={index}>{message}</li>)}
+                  </ul>
+                </details>
+              )}
             </div>
           ))}
           <div>
@@ -163,6 +171,12 @@ function LibrarySnapshots({ library }: { library: string }) {
                           Download ZIP
                         </a>
                       </div>
+                      {(snapshot.skipped_link_count ?? 0) > 0 && (
+                        <p className="text-xs text-amber-300 mt-2">
+                          Skipped {snapshot.skipped_link_count} broken {snapshot.skipped_link_count === 1 ? "link" : "links"}.
+                          {" "}Their missing files cannot be restored from this ZIP.
+                        </p>
+                      )}
                     </Card>
                   </li>
                 ))}
@@ -183,8 +197,9 @@ function LibrarySnapshots({ library }: { library: string }) {
         <p className="mt-2">
           Snapshots contain files only, not application settings or database
           records. File symlinks within the library are saved as regular files.
-          Broken links, directory links, and links outside the library fail the snapshot;
-          links to media files are excluded.
+          Already-broken links within the library are skipped with a warning;
+          their missing files cannot be restored. Directory links, cyclic links,
+          and links outside the library fail the snapshot. Links to media files are excluded.
         </p>
       </details>
     </div>

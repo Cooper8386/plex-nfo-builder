@@ -73,15 +73,19 @@ def list_snapshots(name: str) -> list[dict]:
             snapshots.append({
                 "id": path.stem, "filename": path.name, "created_at": metadata["created_at"],
                 "file_count": metadata["file_count"], "size_bytes": path.stat().st_size,
+                "skipped_link_count": metadata.get("skipped_link_count", 0),
             })
         except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
             logger.warning("Cannot read library snapshot: {}", path)
     return snapshots
 
 
-def _files(folder: Path) -> dict[Path, tuple[Path, os.stat_result]]:
-    """Dereference library-local file links; fail rather than publish a partial backup."""
-    files = {}
+def _files(
+    folder: Path,
+) -> tuple[dict[Path, tuple[Path, os.stat_result]], dict[Path, tuple[Path, os.stat_result]]]:
+    """Copy existing files and separately track already-broken library-local links."""
+    files: dict[Path, tuple[Path, os.stat_result]] = {}
+    broken: dict[Path, tuple[Path, os.stat_result]] = {}
 
     def fail(error: OSError) -> None:
         raise error
@@ -92,6 +96,18 @@ def _files(folder: Path) -> dict[Path, tuple[Path, os.stat_result]]:
             info = path.lstat()
             try:
                 source = path.resolve(strict=True)
+            except FileNotFoundError:
+                # Only an existing link with an already-missing target can be
+                # skipped. A regular file disappearing during traversal is an error.
+                if not stat.S_ISLNK(info.st_mode):
+                    raise
+                source = path.resolve(strict=False)
+                if not source.is_relative_to(folder):
+                    raise ValueError(
+                        f"Snapshot cannot include symbolic links outside the library: {path.relative_to(folder)}"
+                    )
+                broken[path] = source, info
+                continue
             except RuntimeError as error:
                 raise ValueError(f"Snapshot cannot include cyclic symbolic links: {path.relative_to(folder)}") from error
             if not source.is_relative_to(folder):
@@ -106,7 +122,7 @@ def _files(folder: Path) -> dict[Path, tuple[Path, os.stat_result]]:
                 raise ValueError(f"Snapshot cannot include special files: {path.relative_to(folder)}")
             if path.suffix.lower() not in MEDIA_EXTENSIONS and source.suffix.lower() not in MEDIA_EXTENSIONS:
                 files[path] = source, info
-    return files
+    return files, broken
 
 
 def _identity(info: os.stat_result) -> tuple:
@@ -126,7 +142,12 @@ def create_snapshot(name: str, job: dict) -> dict:
     destination = storage / f"{snapshot_id}.zip"
     temporary = storage / f"{snapshot_id}.partial"
     try:
-        files = _files(folder)
+        files, broken = _files(folder)
+        for path, (missing_target, _) in broken.items():
+            message = (f"Skipped broken link: {path.relative_to(folder)} "
+                       f"(missing target: {missing_target.relative_to(folder)})")
+            job.setdefault("messages", []).append(message)
+            logger.warning("{}: {}", name, message)
         job["total"] = len(files)
         with zipfile.ZipFile(temporary, "x", compression=zipfile.ZIP_DEFLATED,
                              compresslevel=6, allowZip64=True, strict_timestamps=False) as archive:
@@ -147,11 +168,13 @@ def create_snapshot(name: str, job: dict) -> dict:
                     if _identity(os.fstat(source.fileno())) != _identity(original):
                         raise ValueError("Library changed during snapshot; pause file activity and retry")
                 job["progress"] += 1
-            current = _files(folder)
-            if ({p: (target, _identity(s)) for p, (target, s) in files.items()}
-                    != {p: (target, _identity(s)) for p, (target, s) in current.items()}):
-                raise ValueError("Library changed during snapshot; pause file activity and retry")
-            metadata = {"library": name, "created_at": created.isoformat(), "file_count": len(files)}
+            current_files, current_broken = _files(folder)
+            for before, after in ((files, current_files), (broken, current_broken)):
+                if ({p: (target, _identity(s)) for p, (target, s) in before.items()}
+                        != {p: (target, _identity(s)) for p, (target, s) in after.items()}):
+                    raise ValueError("Library changed during snapshot; pause file activity and retry")
+            metadata = {"library": name, "created_at": created.isoformat(), "file_count": len(files),
+                        "skipped_link_count": len(broken)}
             archive.comment = json.dumps(metadata).encode("utf-8")
         # Publish only closed archives; an interrupted run never replaces a saved ZIP.
         with temporary.open("r+b") as completed:
@@ -174,7 +197,9 @@ def start_snapshot(name: str) -> str:
             async with paused_automation():
                 job["messages"].append("Automation paused; copying library metadata")
                 snapshot = await run_in_thread(create_snapshot, name, job)
-            job["messages"].append(f"Saved {snapshot['file_count']} files to {snapshot['filename']}")
+            warning = (f" ({snapshot['skipped_link_count']} broken links skipped)"
+                       if snapshot.get("skipped_link_count") else "")
+            job["messages"].append(f"Saved {snapshot['file_count']} files to {snapshot['filename']}{warning}")
             job.update(status="completed", finished_at=int(time.time()))
         except (OSError, ValueError, zipfile.BadZipFile) as error:
             logger.exception("Library snapshot failed: {}", name)

@@ -16,10 +16,13 @@ all regular non-media files, including hidden sidecars, foreign NFOs, artwork,
 subtitles, and other companion files. Known video, audio, and disc-image
 extensions are excluded, case-insensitively. File symlinks whose targets stay
 inside the selected library are copied as regular files at the link's original
-path. Links to media files are excluded. Broken links, directory links, links
-outside the library, and special files cause the snapshot to fail rather than
-silently produce an incomplete backup.
-Unreadable or changing files also fail the snapshot; existing ZIPs remain safe.
+path. Links to media files are excluded. Already-broken file links whose targets
+stay inside the library are skipped: their missing content cannot be backed up
+or restored. The saved snapshot shows the skipped-link count, which is retained
+in the ZIP comment; the job's **Snapshot details** and application log show the
+affected paths. Directory links, cyclic links, links outside the library, and
+special files cause the snapshot to fail. Unreadable files, files that disappear
+during copying, or changing files also fail the snapshot; existing ZIPs remain safe.
 These archives cover files in the library, not the application's database,
 settings, or custom uploads under `/config`.
 

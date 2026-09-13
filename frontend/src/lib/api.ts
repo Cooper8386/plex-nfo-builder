@@ -229,6 +229,7 @@ export type LibrarySnapshot = {
   created_at: string;
   file_count: number;
   size_bytes: number;
+  skipped_link_count?: number;
 };
 
 export type LibrarySnapshots = {

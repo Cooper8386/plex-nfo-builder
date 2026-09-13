@@ -77,7 +77,31 @@ describe("library snapshots settings", () => {
     expect(download).toHaveAttribute("download", "TV-snapshot.zip");
     expect(list).toHaveBeenCalledTimes(3);
     expect(screen.getByText(/5 files · 1,024 bytes/)).toBeVisible();
+    expect(screen.queryByText(/Their missing files cannot be restored/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create snapshot" })).toBeEnabled();
+  });
+
+  it.each([true, false])("keeps skipped-link warnings on saved ZIPs with job history present: %s", async (hasJob) => {
+    const warning = "Skipped broken link: Show/clearart.png (missing target: Show/.artwork/clearart/missing.png)";
+    vi.spyOn(api.libraries.snapshots, "list").mockResolvedValue({
+      ...empty,
+      jobs: hasJob ? [{
+        ...job, status: "completed", messages: [warning, "Snapshot saved; skipped 1 broken link"],
+      }] : [],
+      snapshots: [{
+        id: "backup-id", filename: "TV-snapshot.zip", created_at: "2026-09-11T14:00:00Z",
+        file_count: 5, size_bytes: 1024, skipped_link_count: 1,
+      }],
+    });
+    const user = userEvent.setup();
+    mount();
+    expect(await screen.findByText("Skipped 1 broken link. Their missing files cannot be restored from this ZIP.")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Download ZIP TV-snapshot.zip" })).toBeVisible();
+    if (hasJob) {
+      expect(screen.getByText(warning)).not.toBeVisible();
+      await user.click(screen.getByText("Snapshot details"));
+      expect(screen.getByText(warning)).toBeVisible();
+    }
   });
 
   it("switches to a disabled library without retaining another library's jobs or snapshots", async () => {
