@@ -4,8 +4,7 @@
 
 Use Python 3.12 and Node 22. Commands below use a POSIX shell; on Windows,
 activate the virtual environment with `.venv\Scripts\Activate.ps1` and set
-environment variables through PowerShell when needed. Install `ffmpeg` if
-you need real media-probe results outside Docker.
+environment variables through PowerShell when needed.
 
 ## Setup and checks
 
@@ -31,7 +30,7 @@ npm run build
 [CI](../.github/workflows/ci.yml) runs these backend and frontend checks and
 validates the README's Compose example. Backend regression tests use temporary
 directories and mocked providers for filesystem safety, matching, NFO output,
-renaming, sidecar recovery, authentication, settings, and background jobs.
+sidecar recovery, authentication, settings, and background jobs.
 Frontend tests cover controls and important user behavior. Some legacy Python
 code remains untyped; passing mypy does not imply strict typing everywhere.
 
@@ -100,9 +99,9 @@ use disposable config/media mounts for testing. Start it with
 `docker compose up -d --force-recreate`.
 
 The Dockerfile builds frontend assets on the build host's architecture and
-copies them into the Python runtime. It includes `tini`, CA certificates,
-and `ffmpeg`; the runtime listens on port `8000` and uses `/config` and
-`/media`. The publish workflow builds `linux/amd64` and `linux/arm64` images.
+copies them into the Python runtime. It includes `tini` and CA certificates;
+the runtime listens on port `8000` and uses `/config` and `/media`. The publish
+workflow builds `linux/amd64` and `linux/arm64` images.
 Do not introduce deployment-specific mounts or credentials into the image.
 
 ## Code orientation
@@ -111,7 +110,7 @@ Do not introduce deployment-specific mounts or credentials into the image.
 | --- | --- |
 | `backend/app/routes/` | Authenticated API orchestration and settings endpoints. |
 | `backend/app/config.py`, `db.py` | Environment/user settings and SQLite persistence. |
-| `backend/app/services/` | Metadata providers, scanning, NFO/artwork, matching, renaming, jobs, and automation. |
+| `backend/app/services/` | Metadata providers, scanning, NFO/artwork, matching, jobs, and automation. |
 | `backend/tests/` | Regression tests and disposable QA server. |
 | `frontend/src/views/` | Library/detail/settings workflows and feature components. |
 | `frontend/src/components/`, `lib/` | Shared controls, navigation, API/auth, and state helpers. |

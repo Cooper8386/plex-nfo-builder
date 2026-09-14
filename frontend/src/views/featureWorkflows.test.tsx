@@ -9,8 +9,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfirmContext } from "../components/confirm";
-import { api, RenamePlanItem } from "../lib/api";
-import RenameModal from "./RenameModal";
+import { api } from "../lib/api";
 import SettingsView from "./SettingsView";
 import OverridesTab from "./OverridesTab";
 import EpisodeMapper from "./EpisodeMapper";
@@ -36,96 +35,6 @@ beforeEach(() => {
   confirm.mockClear();
 });
 
-const plan: RenamePlanItem = {
-  src: "/fixture/old.mkv",
-  dst: "/fixture/new.mkv",
-  src_name: "old.mkv",
-  dst_name: "new.mkv",
-  season: 1,
-  episode: 1,
-  matched_title: "Pilot",
-  conflict: null,
-  unchanged: false,
-};
-
-describe("rename review", () => {
-  it("requires a current preview and sends the approved destination", async () => {
-    const preview = vi.spyOn(api.episodes.rename, "preview").mockResolvedValue({
-      folder_path: "/fixture",
-      template: "default",
-      items: [plan],
-    });
-    const apply = vi
-      .spyOn(api.episodes.rename, "apply")
-      .mockResolvedValue({ ok: true, renamed: [], skipped: [], failed: [] });
-    const user = userEvent.setup();
-    mount(
-      <RenameModal
-        path="/fixture"
-        onClose={() => {}}
-        onApplied={async () => {}}
-      />,
-    );
-    expect(preview).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Generate preview" }));
-    await screen.findByText("new.mkv");
-    await user.type(
-      screen.getByRole("textbox", { name: "Template override" }),
-      "custom",
-    );
-    expect(
-      screen.getByRole("button", { name: "Rename 1 files…" }),
-    ).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Generate preview" }));
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "Rename 1 files…" }),
-      ).toBeEnabled(),
-    );
-    await user.click(screen.getByRole("button", { name: "Rename 1 files…" }));
-    await waitFor(() =>
-      expect(apply).toHaveBeenCalledWith(
-        expect.objectContaining({
-          template: "custom",
-          only_src: [plan.src],
-          expected_plan: [{ src: plan.src, dst: plan.dst }],
-        }),
-      ),
-    );
-    expect(confirm).toHaveBeenCalledOnce();
-    expect(
-      await screen.findByText("Renamed 0 · skipped 0 · failed 0."),
-    ).toBeVisible();
-  });
-
-  it("invalidates an old plan when a new preview fails", async () => {
-    vi.spyOn(api.episodes.rename, "preview")
-      .mockResolvedValueOnce({
-        folder_path: "/fixture",
-        template: "default",
-        items: [plan],
-      })
-      .mockRejectedValueOnce(new Error("Provider unavailable"));
-    const user = userEvent.setup();
-    mount(
-      <RenameModal
-        path="/fixture"
-        onClose={() => {}}
-        onApplied={async () => {}}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "Generate preview" }));
-    await screen.findByText("new.mkv");
-    await user.click(screen.getByRole("button", { name: "Generate preview" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Provider unavailable",
-    );
-    expect(
-      screen.getByRole("button", { name: "Rename 0 files…" }),
-    ).toBeDisabled();
-  });
-});
-
 describe("settings edits", () => {
   const saved: Settings = {
     preferred_language: "eng",
@@ -144,14 +53,6 @@ describe("settings edits", () => {
     preferred_artwork_source: "auto",
     plex_auto_refresh: false,
     plex_refresh_delay_seconds: 5,
-    rename_episode_template: "",
-    rename_daily_template: "",
-    rename_anime_template: "",
-    rename_series_folder_template: "",
-    rename_season_folder_template: "",
-    rename_movie_template: "",
-    rename_movie_folder_template: "",
-    rename_enabled: true,
     auto_sweep_orphans: true,
     tvdb_artwork_languages: [],
     tvdb_artwork_allow_null_language: true,

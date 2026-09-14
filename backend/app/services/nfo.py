@@ -186,7 +186,7 @@ def build_series_nfo(series_extended: dict, *, language: str, fallbacks: list[st
     plot = _ovr(overrides, "series", "plot",
                 _t(translation, "overview", s.get("overview")) or "")
     original_title = _ovr(overrides, "series", "originaltitle", s.get("name") or title)
-    sort_title = _ovr(overrides, "series", "sorttitle", s.get("sortName") or title)
+    sort_title = db.compute_sort_title(title, _ovr(overrides, "series", "sorttitle", None))
     tagline = _ovr(overrides, "series", "tagline", None)
     year = None
     aired = s.get("firstAired") or s.get("first_aired")
@@ -309,14 +309,13 @@ def build_movie_nfo(movie_extended: dict, *, language: str, fallbacks: list[str]
                  _t(translation, "name", m.get("name")) or "")
     plot = _ovr(overrides, "movie", "plot",
                 _t(translation, "overview", m.get("overview")) or "")
-    sort_title = _ovr(overrides, "movie", "sorttitle", None)
+    sort_title = db.compute_sort_title(title, _ovr(overrides, "movie", "sorttitle", None))
     tagline = _ovr(overrides, "movie", "tagline", None)
     original_title = _ovr(overrides, "movie", "originaltitle", m.get("name") or title)
     root = ET.Element("movie")
     _el(root, "title", title)
     _el(root, "originaltitle", original_title)
-    if sort_title:
-        _el(root, "sorttitle", sort_title)
+    _el(root, "sorttitle", sort_title)
     _el(root, "plot", plot)
     if tagline:
         _el(root, "tagline", tagline)
@@ -400,7 +399,7 @@ def build_series_nfo_tmdb(tv: dict, *, language: str, fallbacks: list[str],
     title = _ovr(overrides, "series", "title", tv.get("name") or "")
     plot = _ovr(overrides, "series", "plot", tv.get("overview") or "")
     original_title = _ovr(overrides, "series", "originaltitle", tv.get("original_name") or title)
-    sort_title = _ovr(overrides, "series", "sorttitle", title)
+    sort_title = db.compute_sort_title(title, _ovr(overrides, "series", "sorttitle", None))
     tagline = _ovr(overrides, "series", "tagline", tv.get("tagline"))
     aired = tv.get("first_air_date")
     year = int(str(aired)[:4]) if aired and str(aired)[:4].isdigit() else None
@@ -494,7 +493,7 @@ def build_movie_nfo_tmdb(mv: dict, *, language: str, fallbacks: list[str],
     title = _ovr(overrides, "movie", "title", mv.get("title") or mv.get("name") or "")
     plot = _ovr(overrides, "movie", "plot", mv.get("overview") or "")
     original_title = _ovr(overrides, "movie", "originaltitle", mv.get("original_title") or title)
-    sort_title = _ovr(overrides, "movie", "sorttitle", None)
+    sort_title = db.compute_sort_title(title, _ovr(overrides, "movie", "sorttitle", None))
     tagline = _ovr(overrides, "movie", "tagline", mv.get("tagline"))
     aired = mv.get("release_date")
     year = int(str(aired)[:4]) if aired and str(aired)[:4].isdigit() else None
@@ -502,8 +501,7 @@ def build_movie_nfo_tmdb(mv: dict, *, language: str, fallbacks: list[str],
     root = ET.Element("movie")
     _el(root, "title", title)
     _el(root, "originaltitle", original_title)
-    if sort_title:
-        _el(root, "sorttitle", sort_title)
+    _el(root, "sorttitle", sort_title)
     _el(root, "plot", plot)
     if tagline:
         _el(root, "tagline", tagline)

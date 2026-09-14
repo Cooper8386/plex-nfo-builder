@@ -325,7 +325,7 @@ export default function OverridesTab({
  *
  * Selections persist in the existing ``artwork_selections`` table under slot
  * ``episode-thumb-{external_id}`` (no schema change), so:
- *   - renames don't reset the choice (key is the provider id, not file path),
+ *   - file mapping changes don't reset the choice (key is the provider id),
  *   - the choice round-trips through ``.plex-nfo-builder.json``,
  *   - a DB wipe is recoverable from disk.
  */

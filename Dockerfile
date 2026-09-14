@@ -17,8 +17,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
-# ffmpeg ships ffprobe, used by the MediaInfo extractor (v0.11.0+).
-RUN apt-get update && apt-get install -y --no-install-recommends tini ca-certificates ffmpeg \
+RUN apt-get update && apt-get install -y --no-install-recommends tini ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt

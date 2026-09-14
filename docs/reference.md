@@ -57,7 +57,7 @@ choose a different host port.
 | Mount | Purpose |
 | --- | --- |
 | `/config` | Persistent SQLite database, `settings.json`, library configuration, custom uploads, and logs. Back this directory up. |
-| `/media` | Media root. NFOs and artwork are written beside videos, and explicit rename actions can change video filenames. Use a read-write mount. |
+| `/media` | Media root. NFOs and artwork are written beside videos. Use a read-write mount. |
 
 Use absolute host paths in Compose. Keep the container's paths stable when
 upgrading: bindings and settings contain those paths. The host must permit
@@ -109,7 +109,7 @@ environment credentials.
 
 ### Security and access
 
-The application can rename media and delete companion files. Without
+The application can write and delete companion files. Without
 `API_TOKEN`, API requests return `503` and the UI explains that the server
 needs a token. The README's Compose configuration also refuses to start
 without it. Generate a token with `openssl rand -hex 32`, then set
@@ -142,13 +142,12 @@ in the settings API; configured indicators also account for environment keys.
 | Providers | TVDB key/PIN, TMDB key and supplementary artwork (on), fanart.tv key and artwork (on), optional OMDb ratings key. |
 | Artwork | Preferred artwork source (`auto`), provider language allowlists (empty means all), language-less artwork (allowed). |
 | Plex | Server URL/token, connection test, automatic refresh (off), refresh delay (5 seconds), Builder-to-Plex path mappings. |
-| Renaming | Enable file renaming (on), standard/daily/anime/movie templates and stored folder templates. |
 | Schedules / Watcher | Recurring scan/match/build schedules and filesystem watcher controls. The watcher starts enabled unless configured otherwise. |
 | Security / About | Access and file-safety guidance, running version, project links. |
 
-Language preference applies to fetched titles and descriptions, including
-names used by the renamer. Fallback languages are tried when a translation
-is unavailable. Plex path mappings translate the Builder's `/media` paths
+Language preference applies to fetched titles and descriptions. Fallback
+languages are tried when a translation is unavailable. Plex path mappings
+translate the Builder's `/media` paths
 to paths visible to Plex, such as `/data`; they do not move files.
 
 ## Libraries and workflow
@@ -175,8 +174,8 @@ Use **Help** in the app for the button reference and daily workflows.
 Grid and list views share title search, **All titles / Needs work /
 Complete** filters, and sorting by title, dates, or on-disk season count.
 Filter and sort choices persist per library. Sort titles use a manual
-`sorttitle` override, then provider `sortName`, then a title with its leading
-article stripped. Date Added records discovery (older records are backfilled
+`sorttitle` override, then the title with a leading `The`, `A`, or `An`
+stripped. NFO builds use the same rule. Date Added records discovery (older records are backfilled
 from folder mtime); Date Updated includes season-folder mtimes. Returning
 from a detail page restores the previous scroll position. A running version
 indicator, Settings → About, and `GET /api/version` identify the installed build.
@@ -204,7 +203,7 @@ records after a database loss; it is not a replacement for backing up
 
 The item action menu's **Delete NFOs & artwork…** previews generated
 companions before confirmation. It includes episode thumbnails and orphan
-companions left behind by earlier renames; season folders and videos stay.
+companions left behind by older video filenames; season folders and videos stay.
 Library maintenance offers previews for orphan cleanup, NFO/artwork wipe,
 and sidecar deletion. Review the listed files and confirm the intended
 scope before applying a destructive operation.
@@ -238,7 +237,7 @@ unless **Overwrite foreign NFOs** is explicitly enabled.
    - Daily/talk shows: `Show - 2024-01-15.mkv`
    - Anime/fansub: `[Group] Title - 03 [1080p].mkv` (treated as S01E03; pick a different season per file via the inline picker if your fansub bundles multiple seasons)
 
-   The **Episodes** tab on a series lists every local file as its own row, lets you set a per-file season/episode/external-id override, and lets you rename the files to your template once they're mapped correctly. Overrides survive renames and rebuilds.
+   The **Episodes** tab on a series lists every local file as its own row and lets you set a per-file season/episode/external-id override. Overrides survive rebuilds.
 
 ## Ratings
 
@@ -257,86 +256,12 @@ failures leave the rest of the build intact. Normal builds reuse cached
 ratings; **Force rebuild** refreshes them. Which rating badges appear in Plex
 depends on its metadata agent and support for the NFO fields.
 
-## Episode mapping & renaming
+## Episode mapping
 
-Open a series → **Episodes** tab. Each local file gets its own row showing the parsed `S/E`, the matched provider title, and (for unparsed files) inline season/episode pickers. Override any file's mapping with the per-row dropdown — overrides are stored per-file in SQLite and in the sidecar.
-
-Click **Preview rename…** on the Episodes tab, or in a matched movie's header,
-to open the rename modal:
-
-- Live preview of every `from → to` change.
-- Conflict badges (`exists`, `duplicate`) so you don't clobber existing files.
-- Per-row checkboxes — auto-checked except for unchanged or conflicting rows.
-- **Series type** selector — `Auto` (default) picks per file (anime fansub names → anime template, files with an air-date → daily, otherwise standard) or pin to `Standard` / `Daily` / `Anime` if auto-detection guesses wrong.
-- Ad-hoc template field overrides Settings for the current run.
-- **Release group override** fills the `{Release Group}` token when a filename has no detectable group, such as `SubsPlease` or `Erai-raws`. Changing the template, series type, or group requires a fresh preview before applying.
-- Applying a preview verifies that selected sources and destinations still match. Changed plans return a conflict and require a fresh preview; selecting no rows renames nothing.
-- Destination collisions never overwrite existing files. Video and companion moves are checked together; per-file mapping changes use a database transaction, and failed operations attempt to roll back their file moves. Partial rollback failures are reported. On POSIX, collision-safe moves require hard-link support; unsupported filesystems fail safely with the source retained.
-- **Companion files travel with the video.** When `video.mkv` becomes `new-name.mkv`, the matching `video.nfo`, `video-thumb.jpg`/`-thumb.png`, and known subtitle sidecars (`video.en.srt`, `video.en.forced.srt`, `.ass`, `.ssa`, `.vtt`, `.sub`, `.idx`, `.sup`) are renamed in lockstep so nothing gets orphaned and Plex doesn't re-pull thumbnails.
-
-### MediaInfo via ffprobe
-
-The container includes `ffmpeg` and `ffprobe`. The renamer caches up to 512 probes by path, nanosecond modification time, and file size, and exposes:
-
-- **Video codec** (`x264`, `x265`, `AV1`, `VP9`, ...) and **bit depth** (`8` / `10`).
-- **Dynamic range type** — `HDR10`, `HDR10Plus`, `DV`, `HLG`, or empty for SDR.
-- **Audio codec** with Atmos / DTS-HD MA / DTS-X variant detection from track titles.
-- **Audio channels** (`5.1`, `7.1`, `2.0`, ...) and **3D** flag.
-- **Audio languages** as Sonarr-style tags (`[EN]`, `[EN+JA]`, ...).
-- **Quality Full** synthesised from the original filename's source word (`WEBDL`, `Bluray`, `Remux`, `HDTV`, ...) plus the probed resolution (`2160p` / `1080p` / `720p` / `480p`).
-- **Release group** — trailing `-FLUX` style and leading `[SubsPlease]` fansub style.
-
-### Default templates (editable in Settings → Renaming)
-
-Templates support the Sonarr/Radarr-style tokens and conditional groups below. Folder templates (Series / Season / Movie folder) are stored for reference; the renamer currently changes files only. Defaults follow the [TRaSH Guides naming schemes](https://trash-guides.info/Sonarr/Sonarr-recommended-naming-scheme/).
-
-```
-Standard episode: {Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} {[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{[MediaInfo VideoCodec]}{-Release Group}
-
-Daily episode: {Series TitleYear} - {Air-Date} - {Episode CleanTitle} {[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{[MediaInfo VideoCodec]}{-Release Group}
-
-Anime episode: {Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} {[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}[{MediaInfo VideoBitDepth}bit]{[MediaInfo VideoCodec]}[{Mediainfo AudioCodec} { Mediainfo AudioChannels}]{MediaInfo AudioLanguages}{-Release Group}
-
-Movie: {Movie CleanTitle} {(Release Year)} {tmdb-{TmdbId}} {edition-{Edition Tags}} {[Custom Formats]}{[Quality Full]}{[MediaInfo 3D]}{[MediaInfo VideoDynamicRangeType]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{[Mediainfo VideoCodec]}{-Release Group}
-
-Series folder: {Series TitleYear} {tvdb-{TvdbId}}
-Season folder: Season {season:00}
-Movie folder:  {Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}
-```
-
-### Token reference
-
-| Token                                | Renders                                            |
-| ------------------------------------ | -------------------------------------------------- |
-| `{Series TitleYear}`                 | `Severance (2022)`                                 |
-| `{Series CleanTitle}`                | sanitised title without year                       |
-| `{Episode CleanTitle}`               | matched episode title (empty when unmatched)       |
-| `{season:00}` / `{episode:00}`       | zero-padded to width of format spec                |
-| `{Air-Date}`                         | `2024-05-08`                                       |
-| `{Quality Full}`                     | `WEBDL-1080p`, `Bluray-2160p`, etc.                |
-| `{MediaInfo VideoCodec}`             | `x264` / `x265` / `AV1` / `VP9`                    |
-| `{MediaInfo VideoBitDepth}`          | `8` / `10`                                         |
-| `{MediaInfo VideoDynamicRangeType}`  | `HDR10` / `HDR10Plus` / `DV` / `HLG`               |
-| `{MediaInfo AudioCodec}`             | `EAC3 Atmos`, `TrueHD Atmos`, `DTS-HD MA`, ...     |
-| `{MediaInfo AudioChannels}`          | `5.1`, `7.1`, `2.0`                                |
-| `{MediaInfo AudioLanguages}`         | `[EN]`, `[EN+JA]`                                  |
-| `{MediaInfo 3D}`                     | `3D` when the file is 3D, otherwise empty          |
-| `{Release Group}` / `{-Release Group}` | bare or dash-prefixed (`-FLUX`)                  |
-| `{TvdbId}` / `{TmdbId}` / `{ImdbId}` | provider IDs from the binding                      |
-| `{Movie CleanTitle}`                 | sanitised movie title                              |
-| `{Release Year}` / `{(Release Year)}` | `2017` or `(2017)` with parens                    |
-| `{Edition Tags}`                     | edition tags from the filename (Director's Cut...) |
-| `{Custom Formats}`                   | reserved — currently empty                 |
-
-Conditional groups handle missing values gracefully:
-
-- `{[Token]}` — wraps the token's value in literal `[..]` brackets when present, drops the whole group otherwise.
-- `{[Token1}{ Token2]}` — multi-token group with a literal separator (the leading whitespace before `Token2` is the separator).
-- `[{Token}suffix]` — square-bracket conditional with a static suffix (e.g. `[{MediaInfo VideoBitDepth}bit]` → `[10bit]`).
-- `{-Token}` — prefix-conditional, outputs `-VALUE` or empty.
-- `{tvdb-{TvdbId}}` / `{tmdb-{TmdbId}}` — nested template, drops entirely when the inner token is empty.
-
-Legacy simple tokens (`{title}`, `{year}`, `{season}`, `{season:02}`, `{episode}`, `{episode:02}`, `{episode_title}`, `{quality}`, `{ext}`) still work as fallbacks, so existing templates keep rendering.
+Open a series → **Episodes** tab. Each local file gets its own row showing the
+parsed season and episode, the matched provider title, and inline pickers for
+unparsed files. Per-file mapping overrides are stored in SQLite and mirrored to
+the sidecar.
 
 ## NFO provenance
 
@@ -390,8 +315,8 @@ Artwork is written directly to the item folder using Plex-standard filenames —
 The **Overrides** tab includes a thumbnail picker for each episode. TMDB can
 offer multiple stills; TVDB generally provides one. Select a still for the
 next build, or choose **Auto** to clear the override. Selections use the
-external episode ID and are mirrored into the sidecar, so renaming files or
-restoring the database does not lose them.
+external episode ID and are mirrored into the sidecar, so restoring the
+database does not lose them.
 
 NFO artwork references use provider URLs in `<thumb>` / `<fanart><thumb>` tags when available. Plex prefers the local file (when the *Local Media Assets* agent is enabled), but can always fall back to the URL if a local file is missing or unreadable across your mount.
 
@@ -456,7 +381,7 @@ scan completes, including its `scanned` count.
 | UI reports no server token or rejects sign-in | Confirm the container received `API_TOKEN`; sign in with that same value. Recreate the container after changing environment variables. |
 | Empty libraries after an upgrade | Check the resolved host mounts, especially a moved relative `./config` path. Use the original config directory and stable container paths. |
 | Matching or artwork fails | Check the selected provider's key, source identity, language settings, and Activity/Logs. A provider outage does not justify changing a correct binding. |
-| Writes or renames fail | Check NAS mount permissions and free space. Review rename conflicts and any reported partial rollback; get a fresh preview before retrying. |
+| Writes fail | Check NAS mount permissions and free space. |
 | A title is partial or appears twice in Plex | Open the status details, inspect missing/foreign NFOs and orphan previews, then use the in-app Help guidance. |
 | Settings return `503` | Restore a valid `/config/settings.json`; the unreadable file is deliberately preserved. |
 | Remote artwork URL is rejected | Use a public supported raster-image URL on port 80/443, or upload a LAN-hosted image directly. |

@@ -13,7 +13,7 @@ import pytest
 
 from app import db
 from app.config import UserSettings
-from app.services import builder, cleaner, matcher, media_files, mediainfo, nfo, orphans, parser, renamer, scanner, sidecar
+from app.services import builder, cleaner, matcher, media_files, nfo, orphans, parser, scanner, sidecar
 
 
 @pytest.fixture
@@ -22,97 +22,6 @@ def isolated_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "_conn", None)
     yield db.conn()
     db.conn().close()
-
-
-def _plan(folder, source="Old.mkv", destination="New.mkv"):
-    return renamer.RenamePlanItem(str(folder), str(folder / source), str(folder / destination), 1, 1, None)
-
-
-def test_rename_preserves_destination_created_after_preview(tmp_path, touch, isolated_db):
-    source = touch("Old.mkv", "source")
-    plan = _plan(tmp_path)
-    target = touch("New.mkv", "new download")
-    result = renamer.apply_rename_plan([plan])
-    assert result["skipped"] and not result["renamed"]
-    assert source.read_text() == "source"
-    assert target.read_text() == "new download"
-
-
-def test_rename_companion_conflict_keeps_entire_family(tmp_path, touch, isolated_db):
-    for name in ("Old.mkv", "Old.nfo", "New.nfo", "Old.en.srt"):
-        touch(name, name)
-    result = renamer.apply_rename_plan([_plan(tmp_path)])
-    assert result["skipped"] and not result["renamed"]
-    assert not (tmp_path / "New.mkv").exists()
-    assert (tmp_path / "New.nfo").read_text() == "New.nfo"
-    assert (tmp_path / "Old.en.srt").exists()
-
-
-def test_rename_moves_companions_and_mapping_together(tmp_path, touch, isolated_db):
-    for name in ("Old.mkv", "Old.nfo", "Old-thumb.jpg", "Old.en.forced.srt"):
-        touch(name, name)
-    db.set_episode_file_override(str(tmp_path), str(tmp_path / "Old.mkv"), 2, 7, "42")
-    result = renamer.apply_rename_plan([_plan(tmp_path)])
-    assert len(result["renamed"]) == 1 and len(result["companions_moved"]) == 3
-    assert not result["failed"]
-    assert db.get_episode_file_overrides(str(tmp_path))[str(tmp_path / "New.mkv")]["external_id"] == "42"
-    for suffix in (".mkv", ".nfo", "-thumb.jpg", ".en.forced.srt"):
-        assert (tmp_path / f"New{suffix}").exists()
-        assert not (tmp_path / f"Old{suffix}").exists()
-
-
-def test_rename_rolls_back_files_when_companion_move_fails(tmp_path, touch, isolated_db, monkeypatch):
-    touch("Old.mkv", "video")
-    touch("Old.nfo", "metadata")
-    move = renamer._rename_without_overwrite
-
-    def fail_companion(source, target):
-        if source.name == "Old.nfo":
-            raise PermissionError("share temporarily unavailable")
-        move(source, target)
-
-    monkeypatch.setattr(renamer, "_rename_without_overwrite", fail_companion)
-    result = renamer.apply_rename_plan([_plan(tmp_path)])
-    assert result["failed"] and not result["renamed"]
-    assert (tmp_path / "Old.mkv").read_text() == "video"
-    assert (tmp_path / "Old.nfo").read_text() == "metadata"
-    assert not (tmp_path / "New.mkv").exists()
-
-
-@pytest.mark.parametrize("platform", ["native", "posix"])
-def test_atomic_move_never_overwrites_existing_destination(tmp_path, touch, monkeypatch, platform):
-    source, target = touch("Old.mkv", "old"), touch("New.mkv", "new")
-    if platform == "posix":
-        monkeypatch.setattr(renamer, "os", SimpleNamespace(name="posix", link=os.link))
-    with pytest.raises(FileExistsError):
-        renamer._rename_without_overwrite(source, target)
-    assert source.read_text() == "old" and target.read_text() == "new"
-
-
-def test_posix_move_preserves_source_if_unlink_fails(tmp_path, touch, monkeypatch):
-    source, target = touch("Old.mkv", "video"), tmp_path / "New.mkv"
-    monkeypatch.setattr(renamer, "os", SimpleNamespace(name="posix", link=os.link))
-    unlink = Path.unlink
-
-    def fail_source(path, *args, **kwargs):
-        if path == source:
-            raise PermissionError("read-only source")
-        return unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", fail_source)
-    with pytest.raises(PermissionError):
-        renamer._rename_without_overwrite(source, target)
-    assert source.read_text() == "video" and not target.exists()
-
-
-def test_rename_rejects_source_outside_declared_folder(tmp_path, touch):
-    source = touch("Outside/Old.mkv", "protected")
-    folder = tmp_path / "Library"
-    folder.mkdir()
-    item = _plan(source.parent)
-    item.folder_path = str(folder)
-    result = renamer.apply_rename_plan([item])
-    assert result["failed"] and source.exists()
 
 
 def _directory_link(link: Path, target: Path):
@@ -253,49 +162,6 @@ def test_sidecar_atomic_write_failure_preserves_previous_file(tmp_path, monkeypa
     assert list(tmp_path.glob(".pnb-*.tmp")) == []
 
 
-def _series_plan(folder, monkeypatch, metadata, overrides=None):
-    monkeypatch.setattr(mediainfo, "probe_file", lambda path: mediainfo.MediaInfo())
-    return renamer.plan_series_rename(
-        folder, standard_template="Standard S{season:00}E{episode:00} {Episode Title}",
-        daily_template="Daily {Air-Date} {Episode Title}", anime_template="Anime {Episode Title}",
-        series_type="auto", title="Show", year=2020, episodes_by_se=metadata, overrides_by_file=overrides or {},
-    )
-
-
-def test_auto_rename_does_not_confuse_metadata_air_date_with_daily_filename(tmp_path, touch, monkeypatch):
-    touch("Season 01/Show - S01E01.mkv")
-    plan = _series_plan(tmp_path, monkeypatch, {(1, 1): {"id": 42, "name": "Pilot", "aired": "2020-01-01"}})
-    assert Path(plan[0].dst).name == "Standard S01E01 Pilot.mkv"
-
-
-def test_daily_rename_matches_provider_episode_by_air_date(tmp_path, touch, monkeypatch):
-    touch("Season 01/Show - 2020-01-01.mkv")
-    plan = _series_plan(tmp_path, monkeypatch, {(1, 7): {"id": 42, "name": "Daily", "aired": "2020-01-01"}})
-    assert plan[0].episode == 7 and plan[0].matched_title == "Daily"
-    assert Path(plan[0].dst).name == "Daily 2020-01-01 Daily.mkv"
-
-
-def test_rename_respects_explicit_provider_episode_id(tmp_path, touch, monkeypatch):
-    video = touch("Season 01/Show - S01E01.mkv")
-    metadata = {(1, 1): {"id": 41, "name": "Wrong"}, (2, 7): {"id": 42, "name": "Chosen"}}
-    plan = _series_plan(tmp_path, monkeypatch, metadata, {str(video): {"external_id": "42"}})
-    assert Path(plan[0].dst).name == "Standard S02E07 Chosen.mkv"
-
-
-def test_rename_preview_marks_companion_collision(tmp_path, touch, monkeypatch):
-    touch("Season 01/Show - S01E01.mkv")
-    touch("Season 01/Show - S01E01.nfo")
-    touch("Season 01/Standard S01E01 Pilot.nfo", "existing metadata")
-    plan = _series_plan(tmp_path, monkeypatch, {(1, 1): {"id": 42, "name": "Pilot"}})
-    assert plan[0].conflict == "exists"
-
-
-def test_rename_preserves_multi_episode_range(tmp_path, touch, monkeypatch):
-    touch("Season 01/Show - S01E01-E02.mkv")
-    plan = _series_plan(tmp_path, monkeypatch, {(1, 1): {"id": 42, "name": "Pilot"}})
-    assert Path(plan[0].dst).name == "Standard S01E01-E02 Pilot.mkv"
-
-
 def test_nfo_strips_invalid_xml_characters_without_losing_unicode():
     root = ET.Element("movie")
     nfo._el(root, "title", "A\x00\x0b & 東京")
@@ -303,6 +169,15 @@ def test_nfo_strips_invalid_xml_characters_without_losing_unicode():
     parsed = ET.fromstring(text)
     assert parsed.findtext("title") == "A & 東京"
     assert parsed.find("injected") is None
+
+
+@pytest.mark.parametrize(("build", "payload"), [
+    (nfo.build_series_nfo, {"id": 1, "name": "The Bear"}),
+    (nfo.build_series_nfo_tmdb, {"id": 1, "name": "The Bear"}),
+])
+def test_series_nfo_uses_sonarr_sort_title(build, payload):
+    root = ET.fromstring(build(payload, language="eng", fallbacks=[]))
+    assert root.findtext("sorttitle") == "Bear"
 
 
 def test_media_temp_uses_normal_creation_mode_and_exclusive_name(tmp_path, monkeypatch):
@@ -366,27 +241,6 @@ def test_published_nfo_keeps_media_permissions(tmp_path, monkeypatch, existing_m
         os.umask(previous_mask)
     assert destination.read_text().endswith("<updated/>")
     assert stat.S_IMODE(destination.stat().st_mode) == expected
-
-
-def test_probe_cache_invalidates_changes_inside_same_second(tmp_path, touch, monkeypatch):
-    video = touch("Video.mkv", "one")
-    mediainfo.clear_cache()
-    monkeypatch.setattr(mediainfo, "_ffprobe_bin", lambda: "ffprobe")
-    calls = []
-
-    def probe(*args, **kwargs):
-        calls.append(args)
-        return SimpleNamespace(returncode=0, stdout='{"streams": []}')
-
-    monkeypatch.setattr(mediainfo.subprocess, "run", probe)
-    mediainfo.probe_file(video)
-    first_stamp = video.stat().st_mtime_ns
-    video.write_text("new release", encoding="utf-8")
-    os.utime(video, ns=(first_stamp, first_stamp))
-    mediainfo.probe_file(video)
-    mediainfo.probe_file(video)
-    assert len(calls) == 2
-    mediainfo.clear_cache()
 
 
 @pytest.mark.parametrize("kind", ["series", "movie"])

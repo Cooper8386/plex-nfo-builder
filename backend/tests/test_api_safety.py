@@ -9,7 +9,6 @@ from httpx import ConnectError
 from app import config, db, main
 from app.routes import api, settings
 from app.services import artwork_download, matcher, tmdb, tvdb
-from app.services.renamer import RenamePlanItem
 
 
 @pytest.fixture
@@ -270,35 +269,3 @@ def test_large_library_internal_operations_and_api_pagination(client):
     assert result.status_code == 200
     assert result.json()["total"] == 5001
     assert [item["title"] for item in result.json()["items"]] == ["Show 05000"]
-
-
-def test_stale_rename_preview_never_applies(client, monkeypatch):
-    http, media = client
-    folder = media / "Movies" / "Movie"
-    folder.mkdir(parents=True)
-    source, destination = str(folder / "old.mkv"), str(folder / "new.mkv")
-    db.upsert_binding(str(folder), "movie", "tmdb", "1", title="Movie")
-    monkeypatch.setattr(api, "_resolve_localized_title", AsyncMock(return_value=("Movie", 2020)))
-    plan = [RenamePlanItem(folder_path=str(folder), src=source, dst=destination, season=None, episode=None, matched_title=None)]
-    monkeypatch.setattr(api.renamer_svc, "plan_movie_rename", lambda *args, **kwargs: plan)
-    applied = []
-    monkeypatch.setattr(api.renamer_svc, "apply_rename_plan", lambda entries: applied.append(entries) or {"renamed": 0})
-    headers = {"X-API-Token": "test-secret"}
-    result = http.post("/api/episodes/rename/apply", headers=headers, json={
-        "folder_path": str(folder), "only_src": [source],
-        "expected_plan": [{"src": source, "dst": str(folder / "previous-preview.mkv")}],
-    })
-    assert result.status_code == 409
-    assert applied == []
-    result = http.post("/api/episodes/rename/apply", headers=headers, json={"folder_path": str(folder), "only_src": []})
-    assert result.status_code == 200
-    assert applied == [[]]
-
-
-def test_tmdb_rename_index_keeps_air_dates(monkeypatch):
-    provider = AsyncMock()
-    provider.tv_details.return_value = {"seasons": [{"season_number": 1}]}
-    provider.tv_season.return_value = {"episodes": [{"id": 12, "season_number": 1, "episode_number": 2, "air_date": "2026-01-02"}]}
-    monkeypatch.setattr(api, "get_tmdb_client", lambda: provider)
-    index = asyncio.run(api._build_episodes_index({"provider": "tmdb", "external_id": "1"}, "eng"))
-    assert index[(1, 2)]["aired"] == "2026-01-02"

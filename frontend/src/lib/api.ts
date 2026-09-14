@@ -97,18 +97,6 @@ export type NfoExplain = {
   reasons: string[];
 };
 
-export type RenamePlanItem = {
-  src: string;
-  dst: string;
-  src_name: string;
-  dst_name: string;
-  season: number | null;
-  episode: number | null;
-  matched_title: string | null;
-  conflict: "exists" | "duplicate" | null;
-  unchanged: boolean;
-};
-
 export type TvdbEpisode = {
   id: string;
   season: number | null;
@@ -849,47 +837,6 @@ export const api = {
           body: JSON.stringify(body),
         }),
       ),
-    rename: {
-      preview: (body: {
-        folder_path: string;
-        template?: string;
-        daily_template?: string;
-        anime_template?: string;
-        series_type?: "auto" | "standard" | "daily" | "anime";
-        // v0.11.7: manual release-group override applied to every plan item.
-        // Useful for anime fansub layouts the auto-detector can't safely guess.
-        release_group?: string;
-      }) =>
-        J<{ folder_path: string; template: string; items: RenamePlanItem[] }>(
-          fetch("/api/episodes/rename/preview", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(body),
-          }),
-        ),
-      apply: (body: {
-        folder_path: string;
-        template?: string;
-        daily_template?: string;
-        anime_template?: string;
-        series_type?: "auto" | "standard" | "daily" | "anime";
-        only_src?: string[];
-        expected_plan?: { src: string; dst: string }[];
-        release_group?: string;
-      }) =>
-        J<{
-          ok: true;
-          renamed: { src: string; dst: string }[];
-          skipped: { src: string; dst?: string; reason: string }[];
-          failed: { src: string; dst?: string; reason: string }[];
-        }>(
-          fetch("/api/episodes/rename/apply", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(body),
-          }),
-        ),
-    },
   },
   overrides: {
     get: (path: string) =>

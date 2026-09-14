@@ -2,9 +2,8 @@ import { errorMessage } from "../lib/errors";
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, TvdbEpisode } from "../lib/api";
-import RenameModal from "./RenameModal";
 
-/** Episode mapping & rename UI. v0.10.0:
+/** Episode mapping UI. v0.10.0:
  *
  * - Each local file is its own row anchored to the actual file path so two
  *   unparsed files no longer collide on (S00,E00).
@@ -14,9 +13,6 @@ import RenameModal from "./RenameModal";
  *   couldn't determine them from the filename (or whenever the user wants
  *   to retag a single file). The selection is sent through the new
  *   `/api/episodes/override-file` endpoint.
- * - "Rename to scheme" opens a diff modal that shows the source name next
- *   to the rendered target, supports per-row checkboxes, and warns about
- *   conflicts before writing anything to disk.
  */
 export default function EpisodeMapper({ path }: { path: string }) {
   const qc = useQueryClient();
@@ -27,7 +23,6 @@ export default function EpisodeMapper({ path }: { path: string }) {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [seasonFilter, setSeasonFilter] = useState<number | "all">("all");
-  const [showRename, setShowRename] = useState(false);
   const [allSeasonsFor, setAllSeasonsFor] = useState<string | null>(null);
 
   const provider = data.data?.provider ?? "tvdb";
@@ -130,14 +125,6 @@ export default function EpisodeMapper({ path }: { path: string }) {
             ))}
           </select>
         </label>
-        <button
-          onClick={() => setShowRename(true)}
-          className="btn"
-          disabled={!locals.length}
-          title="Rename files on disk to match your scheme."
-        >
-          Preview rename…
-        </button>
       </div>
       {msg && (
         <div role="status" className="text-xs text-slate-400 mb-2">
@@ -297,16 +284,6 @@ export default function EpisodeMapper({ path }: { path: string }) {
             </tbody>
           </table>
         </div>
-      )}
-      {showRename && (
-        <RenameModal
-          path={path}
-          onClose={() => setShowRename(false)}
-          onApplied={async () => {
-            await qc.invalidateQueries({ queryKey: ["episodes", path] });
-            await qc.invalidateQueries({ queryKey: ["detail", path] });
-          }}
-        />
       )}
     </div>
   );

@@ -50,9 +50,8 @@ def compute_sort_title(title: Optional[str], override: Optional[str]) -> str:
     """Resolve the effective sort title for an item.
 
     Priority: explicit override > stripped-article fallback. The override is
-    the user-supplied ``sorttitle`` from ``nfo_overrides`` (or whatever the
-    metadata provider supplies as ``sortName``); when set, it wins outright.
-    Otherwise we strip a leading English article and return the rest.
+    the user-supplied ``sorttitle`` from ``nfo_overrides``; when set, it wins
+    outright. Otherwise we strip a leading English article and return the rest.
     """
     if override:
         s = str(override).strip()
@@ -322,8 +321,8 @@ def _migrate(c: sqlite3.Connection) -> None:
         except Exception:
             pass
         # v0.11.4: item_state.sort_title — Plex/Sonarr-style ordering. Sourced
-        # from (1) per-show sorttitle override, (2) provider sortName, (3)
-        # title with leading articles stripped. Backfilled here for any rows
+        # from (1) per-show sorttitle override or (2) the title with leading
+        # articles stripped. Backfilled here for any rows
         # already in the DB so the very first library load after upgrade
         # already sorts correctly.
         item_cols = {r[1] for r in c.execute("PRAGMA table_info(item_state)").fetchall()}
@@ -937,32 +936,6 @@ def get_episode_file_overrides(folder_path: str) -> dict[str, dict]:
         }
         for r in rows
     }
-
-
-def rename_episode_file_override(folder_path: str,
-                                  old_file_path: str,
-                                  new_file_path: str) -> None:
-    """Move an override row when a file is renamed on disk.
-
-    Drops any pre-existing row at ``new_file_path`` first so the rename can't
-    collide on the (folder_path, file_path) primary key.
-    """
-    if old_file_path == new_file_path:
-        return
-    c = conn()
-    with transaction():
-        c.execute(
-            "DELETE FROM episode_file_overrides WHERE folder_path = ? AND file_path = ?",
-            (folder_path, new_file_path),
-        )
-        c.execute(
-            """
-            UPDATE episode_file_overrides
-               SET file_path = ?, updated_at = ?
-             WHERE folder_path = ? AND file_path = ?
-            """,
-            (new_file_path, int(time.time()), folder_path, old_file_path),
-        )
 
 
 # ---- NFO field overrides (v0.5.3) ------------------------------------------

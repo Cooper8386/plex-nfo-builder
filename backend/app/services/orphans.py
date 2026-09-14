@@ -7,7 +7,7 @@ When Sonarr or Radarr replaces a video with a new release of the same episode
 or movie, it only manages the **video file** itself. The companion sidecars
 plex-nfo-builder writes — ``<stem>.nfo`` and ``<stem>-thumb.{jpg,jpeg,png}`` —
 are ignored. After an upgrade where the release group (or any other token in
-the rename template) changes, the new ``<new-stem>.mkv`` arrives, the old
+the video filename changes outside this app, the new ``<new-stem>.mkv`` arrives, the old
 video is deleted, but the old ``<old-stem>.nfo`` and ``<old-stem>-thumb.jpg``
 are left orphaned in the season folder with no matching video.
 

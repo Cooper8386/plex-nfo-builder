@@ -38,7 +38,7 @@ export default function HelpView() {
         <p>
           Library grids and lists order shows the way Plex / Sonarr / Radarr do,
           not by raw title. The sort key is decided per folder using a
-          three-step fallback:
+          two-step fallback:
         </p>
         <Ol>
           <li>
@@ -50,18 +50,15 @@ export default function HelpView() {
             cluster together in the grid.
           </li>
           <li>
-            Otherwise the provider's <Code>sortName</Code> field is used (TVDB
-            and TMDB both publish one).
-          </li>
-          <li>
-            If neither is set, the title is used with a leading{" "}
+            Otherwise the title is used with a leading{" "}
             <Code>The </Code> / <Code>A </Code> / <Code>An </Code> stripped — so{" "}
             <i>The Matrix</i> sorts under <b>M</b>, not <b>T</b>.
           </li>
         </Ol>
         <Callout>
-          Editing a series or movie sorttitle override automatically refreshes
-          the cached sort key. No rescan needed.
+          NFO builds use the same sort-title rule. Editing a series or movie
+          sorttitle override automatically refreshes the cached sort key. No
+          rescan needed.
         </Callout>
         <p>
           v0.13.0 adds a <b>Sort</b> dropdown to the library toolbar with five
@@ -480,8 +477,8 @@ export default function HelpView() {
             <Code>tvshow.nfo</Code>, <Code>season.nfo</Code>, episode{" "}
             <Code>.nfo</Code>) and every generated artwork file from the show
             folder — including per-episode <Code>&lt;stem&gt;-thumb.jpg</Code>/
-            <Code>.png</Code> thumbnails next to videos (orphans from previous
-            renames are wiped too). Season folders and your media files are
+            <Code>.png</Code> thumbnails next to videos (orphans from older
+            filenames are wiped too). Season folders and your media files are
             never touched. Use this when you want to start fresh — the next{" "}
             <Code>Build NFOs</Code> click recreates everything.
           </li>
@@ -671,163 +668,14 @@ export default function HelpView() {
         </Callout>
       </Section>
 
-      <Section title="Episode mapping & renaming">
+      <Section title="Episode mapping">
         <p>
           Open a series and switch to the <Code>episodes</Code> tab. Each local
-          file gets its own row, with the parsed season/episode on the left and
-          the matched provider title on the right. Three filename styles are
-          recognised automatically:
-        </p>
-        <Bullets>
-          <li>
-            Sonarr/Radarr: <Code>Series (Year) - S01E03 - Title.mkv</Code>
-          </li>
-          <li>
-            Daily / talk shows: <Code>Show - 2024-01-15.mkv</Code>
-          </li>
-          <li>
-            Anime / fansub: <Code>[Group] Title - 03 [1080p].mkv</Code> —
-            treated as <Code>S01E03</Code> by default. If the fansub bundles
-            multiple seasons, use the inline season picker on the row to pin
-            each file to the right season.
-          </li>
-        </Bullets>
-        <p>
-          Override any file's mapping with the per-row dropdown — each override
-          is keyed to the file path, so files that all parsed as
-          <Code>S00E00</Code> no longer collide on a single row. Overrides are
-          stored in SQLite and mirrored into the sidecar.
-        </p>
-        <p>
-          Click <Code>Rename to scheme</Code> at the top of the Episodes tab to
-          open the rename modal. It shows a dry-run preview of every{" "}
-          <Code>from → to</Code> change, flags conflicts (<Code>exists</Code>,{" "}
-          <Code>duplicate</Code>), and lets you uncheck individual files. Apply
-          checks the current plan against your preview and refuses existing
-          destinations, including companion-file conflicts. Overrides move with
-          the file. If a move fails, completed moves for that video are rolled
-          back; any rollback failure is reported for manual recovery.
-        </p>
-        <p>
-          <b>Titles always come from your preferred language.</b> The series /
-          movie title plugged into the rename template is re-fetched from the
-          bound provider in the language set under{" "}
-          <Code>Settings → Preferred language</Code> (with your fallback chain).
-          Non-English originals like anime no longer leak the original-language
-          title into renamed files — if you matched a show in English, it stays
-          English on disk, even when the source's default name is Japanese /
-          Korean / etc.
-        </p>
-        <p>
-          <b>Companion files travel with the video.</b> When{" "}
-          <Code>video.mkv</Code> becomes <Code>new-name.mkv</Code>, the matching{" "}
-          <Code>video.nfo</Code>, <Code>video-thumb.jpg</Code>/<Code>.png</Code>
-          , and known subtitle sidecars (<Code>.srt</Code>, <Code>.ass</Code>,{" "}
-          <Code>.ssa</Code>, <Code>.vtt</Code>, <Code>.sub</Code>,{" "}
-          <Code>.idx</Code>, <Code>.sup</Code> — with any language tag like{" "}
-          <Code>video.en.forced.srt</Code>) are renamed in together. Renames
-          never overwrite another file. On Linux, this uses hard links followed
-          by removal of the original name; filesystems without hard-link support
-          refuse the rename and keep the source.
-        </p>
-        <p>
-          The modal also has a <b>Series type</b> selector (<Code>Auto</Code> /{" "}
-          <Code>Standard</Code> / <Code>Daily</Code> / <Code>Anime</Code>).{" "}
-          <Code>Auto</Code> picks per file: anime fansub names get the anime
-          template, files where the parser pulled an air-date get the daily
-          template, everything else gets the standard template. Pin the selector
-          when auto-detection guesses wrong.
-        </p>
-        <p>
-          <b>Release group override (anime).</b> Some fansub releases drop the{" "}
-          <Code>-Group</Code> tag from the filename, or wrap it in brackets the
-          parser doesn't recognise — and the <Code>{"{Release Group}"}</Code>{" "}
-          token then renders empty in the rename preview. Type the group name
-          into the <Code>Release group</Code> field at the top of the rename
-          modal (e.g. <Code>SubsPlease</Code>, <Code>Erai-raws</Code>,{" "}
-          <Code>Judas</Code>) and every preview row re-renders with that group
-          baked in. Hit <Code>Enter</Code> or tab out of the field to
-          re-preview, or use the <Code>×</Code> button to clear and fall back to
-          auto-detection. Empty means auto, so this only ever overrides — never
-          hides — what the parser found.
-        </p>
-        <p>
-          Templates use Sonarr/Radarr token grammar. Default schemes match the{" "}
-          <a
-            href="https://trash-guides.info/Sonarr/Sonarr-recommended-naming-scheme/"
-            target="_blank"
-            rel="noreferrer"
-            className="text-indigo-400 hover:text-indigo-300 underline"
-          >
-            Trash Guides
-          </a>{" "}
-          recommendations and produce filenames like:
-        </p>
-        <Bullets>
-          <li>
-            Standard:{" "}
-            <Code>
-              Severance (2022) - S02E08 - Sweet Vitriol
-              [WEBDL-1080p][HDR10][EAC3 Atmos 5.1][x265]-FLUX.mkv
-            </Code>
-          </li>
-          <li>
-            Daily:{" "}
-            <Code>
-              The Daily Show (1996) - 2024-05-08 - Episode Title
-              [WEBDL-1080p]-NTb.mkv
-            </Code>
-          </li>
-          <li>
-            Anime:{" "}
-            <Code>
-              Frieren (2023) - S01E12 - The Land Where Souls Rest
-              [WEBDL-1080p][10bit][x265][EAC3 5.1][EN+JA]-SubsPlease.mkv
-            </Code>
-          </li>
-          <li>
-            Movie:{" "}
-            <Code>
-              Blade Runner 2049 (2017) tmdb-335984 [Bluray-2160p][HDR10][TrueHD
-              Atmos 7.1][x265]-FraMeSToR.mkv
-            </Code>
-          </li>
-        </Bullets>
-        <p>
-          Codec, bit depth, HDR/DV detection, audio channels, and language tags
-          are pulled directly from the file via <Code>ffprobe</Code> (the
-          container ships <Code>ffmpeg</Code> from v0.11.0). The quality tag (
-          <Code>WEBDL-1080p</Code>, <Code>Bluray-2160p</Code>, etc.) is
-          synthesised from the source word in the original filename plus the
-          probed resolution.
-        </p>
-        <p>
-          Common tokens: <Code>{"{Series TitleYear}"}</Code>,{" "}
-          <Code>{"{Episode CleanTitle}"}</Code>, <Code>{"{season:00}"}</Code>,{" "}
-          <Code>{"{episode:00}"}</Code>, <Code>{"{Air-Date}"}</Code>,{" "}
-          <Code>{"{Quality Full}"}</Code>,{" "}
-          <Code>{"{MediaInfo VideoCodec}"}</Code>,{" "}
-          <Code>{"{MediaInfo VideoBitDepth}"}</Code>,{" "}
-          <Code>{"{MediaInfo VideoDynamicRangeType}"}</Code>,{" "}
-          <Code>{"{MediaInfo AudioCodec}"}</Code>,{" "}
-          <Code>{"{MediaInfo AudioChannels}"}</Code>,{" "}
-          <Code>{"{MediaInfo AudioLanguages}"}</Code>,{" "}
-          <Code>{"{Release Group}"}</Code>, <Code>{"{-Release Group}"}</Code>,{" "}
-          <Code>{"{TvdbId}"}</Code>, <Code>{"{TmdbId}"}</Code>,{" "}
-          <Code>{"{Movie CleanTitle}"}</Code>, <Code>{"{(Release Year)}"}</Code>
-          . Conditional groups <Code>{"{[Token]}"}</Code> wrap rendered output
-          in literal <Code>[..]</Code> brackets when the token resolves and drop
-          the group entirely when it's empty.
-        </p>
-        <p>
-          Old v0.10.0 simple tokens (<Code>{"{title}"}</Code>,{" "}
-          <Code>{"{year}"}</Code>, <Code>{"{season:02}"}</Code>,{" "}
-          <Code>{"{episode_title}"}</Code>, <Code>{"{quality}"}</Code>,{" "}
-          <Code>{"{ext}"}</Code>) still work as fallbacks if you don't want the
-          full Sonarr grammar.
+          file shows its parsed season and episode beside the matched provider
+          title. Use the inline controls to correct unparsed or incorrect files.
+          Overrides are stored in SQLite and mirrored into the sidecar.
         </p>
       </Section>
-
       <Section title="TVDB / TMDB external link">
         <p>
           Open any matched show or movie and look next to the title in the
@@ -881,8 +729,8 @@ export default function HelpView() {
             still TMDB has on file for that exact episode. Click any tile to pin
             it; click <b>Auto</b> to clear the override and let the resolver
             pick the highest-rated upload again. Selections are keyed to the
-            provider's episode id (not the file path) so renames and re-bindings
-            preserve them, and they're mirrored into{" "}
+            provider's episode id (not the file path) so re-bindings preserve
+            them, and they're mirrored into{" "}
             <Code>.plex-nfo-builder.json</Code> like every other override. TVDB
             only ships one still per episode, so the picker shows a single tile
             with a note suggesting a TMDB switch if you want choices.
@@ -998,7 +846,7 @@ export default function HelpView() {
           Destructive and input-driven actions no longer use the browser's
           native <Code>window.confirm</Code> / <Code>window.prompt</Code>{" "}
           popups. Every <b>Wipe</b>, <b>Remove</b>, <b>Prune</b>,{" "}
-          <b>Blast sidecars</b>, <b>Delete schedule</b>, <b>Rename</b>, and{" "}
+          <b>Blast sidecars</b>, <b>Delete schedule</b>, and{" "}
           <b>Add custom artwork URL</b> action now opens an in-app modal styled
           to match the rest of the UI.
         </p>

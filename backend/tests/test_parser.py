@@ -62,7 +62,7 @@ def test_multi_episode():
 
 
 def test_multi_episode_prefixed_range_is_captured():
-    # Sonarr's prefixed range keeps both episode numbers through a rename.
+    # Sonarr's prefixed range keeps both episode numbers for NFO generation.
     ep = parse_episode_filename(Path("Show - S01E02-E03.mkv"))
     assert (ep.episode, ep.end_episode) == (2, 3)
 

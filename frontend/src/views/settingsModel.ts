@@ -14,14 +14,6 @@ export type Settings = {
   plex_auto_refresh: boolean;
   plex_refresh_delay_seconds: number;
   plex_path_mappings: { from: string; to: string }[];
-  rename_episode_template: string;
-  rename_daily_template: string;
-  rename_anime_template: string;
-  rename_series_folder_template: string;
-  rename_season_folder_template: string;
-  rename_movie_template: string;
-  rename_movie_folder_template: string;
-  rename_enabled: boolean;
   auto_sweep_orphans: boolean;
   tvdb_artwork_languages: string[];
   tvdb_artwork_allow_null_language: boolean;

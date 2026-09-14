@@ -14,7 +14,6 @@ import {
 } from "./SourcePanels";
 import { OrphansPanel, WhyStatusPanel } from "./ItemDiagnostics";
 import { providerPageUrl } from "./mediaLinks";
-import RenameModal from "./RenameModal";
 
 type Detail = {
   state: (Item & { orphan_count?: number | null }) | null;
@@ -58,7 +57,6 @@ export default function DetailView({
     staleTime: 60_000,
   });
   const plexConfigured = !!health.data?.plex_configured;
-  const [showRename, setShowRename] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -456,15 +454,6 @@ export default function DetailView({
             {showMatcher ? "Hide match panel" : "Change match"}
           </button>
         )}
-        {kind === "movie" && binding && (
-          <button
-            className="btn"
-            disabled={controlsBusy}
-            onClick={() => setShowRename(true)}
-          >
-            Preview rename…
-          </button>
-        )}
         <div className="flex-1" />
         <OverflowMenu
           disabled={controlsBusy}
@@ -683,16 +672,6 @@ export default function DetailView({
         </div>
       )}
 
-      {showRename && (
-        <RenameModal
-          path={path}
-          onClose={() => setShowRename(false)}
-          onApplied={async () => {
-            await qc.invalidateQueries({ queryKey: ["detail", path] });
-            await qc.invalidateQueries({ queryKey: ["items"] });
-          }}
-        />
-      )}
       {tab === "overrides" && (
         <OverridesTab
           key={`${path}-${binding?.provider}-${binding?.external_id}`}

@@ -201,7 +201,7 @@ test("browse, filter, sort, empty state, scan and scoped destructive preview", a
   expect(errors).toEqual([]);
 });
 
-test("detail episodes, rename preview, artwork and settings draft guard", async ({
+test("detail episodes, artwork and settings draft guard", async ({
   page,
 }, info) => {
   const errors: string[] = [];
@@ -223,20 +223,6 @@ test("detail episodes, rename preview, artwork and settings draft guard", async 
       name: "Provider episode for Aurora - S01E01.mkv",
     }),
   ).toHaveValue("10001");
-  await page
-    .getByRole("button", { name: "Preview rename…", exact: true })
-    .click();
-  const rename = page.getByRole("dialog", { name: "Rename to scheme" });
-  await rename.getByRole("button", { name: "Generate preview" }).click();
-  await expect(
-    rename.getByRole("button", { name: "Rename 3 files…", exact: true }),
-  ).toBeEnabled();
-  await rename.getByLabel("Release group override").fill("QA");
-  await expect(
-    rename.getByRole("button", { name: "Rename 3 files…", exact: true }),
-  ).toBeDisabled();
-  await expect(rename).toContainText("Options changed");
-  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: /^artwork$/i }).click();
   await expect(
     page.getByRole("heading", { name: "Aurora", exact: true }),

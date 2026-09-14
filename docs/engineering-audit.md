@@ -1,5 +1,9 @@
 # Engineering audit and implementation — 10 September 2026
 
+> Historical record. The file-renaming feature described below was removed
+> from `main` on 14 September 2026 and preserved on
+> `codex/renaming-feature-archive` for possible re-implementation.
+
 ## Scope and baseline
 
 Worked from the local `codex/refactor` branch at `dd910e5`. The starting working tree was clean. The audit preserved Git history and made no remote changes; publication was authorized separately afterward. Reviewed the backend services, routes, persistence, frontend workflows, tests, manifests, Docker configuration, CI, README, and in-app help. Searches covered broad exception handling, suppressions, unfinished work, duplicate filesystem logic, and provider/file boundaries.

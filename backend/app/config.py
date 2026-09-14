@@ -77,38 +77,6 @@ class UserSettings(BaseModel):
     plex_auto_refresh: bool = False
     plex_refresh_delay_seconds: int = Field(default=5, ge=0, le=600)
     plex_path_mappings: List[dict[str, str]] = []
-    # v0.11.0: Sonarr/Radarr-compatible file-rename templates.
-    rename_episode_template: str = (
-        "{Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} "
-        "{[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}"
-        "{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}"
-        "{[MediaInfo VideoCodec]}{-Release Group}"
-    )
-    rename_daily_template: str = (
-        "{Series TitleYear} - {Air-Date} - {Episode CleanTitle} "
-        "{[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}"
-        "{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}"
-        "{[MediaInfo VideoCodec]}{-Release Group}"
-    )
-    rename_anime_template: str = (
-        "{Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle} "
-        "{[Custom Formats]}{[Quality Full]}{[MediaInfo VideoDynamicRangeType]}"
-        "[{MediaInfo VideoBitDepth}bit]{[MediaInfo VideoCodec]}"
-        "[{Mediainfo AudioCodec} { Mediainfo AudioChannels}]"
-        "{MediaInfo AudioLanguages}{-Release Group}"
-    )
-    rename_series_folder_template: str = "{Series TitleYear} {tvdb-{TvdbId}}"
-    rename_season_folder_template: str = "Season {season:00}"
-    rename_movie_template: str = (
-        "{Movie CleanTitle} {(Release Year)} {tmdb-{TmdbId}} {edition-{Edition Tags}} "
-        "{[Custom Formats]}{[Quality Full]}{[MediaInfo 3D]}{[MediaInfo VideoDynamicRangeType]}"
-        "{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}"
-        "{[Mediainfo VideoCodec]}{-Release Group}"
-    )
-    rename_movie_folder_template: str = (
-        "{Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}"
-    )
-    rename_enabled: bool = True
     auto_sweep_orphans: bool = True
     # v0.11.12: per-provider artwork language filters.
     tvdb_artwork_languages: List[str] = []

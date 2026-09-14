@@ -1,8 +1,7 @@
 # Plex NFO Builder
 
 A self-hosted app that creates Plex-compatible NFO metadata and local artwork
-for TV shows and movies. Works with Sonarr/Radarr folder layouts and provides
-previewed file renaming when your library needs tidying.
+for TV shows and movies. Works with Sonarr/Radarr folder layouts.
 
 - TVDB and TMDB metadata, with optional fanart.tv artwork.
 - Automatic or manual matching, episode mapping, and metadata/artwork overrides.
@@ -62,8 +61,8 @@ docker compose up -d
 
 `/config` stores settings, SQLite state, uploads, and logs; keep it persistent
 and backed up. `/media` exposes your library read-write: NFOs and artwork are
-written beside videos. Builds preserve foreign NFOs by default. Renaming and
-cleanup offer previews; review their scope before applying changes. The
+written beside videos. Builds preserve foreign NFOs by default. Cleanup offers
+previews; review its scope before applying changes. The
 filesystem watcher is enabled by default and can be controlled in Settings.
 
 Existing checkout-based installs can keep their current configuration; see

@@ -93,16 +93,6 @@ class SettingsIn(BaseModel):
     plex_auto_refresh: Optional[bool] = None
     plex_refresh_delay_seconds: Optional[int] = None
     plex_path_mappings: Optional[list[dict[str, str]]] = None
-    # v0.10.0 file rename templates
-    rename_episode_template: Optional[str] = None
-    rename_movie_template: Optional[str] = None
-    rename_enabled: Optional[bool] = None
-    # v0.11.0 Sonarr/Radarr-compatible rename templates
-    rename_daily_template: Optional[str] = None
-    rename_anime_template: Optional[str] = None
-    rename_series_folder_template: Optional[str] = None
-    rename_season_folder_template: Optional[str] = None
-    rename_movie_folder_template: Optional[str] = None
     # v0.11.10 orphan-companion sweeper
     auto_sweep_orphans: Optional[bool] = None
     # v0.11.12 artwork language filtering (per provider)

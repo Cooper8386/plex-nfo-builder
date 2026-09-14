@@ -49,7 +49,7 @@ SEASON_ARTWORK = {
 # File-name suffixes that indicate a Plex / Kodi thumbnail. Any image file
 # ending in one of these is treated as a generated thumbnail and wiped.
 # We don't require the stem to match a current video file - that lets us
-# clean up orphan thumbs left over from a previous rename pass.
+# clean up orphan thumbs left behind by older filenames.
 _THUMB_SUFFIXES = ("-thumb.jpg", "-thumb.jpeg", "-thumb.png")
 
 
