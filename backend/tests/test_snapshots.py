@@ -3,6 +3,7 @@ import asyncio
 import shutil
 import sqlite3
 import zipfile
+from datetime import datetime
 
 import httpx
 import pytest
@@ -66,6 +67,8 @@ def test_snapshot_api_round_trip_and_preservation(library):
             assert listing["jobs"][0]["progress"] == len(expected)
             saved = listing["snapshots"][0]
             assert saved["file_count"] == len(expected)
+            created = datetime.fromisoformat(saved["created_at"])
+            assert saved["filename"] == f"TV-{created.strftime('%Y-%m-%d_%H-%M-%S')}Z.zip"
             path = snapshots.download_path("TV", saved["id"])
             original_zip = path.read_bytes()
             with zipfile.ZipFile(path) as archive:
@@ -89,6 +92,7 @@ def test_snapshot_api_round_trip_and_preservation(library):
             downloaded = await client.get(f"{url}/{saved['id']}/download")
             assert downloaded.status_code == 200 and downloaded.content == original_zip
             assert downloaded.headers["content-type"] == "application/zip"
+            assert downloaded.headers["content-disposition"] == f'attachment; filename="{saved["filename"]}"'
             assert len((await client.get(url)).json()["snapshots"]) == 2
             assert (await client.post(url)).status_code == 404
             assert (await client.get(f"/api/libraries/Movies/snapshots/{saved['id']}/download")).status_code == 404

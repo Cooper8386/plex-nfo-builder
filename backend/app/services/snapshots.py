@@ -32,6 +32,11 @@ MEDIA_EXTENSIONS = VIDEO_EXT | {
 SNAPSHOT_ID = re.compile(r"\d{8}T\d{12}Z-[0-9a-f]{32}")
 
 
+def snapshot_filename(name: str, snapshot_id: str) -> str:
+    created = datetime.strptime(snapshot_id[:22], "%Y%m%dT%H%M%S%fZ")
+    return f"{name}-{created.strftime('%Y-%m-%d_%H-%M-%S')}Z.zip"
+
+
 def library_path(name: str) -> Path:
     if not name or name in {".", ".."} or any(c in name for c in "/\\:"):
         raise ValueError("Choose a single library")
@@ -71,7 +76,8 @@ def list_snapshots(name: str) -> list[dict]:
             with zipfile.ZipFile(path) as archive:
                 metadata = json.loads(archive.comment)
             snapshots.append({
-                "id": path.stem, "filename": path.name, "created_at": metadata["created_at"],
+                "id": path.stem, "filename": snapshot_filename(name, path.stem),
+                "created_at": metadata["created_at"],
                 "file_count": metadata["file_count"], "size_bytes": path.stat().st_size,
                 "skipped_link_count": metadata.get("skipped_link_count", 0),
             })
@@ -180,7 +186,7 @@ def create_snapshot(name: str, job: dict) -> dict:
         with temporary.open("r+b") as completed:
             os.fsync(completed.fileno())
         temporary.replace(destination)
-        return {"id": snapshot_id, "filename": destination.name, **metadata,
+        return {"id": snapshot_id, "filename": snapshot_filename(name, snapshot_id), **metadata,
                 "size_bytes": destination.stat().st_size}
     finally:
         temporary.unlink(missing_ok=True)

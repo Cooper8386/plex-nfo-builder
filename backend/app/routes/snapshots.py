@@ -51,4 +51,5 @@ def download_snapshot(name: str, snapshot_id: str):
         raise HTTPException(400, str(error)) from error
     except FileNotFoundError as error:
         raise HTTPException(404, str(error)) from error
-    return FileResponse(path, media_type="application/zip", filename=f"{name}-{path.name}")
+    return FileResponse(path, media_type="application/zip",
+                        filename=snapshots.snapshot_filename(name, snapshot_id))
