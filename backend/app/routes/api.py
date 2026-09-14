@@ -545,10 +545,9 @@ def library_wipe_sidecars(name: str, payload: LibraryWipeIn):
     """Delete every ``.plex-nfo-builder.json`` sidecar in ``name``.
 
     The sidecar is the only on-disk record of bindings + overrides, so this
-    is destructive: after running, scanning the library re-discovers folders
-    but they come back unmatched. Use this when sidecars from a previous
-    install have gone bad and you want to start clean from the database.
-    NFOs and artwork are NOT touched - run wipe-nfo for that.
+    is destructive. Matching database rows remain, but artwork selections are
+    cleared with each deleted sidecar so a later build starts from automatic
+    artwork choices. NFOs and artwork are NOT touched - run wipe-nfo for that.
     """
     if payload.library != name:
         raise HTTPException(400, "library mismatch")
@@ -577,6 +576,7 @@ def library_wipe_sidecars(name: str, payload: LibraryWipeIn):
 
     deleted: list[str] = []
     failed: list[dict] = []
+    selections_cleared = 0
     for t in targets:
         try:
             t.unlink()
@@ -586,11 +586,18 @@ def library_wipe_sidecars(name: str, payload: LibraryWipeIn):
         except Exception as e:  # noqa: BLE001
             failed.append({"path": str(t), "reason": str(e)})
             logger.warning("library wipe-sidecars: delete failed for {}: {}", t, e)
+            continue
+        try:
+            selections_cleared += db.clear_artwork_selection(str(t.parent))
+        except Exception as e:  # noqa: BLE001
+            failed.append({"path": str(t), "reason": f"sidecar deleted but artwork picks remain: {e}"})
+            logger.warning("library wipe-sidecars: selection clear failed for {}: {}", t.parent, e)
     return {
         "ok": True,
         "library": name,
         "sidecar_count": len(targets),
         "deleted": deleted,
+        "artwork_selections_cleared": selections_cleared,
         "failed": failed,
     }
 

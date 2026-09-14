@@ -218,8 +218,9 @@ and movie metadata are excluded from orphan classification.
 **Preview missing folders** and **Preview empty folders** find stale tracked
 items. Confirmation removes database state only, and candidates are checked
 again before being forgotten. Files stay on disk. Deleting sidecars removes
-that recovery copy; later scans can restore database-only removals from
-sidecars that still exist.
+that recovery copy and clears its manual artwork picks from the database;
+bindings and metadata overrides remain active until separately removed. Later
+scans can restore database-only removals from sidecars that still exist.
 
 Click the status pill on a detail page for live coverage by season, missing
 or foreign NFO filenames, root-level videos, and reasons a title is partial.

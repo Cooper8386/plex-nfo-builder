@@ -350,6 +350,7 @@ export const api = {
         sidecar_count: number;
         files?: string[];
         deleted?: string[];
+        artwork_selections_cleared?: number;
         failed?: any[];
       }>(
         fetch(`/api/libraries/${encodeURIComponent(name)}/wipe-sidecars`, {

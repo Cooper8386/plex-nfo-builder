@@ -516,9 +516,10 @@ export default function HelpView() {
           <li>
             <b>Blast every sidecar</b> — deletes every{" "}
             <Code>.plex-nfo-builder.json</Code> file in the library. The
-            database is untouched, so the app keeps working; but the only
-            on-disk record of bindings + overrides is gone, so a future database
-            wipe would no longer restore them. NFOs and artwork are not touched.
+            database keeps its bindings and overrides, but manual artwork picks
+            reset to automatic selection. The only on-disk recovery copy is
+            gone, so a future database wipe would no longer restore those
+            bindings or overrides. NFOs and artwork are not touched.
             Use this when sidecars from a previous install have gone bad and you
             want to regenerate them on the next save.
           </li>

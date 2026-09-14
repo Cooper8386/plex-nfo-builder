@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useConfirm } from "../components/confirm";
 
@@ -13,6 +14,7 @@ export default function LibraryMaintenance(props: {
 }) {
   const [open, setOpen] = useState(false);
   const confirmDlg = useConfirm();
+  const queryClient = useQueryClient();
 
   const runWipeNfo = async () => {
     if (props.busy) return;
@@ -185,9 +187,10 @@ export default function LibraryMaintenance(props: {
       title: `Blast every sidecar in “${props.library}”?`,
       message:
         `Found ${preview.sidecar_count} .plex-nfo-builder.json sidecar file(s) to delete.\n\n` +
-        `The sidecar is the only on-disk record of bindings + overrides for ` +
-        `each folder. After wiping them, the database still remembers everything, ` +
-        `but if you ever wipe the database too you'll have to re-bind from scratch.\n\n` +
+        `The sidecar is the on-disk record of bindings, overrides, and manual ` +
+        `artwork picks for each folder. After wiping them, the database keeps ` +
+        `bindings and overrides, but artwork picks reset to automatic selection. If you ` +
+        `later wipe the database too, you'll have to re-bind from scratch.\n\n` +
         `NFOs and artwork are NOT touched.\n\n` +
         `This cannot be undone.`,
       confirmLabel: "Blast sidecars",
@@ -200,11 +203,13 @@ export default function LibraryMaintenance(props: {
         dry_run: false,
       });
       props.flash(
-        `Deleted ${res.deleted?.length ?? 0} sidecar file(s)` +
+        `Deleted ${res.deleted?.length ?? 0} sidecar file(s) and cleared ` +
+          `${res.artwork_selections_cleared ?? 0} artwork pick(s)` +
           (res.failed && res.failed.length
             ? ` — ${res.failed.length} failed`
             : ""),
       );
+      await queryClient.invalidateQueries({ queryKey: ["artwork-candidates"] });
     } catch (e: unknown) {
       props.flash(
         `Sidecar wipe failed: ${e instanceof Error ? e.message : String(e)}`,

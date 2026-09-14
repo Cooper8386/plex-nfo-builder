@@ -55,6 +55,49 @@ def test_missing_and_escaping_paths_rejected(client, tmp_path):
     assert http.post("/api/items/clean", json={"folder_path": str(media)}, headers=headers).status_code == 400
 
 
+def test_only_sidecar_deletion_clears_artwork_picks(client):
+    http, media = client
+    folder = media / "TV" / "Example"
+    folder.mkdir(parents=True)
+    sidecar = folder / ".plex-nfo-builder.json"
+    sidecar.write_text("{}", encoding="utf-8")
+    db.upsert_item_state(str(folder), library="TV", kind="series", title="Example")
+    db.upsert_binding(str(folder), "series", "tvdb", "1")
+    db.set_artwork_selection(str(folder), "poster", "https://example.com/poster.jpg")
+    (folder / "poster.jpg").write_bytes(b"artwork")
+
+    wipe = http.post(
+        "/api/items/clean",
+        headers={"X-API-Token": "test-secret"},
+        json={"folder_path": str(folder), "rescan": False},
+    )
+
+    assert wipe.status_code == 200
+    assert db.get_artwork_selections(str(folder))["poster"]["url"].endswith("poster.jpg")
+
+    (folder / "poster.jpg").write_bytes(b"artwork")
+    library_wipe = http.post(
+        "/api/libraries/TV/wipe-nfo",
+        headers={"X-API-Token": "test-secret"},
+        json={"library": "TV", "rescan": False},
+    )
+
+    assert library_wipe.status_code == 200
+    assert db.get_artwork_selections(str(folder))["poster"]["url"].endswith("poster.jpg")
+
+    response = http.post(
+        "/api/libraries/TV/wipe-sidecars",
+        headers={"X-API-Token": "test-secret"},
+        json={"library": "TV"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["artwork_selections_cleared"] == 1
+    assert not sidecar.exists()
+    assert db.get_artwork_selections(str(folder)) == {}
+    assert db.get_binding(str(folder))["external_id"] == "1"
+
+
 def test_single_item_auto_match_writes_binding_without_building(client, monkeypatch):
     http, media = client
     folder = media / "TV" / "Example"
