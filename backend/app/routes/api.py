@@ -1867,7 +1867,7 @@ async def artwork_candidates(path: str, kind: str = "series"):
             (0 if (c.get("language") in (settings.preferred_language, *settings.fallback_languages)) else 1),
         ))
 
-    required_slots = ["poster", "background", "banner", "clearlogo"]
+    required_slots = ["poster", "background", "clearlogo"]
     required_slots.extend(
         slot for slot in slots
         if re.fullmatch(r"season-\d+-poster", slot)

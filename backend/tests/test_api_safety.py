@@ -332,14 +332,14 @@ def test_items_filter_manual_artwork_per_library(client):
     show_slots = ["poster", "background", "banner", "clearlogo", "season-00-poster"]
     db.replace_artwork_required_slots("/media/TV/Complete", show_slots)
     db.replace_artwork_required_slots("/media/TV/Missing", show_slots)
-    for slot in show_slots:
+    for slot in ["poster", "background", "clearlogo", "season-00-poster"]:
         db.set_artwork_selection("/media/TV/Complete", slot, f"https://example.com/{slot}.jpg")
     for slot in ["poster", "background", "banner", "clearart", "episode-thumb-1"]:
         db.set_artwork_selection("/media/TV/Missing", slot, f"https://example.com/{slot}.jpg")
     db.conn().execute(
         "UPDATE item_state SET season_count_local = 1 WHERE folder_path = '/media/TV/Legacy'"
     )
-    for slot in ["poster", "background", "banner", "clearlogo", "season-01-poster"]:
+    for slot in ["poster", "background", "clearlogo", "season-01-poster"]:
         db.set_artwork_selection("/media/TV/Legacy", slot, f"https://example.com/{slot}.jpg")
         db.set_artwork_selection("/media/TV/Legacy Missing", slot, f"https://example.com/{slot}.jpg")
     db.conn().execute(
@@ -348,7 +348,7 @@ def test_items_filter_manual_artwork_per_library(client):
 
     movie_slots = ["poster", "background", "banner", "clearlogo"]
     db.replace_artwork_required_slots("/media/Movies/Complete", movie_slots)
-    for slot in movie_slots:
+    for slot in ["poster", "background", "clearlogo"]:
         db.set_artwork_selection("/media/Movies/Complete", slot, f"https://example.com/{slot}.jpg")
 
     complete = http.get(
@@ -404,7 +404,14 @@ def test_artwork_candidates_record_counted_slots(client, monkeypatch):
     assert result.status_code == 200
     assert set(result.json()["slots"]) == {"season-00-poster", "season-02-poster"}
 
-    counted = ["poster", "background", "banner", "clearlogo", "season-00-poster", "season-02-poster"]
+    required = {
+        row["slot"] for row in db.conn().execute(
+            "SELECT slot FROM artwork_required_slots WHERE folder_path = ?", (str(folder),)
+        )
+    }
+    assert required == {"poster", "background", "clearlogo", "season-00-poster", "season-02-poster"}
+
+    counted = ["poster", "background", "clearlogo", "season-00-poster", "season-02-poster"]
     for slot in counted:
         db.set_artwork_selection(str(folder), slot, f"https://example.com/{slot}.jpg")
     db.set_artwork_selection(str(folder), "clearart", "https://example.com/clearart.jpg")

@@ -179,7 +179,7 @@ def main() -> None:
         scanner.scan_library("Series")
         scanner.scan_library("Movies")
         if complete_artwork_folder:
-            required = ["poster", "background", "banner", "clearlogo"]
+            required = ["poster", "background", "clearlogo"]
             db.replace_artwork_required_slots(str(complete_artwork_folder), required)
             for slot in required:
                 db.set_artwork_selection(
