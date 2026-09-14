@@ -148,6 +148,16 @@ test("browse, filter, sort, empty state, scan and scoped destructive preview", a
     path: `test-results/grid-${info.project.name}.png`,
     fullPage: true,
   });
+  await page
+    .getByLabel("Filter by manual artwork")
+    .selectOption("complete");
+  await expect(
+    page.getByRole("button", { name: "Open Afterlight", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Open Aurora", exact: true }),
+  ).toHaveCount(0);
+  await page.getByLabel("Filter by manual artwork").selectOption("any");
   await page.getByLabel("Search library").fill("Aurora");
   await expect(
     page.getByRole("button", { name: "Open Aurora", exact: true }),

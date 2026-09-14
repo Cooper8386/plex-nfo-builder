@@ -60,6 +60,7 @@ def main() -> None:
             "Afterlight",
         ]
         first = None
+        complete_artwork_folder = None
         for index, title in enumerate(titles):
             folder = media / "Series" / f"{title} (2024)"
             season = folder / "Season 01"
@@ -81,6 +82,8 @@ def main() -> None:
                 (season / "Old release.nfo").write_text(
                     "<episodedetails/>", encoding="utf-8"
                 )
+            if title == "Afterlight":
+                complete_artwork_folder = folder
             if index % 3 != 2:
                 external = str(9000 + index)
                 db.upsert_binding(
@@ -175,6 +178,14 @@ def main() -> None:
         scanner.detect_libraries()
         scanner.scan_library("Series")
         scanner.scan_library("Movies")
+        if complete_artwork_folder:
+            required = ["poster", "background", "banner", "clearlogo"]
+            db.replace_artwork_required_slots(str(complete_artwork_folder), required)
+            for slot in required:
+                db.set_artwork_selection(
+                    str(complete_artwork_folder), slot,
+                    f"https://example.invalid/{slot}.jpg",
+                )
         output = root / ".qa"
         output.mkdir(exist_ok=True)
         (output / "fixture.json").write_text(

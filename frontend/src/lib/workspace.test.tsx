@@ -294,6 +294,29 @@ test("filter change clears selection and cannot submit hidden titles", async () 
     expect(screen.queryByRole("button", { name: "Build selected" })).toBeNull(),
   );
 });
+test("manual artwork filter is independent and saved per library", async () => {
+  localStorage.setItem("pnb.artworkFilter.TV", "incomplete");
+  const list = vi.spyOn(api.items, "list").mockResolvedValue({
+    items: [title("Aurora", "/TV/Aurora")],
+  });
+  mountLibrary("TV");
+  const artwork = await screen.findByLabelText("Filter by manual artwork");
+  expect(artwork).toHaveValue("incomplete");
+  await waitFor(() =>
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ library: "TV", manual_artwork: "incomplete" }),
+    ),
+  );
+
+  await userEvent.selectOptions(artwork, "complete");
+  await waitFor(() =>
+    expect(list).toHaveBeenLastCalledWith(
+      expect.objectContaining({ library: "TV", manual_artwork: "complete" }),
+    ),
+  );
+  expect(localStorage.getItem("pnb.artworkFilter.TV")).toBe("complete");
+  expect(localStorage.getItem("pnb.artworkFilter.Movies")).toBeNull();
+});
 test("scan remains pending until the server completes and refreshes items", async () => {
   const list = vi
     .spyOn(api.items, "list")

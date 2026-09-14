@@ -1,6 +1,7 @@
 import type { Item } from "./api";
 
 export type LibFilter = "all" | "needs" | "complete";
+export type ArtworkFilter = "any" | "complete" | "incomplete";
 const NEEDS_WORK_STATUSES = "none,partial,stale,foreign,mixed";
 
 export function filterToParams(f: LibFilter): { status?: string } {
@@ -16,6 +17,16 @@ export function loadFilterFor(library: string | null): LibFilter {
     if (v === "needs" || v === "complete" || v === "all") return v;
   } catch {}
   return "all";
+}
+
+export function loadArtworkFilterFor(library: string | null): ArtworkFilter {
+  if (!library) return "any";
+  try {
+    const value = localStorage.getItem(`pnb.artworkFilter.${library}`);
+    if (value === "complete" || value === "incomplete" || value === "any")
+      return value;
+  } catch {}
+  return "any";
 }
 
 // v0.13.0 — library sort. Client-side over the (≤5000 row) items list; the

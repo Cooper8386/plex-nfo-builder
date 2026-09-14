@@ -1,5 +1,5 @@
 import { errorMessage } from "../lib/errors";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ArtworkCandidate, ArtworkProvider } from "../lib/api";
 import { mediaUrl } from "../lib/auth";
@@ -64,6 +64,10 @@ export default function ArtworkPicker({
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (candidates.data) void qc.invalidateQueries({ queryKey: ["items"] });
+  }, [candidates.data, qc]);
 
   const slotKeys = useMemo(() => {
     const slots = candidates.data?.slots ?? {};

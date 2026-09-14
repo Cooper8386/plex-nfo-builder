@@ -395,12 +395,15 @@ export const api = {
       library?: string;
       q?: string;
       status?: string;
+      manual_artwork?: "complete" | "incomplete";
       hide_organized?: boolean;
     }) => {
       const qs = new URLSearchParams();
       if (params.library) qs.set("library", params.library);
       if (params.q) qs.set("q", params.q);
       if (params.status) qs.set("status", params.status);
+      if (params.manual_artwork)
+        qs.set("manual_artwork", params.manual_artwork);
       if (params.hide_organized) qs.set("hide_organized", "1");
       const items: Item[] = [];
       let total: number;

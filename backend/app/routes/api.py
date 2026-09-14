@@ -184,6 +184,7 @@ async def library_scan(name: str):
 @router.get("/items")
 def items_list(library: Optional[str] = None,
                      status: Optional[str] = None,
+                     manual_artwork: Optional[Literal["complete", "incomplete"]] = None,
                      q: Optional[str] = None,
                      hide_organized: bool = False,
                      limit: int = Query(default=5000, ge=1, le=5000),
@@ -205,8 +206,19 @@ def items_list(library: Optional[str] = None,
     # only to throw the completes away in Python.
     if hide_organized and not statuses:
         statuses = ["none", "partial", "stale", "foreign", "mixed"]
-    rows = db.list_item_state(library=library, statuses=statuses, title_q=q, limit=limit, offset=offset)
-    return {"items": [dict(r) for r in rows], "total": db.count_item_state(library, statuses, q), "offset": offset, "limit": limit}
+    rows = db.list_item_state(
+        library=library, statuses=statuses, title_q=q,
+        manual_artwork=manual_artwork, limit=limit, offset=offset,
+    )
+    return {
+        "items": [dict(r) for r in rows],
+        "total": db.count_item_state(
+            library=library, statuses=statuses, title_q=q,
+            manual_artwork=manual_artwork,
+        ),
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 # ---- Custom tags (v0.8.0) --------------------------------------------------
@@ -1854,6 +1866,13 @@ async def artwork_candidates(path: str, kind: str = "series"):
             -(c.get("score") or 0),
             (0 if (c.get("language") in (settings.preferred_language, *settings.fallback_languages)) else 1),
         ))
+
+    required_slots = ["poster", "background", "banner", "clearlogo"]
+    required_slots.extend(
+        slot for slot in slots
+        if re.fullmatch(r"season-\d+-poster", slot)
+    )
+    db.replace_artwork_required_slots(str(p), required_slots)
 
     return {
         "path": str(p),

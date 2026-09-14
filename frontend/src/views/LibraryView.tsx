@@ -5,10 +5,12 @@ import type { ViewMode } from "../App";
 import { useConfirm } from "../components/confirm";
 import {
   filterToParams,
+  loadArtworkFilterFor,
   loadFilterFor,
   loadSortFor,
   sortItems,
   SORT_OPTIONS,
+  type ArtworkFilter,
   type LibFilter,
   type SortKey,
 } from "../lib/library";
@@ -33,6 +35,9 @@ export default function LibraryView(props: {
   const [filter, setFilter] = useState<LibFilter>(() =>
     loadFilterFor(props.library),
   );
+  const [artworkFilter, setArtworkFilter] = useState<ArtworkFilter>(() =>
+    loadArtworkFilterFor(props.library),
+  );
   const [sort, setSort] = useState<SortKey>(() => loadSortFor(props.library));
   const [query, setQuery] = useState(props.search);
   useEffect(() => {
@@ -40,12 +45,13 @@ export default function LibraryView(props: {
     return () => clearTimeout(id);
   }, [props.search]);
   const { data, isPending, isFetching, error, refetch } = useQuery({
-    queryKey: ["items", props.library, query, filter],
+    queryKey: ["items", props.library, query, filter, artworkFilter],
     queryFn: () =>
       api.items.list({
         library: props.library ?? undefined,
         q: query || undefined,
         ...filterToParams(filter),
+        manual_artwork: artworkFilter === "any" ? undefined : artworkFilter,
       }),
     enabled: !!props.library,
     staleTime: 60_000,
@@ -82,6 +88,15 @@ export default function LibraryView(props: {
     clearSelection();
     try {
       localStorage.setItem(`pnb.libFilter.${props.library}`, next);
+    } catch {
+      /* Optional preference storage. */
+    }
+  };
+  const saveArtworkFilter = (next: ArtworkFilter) => {
+    setArtworkFilter(next);
+    clearSelection();
+    try {
+      localStorage.setItem(`pnb.artworkFilter.${props.library}`, next);
     } catch {
       /* Optional preference storage. */
     }
@@ -298,7 +313,7 @@ export default function LibraryView(props: {
           <p className="text-xs text-slate-500 mt-2">
             {isPending
               ? "Loading titles…"
-              : `${items.length.toLocaleString()} ${items.length === 1 ? "title" : "titles"}${filter !== "all" || query ? " in this view" : ""}`}{" "}
+              : `${items.length.toLocaleString()} ${items.length === 1 ? "title" : "titles"}${filter !== "all" || artworkFilter !== "any" || query ? " in this view" : ""}`}{" "}
             · Local metadata & artwork
           </p>
         </div>
@@ -357,6 +372,18 @@ export default function LibraryView(props: {
             </button>
           ))}
         </div>
+        <select
+          aria-label="Filter by manual artwork"
+          className="field text-xs"
+          value={artworkFilter}
+          onChange={(event) =>
+            saveArtworkFilter(event.target.value as ArtworkFilter)
+          }
+        >
+          <option value="any">Manual artwork: Any</option>
+          <option value="complete">Manual artwork: Complete</option>
+          <option value="incomplete">Manual artwork: Incomplete</option>
+        </select>
         <select
           aria-label="Sort library"
           className="field text-xs"
@@ -462,21 +489,22 @@ export default function LibraryView(props: {
       ) : !items.length ? (
         <div className="empty-state">
           <h2 className="text-base text-slate-200 mb-2">
-            {query || filter !== "all"
+            {query || filter !== "all" || artworkFilter !== "any"
               ? "No titles match this view"
               : "Ready for your media"}
           </h2>
           <p className="text-sm">
-            {query || filter !== "all"
-              ? "Try another title or clear the status filter."
+            {query || filter !== "all" || artworkFilter !== "any"
+              ? "Try another title or clear the filters."
               : "Scan this library to discover movie and series folders."}
           </p>
-          {(query || filter !== "all") && (
+          {(query || filter !== "all" || artworkFilter !== "any") && (
             <button
               className="btn mt-4"
               onClick={() => {
                 props.onSearch("");
                 saveFilter("all");
+                saveArtworkFilter("any");
               }}
             >
               Clear filters

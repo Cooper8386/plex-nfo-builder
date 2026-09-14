@@ -164,6 +164,12 @@ def _init_schema(c: sqlite3.Connection) -> None:
                 PRIMARY KEY (folder_path, slot)
             );
 
+            CREATE TABLE IF NOT EXISTS artwork_required_slots (
+                folder_path TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                PRIMARY KEY (folder_path, slot)
+            );
+
             CREATE TABLE IF NOT EXISTS episode_overrides (
                 folder_path TEXT NOT NULL,
                 season INTEGER NOT NULL,
@@ -216,6 +222,7 @@ def _init_schema(c: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_item_state_library ON item_state(library);
             CREATE INDEX IF NOT EXISTS idx_item_state_status ON item_state(nfo_status);
             CREATE INDEX IF NOT EXISTS idx_artwork_sel_folder ON artwork_selections(folder_path);
+            CREATE INDEX IF NOT EXISTS idx_artwork_required_folder ON artwork_required_slots(folder_path);
             CREATE INDEX IF NOT EXISTS idx_episode_ovr_folder ON episode_overrides(folder_path);
 
             CREATE TABLE IF NOT EXISTS custom_tags (
@@ -471,7 +478,8 @@ def upsert_binding(folder_path: str, kind: str, provider: str, external_id: str,
     c = conn()
     with _lock:
         existing = c.execute(
-            "SELECT source_locked FROM bindings WHERE folder_path = ?", (folder_path,)
+            "SELECT kind, provider, external_id, source_locked FROM bindings WHERE folder_path = ?",
+            (folder_path,),
         ).fetchone()
         if existing and respect_lock and int(existing["source_locked"] or 0) == 1:
             return False
@@ -495,6 +503,10 @@ def upsert_binding(folder_path: str, kind: str, provider: str, external_id: str,
             """,
             (folder_path, kind, provider, external_id, title, year, language, locked, now, now),
         )
+        if existing and (
+            existing["kind"], existing["provider"], existing["external_id"]
+        ) != (kind, provider, external_id):
+            c.execute("DELETE FROM artwork_required_slots WHERE folder_path = ?", (folder_path,))
         return True
 
 
@@ -535,6 +547,8 @@ def set_binding_secondary(folder_path: str, provider: Optional[str],
             "WHERE folder_path = ?",
             (sec_p, sec_id, int(time.time()), folder_path),
         )
+        if (row["secondary_provider"], row["secondary_external_id"]) != (sec_p, sec_id):
+            c.execute("DELETE FROM artwork_required_slots WHERE folder_path = ?", (folder_path,))
         return True
 
 
@@ -575,6 +589,7 @@ def delete_binding(folder_path: str) -> None:
     c = conn()
     with _lock:
         c.execute("DELETE FROM bindings WHERE folder_path = ?", (folder_path,))
+        c.execute("DELETE FROM artwork_required_slots WHERE folder_path = ?", (folder_path,))
 
 
 # ---- Active artwork ---------------------------------------------------------
@@ -634,6 +649,7 @@ def delete_item_state(folder_path: str) -> int:
     with transaction():
         c.execute("DELETE FROM bindings WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM artwork_selections WHERE folder_path = ?", (folder_path,))
+        c.execute("DELETE FROM artwork_required_slots WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM episode_overrides WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM episode_file_overrides WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM active_artwork WHERE folder_path = ?", (folder_path,))
@@ -659,7 +675,8 @@ def get_item_state(folder_path: str) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
-def _item_state_filter(library: Optional[str], statuses: Optional[list[str]], title_q: Optional[str]) -> tuple[str, list[Any]]:
+def _item_state_filter(library: Optional[str], statuses: Optional[list[str]],
+                       title_q: Optional[str], manual_artwork: Optional[str]) -> tuple[str, list[Any]]:
     sql = " WHERE 1=1"
     args: list[Any] = []
     if library:
@@ -671,16 +688,57 @@ def _item_state_filter(library: Optional[str], statuses: Optional[list[str]], ti
     if title_q:
         sql += " AND title LIKE ? COLLATE NOCASE"
         args.append(f"%{title_q}%")
+    if manual_artwork:
+        complete = """
+            (
+              EXISTS (
+                SELECT 1 FROM artwork_required_slots required
+                WHERE required.folder_path = item_state.folder_path
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM artwork_required_slots required
+                LEFT JOIN artwork_selections selected
+                  ON selected.folder_path = required.folder_path
+                 AND selected.slot = required.slot
+                WHERE required.folder_path = item_state.folder_path
+                  AND selected.slot IS NULL
+              )
+            )
+            OR (
+              NOT EXISTS (
+                SELECT 1 FROM artwork_required_slots required
+                WHERE required.folder_path = item_state.folder_path
+              )
+              AND 4 = (
+                SELECT COUNT(DISTINCT selected.slot)
+                FROM artwork_selections selected
+                WHERE selected.folder_path = item_state.folder_path
+                  AND selected.slot IN ('poster', 'background', 'banner', 'clearlogo')
+              )
+              AND (
+                item_state.kind != 'series'
+                OR COALESCE(item_state.season_count_local, 0) <= (
+                  SELECT COUNT(DISTINCT selected.slot)
+                  FROM artwork_selections selected
+                  WHERE selected.folder_path = item_state.folder_path
+                    AND selected.slot LIKE 'season-%-poster'
+                )
+              )
+            )
+        """
+        sql += f" AND ({complete})" if manual_artwork == "complete" else f" AND NOT ({complete})"
     return sql, args
 
 
 def list_item_state(library: Optional[str] = None,
                     statuses: Optional[list[str]] = None,
                     title_q: Optional[str] = None,
+                    manual_artwork: Optional[str] = None,
                     limit: Optional[int] = None, offset: int = 0) -> list[sqlite3.Row]:
     """Internal callers process every item; HTTP callers provide page bounds."""
     c = conn()
-    where, args = _item_state_filter(library, statuses, title_q)
+    where, args = _item_state_filter(library, statuses, title_q, manual_artwork)
     sql = "SELECT * FROM item_state" + where + (
         " ORDER BY COALESCE(NULLIF(sort_title, ''), title) COLLATE NOCASE,"
         " title COLLATE NOCASE, folder_path COLLATE NOCASE LIMIT ? OFFSET ?"
@@ -692,9 +750,10 @@ def list_item_state(library: Optional[str] = None,
 
 def count_item_state(library: Optional[str] = None,
                      statuses: Optional[list[str]] = None,
-                     title_q: Optional[str] = None) -> int:
+                     title_q: Optional[str] = None,
+                     manual_artwork: Optional[str] = None) -> int:
     c = conn()
-    where, args = _item_state_filter(library, statuses, title_q)
+    where, args = _item_state_filter(library, statuses, title_q, manual_artwork)
     with _lock:
         return int(c.execute("SELECT COUNT(*) FROM item_state" + where, args).fetchone()[0])
 
@@ -764,7 +823,7 @@ def delete_library(name: str) -> dict:
     with transaction():
         # A subquery avoids SQLite's parameter limit for large libraries.
         for table in (
-            "bindings", "nfo_overrides", "artwork_selections", "episode_overrides",
+            "bindings", "nfo_overrides", "artwork_selections", "artwork_required_slots", "episode_overrides",
             "episode_file_overrides", "active_artwork", "custom_artwork", "custom_tags", "watcher_review",
         ):
             cur = c.execute(
@@ -827,6 +886,15 @@ def get_artwork_selections(folder_path: str) -> dict[str, dict[str, Any]]:
         r["slot"]: {"url": r["url"], "language": r["language"], "score": r["score"]}
         for r in rows
     }
+
+
+def replace_artwork_required_slots(folder_path: str, slots: list[str]) -> None:
+    with transaction() as c:
+        c.execute("DELETE FROM artwork_required_slots WHERE folder_path = ?", (folder_path,))
+        c.executemany(
+            "INSERT INTO artwork_required_slots(folder_path, slot) VALUES (?, ?)",
+            [(folder_path, slot) for slot in sorted(set(slots))],
+        )
 
 
 # ---- Episode overrides (v0.4.0 mapper) -------------------------------------

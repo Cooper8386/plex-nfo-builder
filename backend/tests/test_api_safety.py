@@ -312,3 +312,104 @@ def test_large_library_internal_operations_and_api_pagination(client):
     assert result.status_code == 200
     assert result.json()["total"] == 5001
     assert [item["title"] for item in result.json()["items"]] == ["Show 05000"]
+
+
+def test_items_filter_manual_artwork_per_library(client):
+    http, _ = client
+    headers = {"X-API-Token": "test-secret"}
+    items = [
+        ("/media/TV/Complete", "TV", "Complete", "series", "complete"),
+        ("/media/TV/Missing", "TV", "Missing", "series", "complete"),
+        ("/media/TV/Unknown", "TV", "Unknown", "series", "none"),
+        ("/media/TV/Legacy", "TV", "Legacy", "series", "complete"),
+        ("/media/TV/Legacy Missing", "TV", "Legacy Missing", "series", "complete"),
+        ("/media/Movies/Complete", "Movies", "Complete Movie", "movie", "complete"),
+    ]
+    db.conn().executemany(
+        "INSERT INTO item_state(folder_path,library,title,kind,nfo_status) VALUES (?, ?, ?, ?, ?)",
+        items,
+    )
+    show_slots = ["poster", "background", "banner", "clearlogo", "season-00-poster"]
+    db.replace_artwork_required_slots("/media/TV/Complete", show_slots)
+    db.replace_artwork_required_slots("/media/TV/Missing", show_slots)
+    for slot in show_slots:
+        db.set_artwork_selection("/media/TV/Complete", slot, f"https://example.com/{slot}.jpg")
+    for slot in ["poster", "background", "banner", "clearart", "episode-thumb-1"]:
+        db.set_artwork_selection("/media/TV/Missing", slot, f"https://example.com/{slot}.jpg")
+    db.conn().execute(
+        "UPDATE item_state SET season_count_local = 1 WHERE folder_path = '/media/TV/Legacy'"
+    )
+    for slot in ["poster", "background", "banner", "clearlogo", "season-01-poster"]:
+        db.set_artwork_selection("/media/TV/Legacy", slot, f"https://example.com/{slot}.jpg")
+        db.set_artwork_selection("/media/TV/Legacy Missing", slot, f"https://example.com/{slot}.jpg")
+    db.conn().execute(
+        "UPDATE item_state SET season_count_local = 2 WHERE folder_path = '/media/TV/Legacy Missing'"
+    )
+
+    movie_slots = ["poster", "background", "banner", "clearlogo"]
+    db.replace_artwork_required_slots("/media/Movies/Complete", movie_slots)
+    for slot in movie_slots:
+        db.set_artwork_selection("/media/Movies/Complete", slot, f"https://example.com/{slot}.jpg")
+
+    complete = http.get(
+        "/api/items",
+        params={"library": "TV", "manual_artwork": "complete", "status": "complete", "q": "Complete"},
+        headers=headers,
+    )
+    assert complete.status_code == 200
+    assert [item["title"] for item in complete.json()["items"]] == ["Complete"]
+
+    incomplete = http.get(
+        "/api/items", params={"library": "TV", "manual_artwork": "incomplete"}, headers=headers,
+    )
+    assert [item["title"] for item in incomplete.json()["items"]] == ["Legacy Missing", "Missing", "Unknown"]
+
+    legacy = http.get(
+        "/api/items", params={"library": "TV", "manual_artwork": "complete", "q": "Legacy"}, headers=headers,
+    )
+    assert [item["title"] for item in legacy.json()["items"]] == ["Legacy"]
+
+    movies = http.get(
+        "/api/items", params={"library": "Movies", "manual_artwork": "complete"}, headers=headers,
+    )
+    assert [item["title"] for item in movies.json()["items"]] == ["Complete Movie"]
+
+
+def test_artwork_candidates_record_counted_slots(client, monkeypatch):
+    http, media = client
+    headers = {"X-API-Token": "test-secret"}
+    folder = media / "TV" / "Show"
+    folder.mkdir(parents=True)
+    db.upsert_item_state(str(folder), library="TV", kind="series", title="Show")
+    db.upsert_binding(str(folder), "series", "tvdb", "1")
+    remote = type("Remote", (), {})()
+    remote.series_extended = AsyncMock(return_value={
+        "artworks": [],
+        "seasons": [{"number": 0}, {"number": 2}],
+        "remoteIds": [],
+    })
+    monkeypatch.setattr(api, "get_client", lambda: remote)
+    monkeypatch.setattr(
+        api.artwork_svc,
+        "list_candidates",
+        lambda *_args, season_number=None, **_kwargs: (
+            [{"url": f"https://example.com/season-{season_number}.jpg", "score": 0, "language": None}]
+            if season_number is not None else []
+        ),
+    )
+
+    result = http.get(
+        "/api/artwork/candidates", params={"path": str(folder), "kind": "series"}, headers=headers,
+    )
+    assert result.status_code == 200
+    assert set(result.json()["slots"]) == {"season-00-poster", "season-02-poster"}
+
+    counted = ["poster", "background", "banner", "clearlogo", "season-00-poster", "season-02-poster"]
+    for slot in counted:
+        db.set_artwork_selection(str(folder), slot, f"https://example.com/{slot}.jpg")
+    db.set_artwork_selection(str(folder), "clearart", "https://example.com/clearart.jpg")
+    db.set_artwork_selection(str(folder), "episode-thumb-1", "https://example.com/thumb.jpg")
+    filtered = http.get(
+        "/api/items", params={"library": "TV", "manual_artwork": "complete"}, headers=headers,
+    )
+    assert [item["title"] for item in filtered.json()["items"]] == ["Show"]
