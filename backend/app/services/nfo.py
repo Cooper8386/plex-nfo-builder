@@ -129,10 +129,10 @@ def _emit_people(root: ET.Element, record: dict, provider: str) -> None:
     """Emit cast portraits and Plex-supported director/writer credits."""
     def source_order(person: dict) -> tuple[bool, int]:
         value = person.get("sort" if provider == "tvdb" else "order")
-        ranked = isinstance(value, int) and not isinstance(value, bool)
-        if provider == "tvdb" and value == 0:
-            ranked = False
-        return not ranked, value if ranked else 0
+        if (isinstance(value, int) and not isinstance(value, bool)
+                and (provider != "tvdb" or value != 0)):
+            return False, value
+        return True, 0
 
     people: list[tuple[dict, str]] = []
     if provider == "tvdb":
