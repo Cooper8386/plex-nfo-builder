@@ -424,7 +424,7 @@ def test_items_filter_manual_artwork_per_library(client):
     show_slots = ["poster", "background", "banner", "clearlogo", "season-00-poster"]
     db.replace_artwork_required_slots("/media/TV/Complete", show_slots)
     db.replace_artwork_required_slots("/media/TV/Missing", show_slots)
-    for slot in ["poster", "background", "clearlogo", "season-00-poster"]:
+    for slot in ["poster", "background", "clearlogo"]:
         db.set_artwork_selection("/media/TV/Complete", slot, f"https://example.com/{slot}.jpg")
     for slot in ["poster", "background", "banner", "clearart", "episode-thumb-1"]:
         db.set_artwork_selection("/media/TV/Missing", slot, f"https://example.com/{slot}.jpg")
@@ -501,9 +501,9 @@ def test_artwork_candidates_record_counted_slots(client, monkeypatch):
             "SELECT slot FROM artwork_required_slots WHERE folder_path = ?", (str(folder),)
         )
     }
-    assert required == {"poster", "background", "clearlogo", "season-00-poster", "season-02-poster"}
+    assert required == {"poster", "background", "clearlogo", "season-02-poster"}
 
-    counted = ["poster", "background", "clearlogo", "season-00-poster", "season-02-poster"]
+    counted = ["poster", "background", "clearlogo", "season-02-poster"]
     for slot in counted:
         db.set_artwork_selection(str(folder), slot, f"https://example.com/{slot}.jpg")
     db.set_artwork_selection(str(folder), "clearart", "https://example.com/clearart.jpg")

@@ -1969,7 +1969,7 @@ async def artwork_candidates(path: str, kind: str = "series"):
     required_slots = ["poster", "background", "clearlogo"]
     required_slots.extend(
         slot for slot in slots
-        if re.fullmatch(r"season-\d+-poster", slot)
+        if slot != "season-00-poster" and re.fullmatch(r"season-\d+-poster", slot)
     )
     db.replace_artwork_required_slots(str(p), required_slots)
 

@@ -706,7 +706,7 @@ def _item_state_filter(library: Optional[str], statuses: Optional[list[str]],
               EXISTS (
                 SELECT 1 FROM artwork_required_slots required
                 WHERE required.folder_path = item_state.folder_path
-                  AND required.slot NOT IN ('banner', 'clearart')
+                  AND required.slot NOT IN ('banner', 'clearart', 'season-00-poster')
               )
               AND NOT EXISTS (
                 SELECT 1
@@ -715,7 +715,7 @@ def _item_state_filter(library: Optional[str], statuses: Optional[list[str]],
                   ON selected.folder_path = required.folder_path
                  AND selected.slot = required.slot
                 WHERE required.folder_path = item_state.folder_path
-                  AND required.slot NOT IN ('banner', 'clearart')
+                  AND required.slot NOT IN ('banner', 'clearart', 'season-00-poster')
                   AND selected.slot IS NULL
               )
             )
@@ -723,7 +723,7 @@ def _item_state_filter(library: Optional[str], statuses: Optional[list[str]],
               NOT EXISTS (
                 SELECT 1 FROM artwork_required_slots required
                 WHERE required.folder_path = item_state.folder_path
-                  AND required.slot NOT IN ('banner', 'clearart')
+                  AND required.slot NOT IN ('banner', 'clearart', 'season-00-poster')
               )
               AND 3 = (
                 SELECT COUNT(DISTINCT selected.slot)
