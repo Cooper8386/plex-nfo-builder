@@ -1,7 +1,7 @@
 import { errorMessage } from "../lib/errors";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type NfoExplainSeason } from "../lib/api";
 import { useConfirm } from "../components/confirm";
 
 // v0.11.7 — inline diagnostic panel that explains *why* the folder has the
@@ -152,6 +152,7 @@ export function WhyStatusPanel({
   path: string;
   onClose: () => void;
 }) {
+  const qc = useQueryClient();
   const q = useQuery({
     queryKey: ["nfo-explain", path],
     queryFn: () => api.items.nfoExplain(path),
@@ -160,6 +161,54 @@ export function WhyStatusPanel({
   const [expandSeasons, setExpandSeasons] = useState<Record<number, boolean>>(
     {},
   );
+  const [ignoreBusy, setIgnoreBusy] = useState(false);
+  const [ignoreMsg, setIgnoreMsg] = useState<string | null>(null);
+
+  const refreshStatus = async () => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["nfo-explain", path] }),
+      qc.invalidateQueries({ queryKey: ["detail", path] }),
+      qc.invalidateQueries({ queryKey: ["items"] }),
+    ]);
+  };
+
+  const setIgnored = async (filePath: string, ignored: boolean) => {
+    if (ignoreBusy) return;
+    setIgnoreBusy(true);
+    setIgnoreMsg(null);
+    try {
+      await api.items.nfoIgnore({
+        folder_path: path,
+        file_path: filePath,
+        ignored,
+      });
+      setIgnoreMsg(
+        ignored
+          ? "Episode excluded from completion checks."
+          : "Episode restored to completion checks.",
+      );
+      await refreshStatus();
+    } catch (e: unknown) {
+      setIgnoreMsg(`Could not update ignored episode: ${errorMessage(e)}`);
+    } finally {
+      setIgnoreBusy(false);
+    }
+  };
+
+  const clearIgnored = async () => {
+    if (ignoreBusy) return;
+    setIgnoreBusy(true);
+    setIgnoreMsg(null);
+    try {
+      await api.items.clearNfoIgnores({ folder_path: path });
+      setIgnoreMsg("Ignored episodes restored to completion checks.");
+      await refreshStatus();
+    } catch (e: unknown) {
+      setIgnoreMsg(`Could not clear ignored episodes: ${errorMessage(e)}`);
+    } finally {
+      setIgnoreBusy(false);
+    }
+  };
 
   return (
     <div className="mb-4 rounded-lg border border-slate-800 bg-slate-900/60">
@@ -199,6 +248,18 @@ export function WhyStatusPanel({
       )}
       {q.data && (
         <div className="p-3 space-y-3">
+          {ignoreMsg && (
+            <p
+              role={ignoreMsg.startsWith("Could not") ? "alert" : "status"}
+              className={`text-[11px] ${
+                ignoreMsg.startsWith("Could not")
+                  ? "text-rose-300"
+                  : "text-slate-400"
+              }`}
+            >
+              {ignoreMsg}
+            </p>
+          )}
           {/* Top counters */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
             <CounterCell label="Status" value={q.data.status} />
@@ -223,10 +284,15 @@ export function WhyStatusPanel({
                 />
                 <CounterCell
                   label="Episode NFOs"
-                  value={`${q.data.nfo_count} / ${q.data.video_count}`}
+                  value={`${q.data.nfo_count} / ${q.data.video_count}${
+                    q.data.ignored_episode_count > 0
+                      ? ` · ${q.data.ignored_episode_count} ignored`
+                      : ""
+                  }`}
                   tone={
                     q.data.video_count > 0 &&
-                    q.data.nfo_count >= q.data.video_count
+                    q.data.nfo_count + q.data.ignored_episode_count >=
+                      q.data.video_count
                       ? "ok"
                       : "warn"
                   }
@@ -289,6 +355,7 @@ export function WhyStatusPanel({
                       <th className="text-right px-2 py-1">Videos</th>
                       <th className="text-right px-2 py-1">NFOs</th>
                       <th className="text-right px-2 py-1">Missing</th>
+                      <th className="text-right px-2 py-1">Ignored</th>
                       <th className="text-right px-2 py-1">Foreign</th>
                       <th className="text-right px-2 py-1">season.nfo</th>
                       <th className="px-2 py-1"></th>
@@ -298,9 +365,11 @@ export function WhyStatusPanel({
                     {q.data.seasons.map((s) => {
                       const expanded = !!expandSeasons[s.season];
                       const hasDetails =
-                        s.missing.length > 0 || s.foreign.length > 0;
+                        s.missing.length > 0 ||
+                        s.ignored.length > 0 ||
+                        s.foreign.length > 0;
                       const trouble =
-                        s.nfo_count < s.video_count || s.foreign_nfo_count > 0;
+                        s.missing_total > 0 || s.foreign_nfo_count > 0;
                       return (
                         <tr
                           key={s.season}
@@ -311,7 +380,11 @@ export function WhyStatusPanel({
                           <td className="px-2 py-1 align-top">
                             S{String(s.season).padStart(2, "0")}
                             {expanded && hasDetails && (
-                              <ExpandedSeasonDetails s={s} />
+                              <ExpandedSeasonDetails
+                                s={s}
+                                busy={ignoreBusy}
+                                onSetIgnored={setIgnored}
+                              />
                             )}
                           </td>
                           <td className="px-2 py-1 text-right align-top">
@@ -334,6 +407,15 @@ export function WhyStatusPanel({
                             }`}
                           >
                             {s.missing_total}
+                          </td>
+                          <td
+                            className={`px-2 py-1 text-right align-top ${
+                              s.ignored_total > 0
+                                ? "text-indigo-300"
+                                : "text-slate-500"
+                            }`}
+                          >
+                            {s.ignored_total}
                           </td>
                           <td
                             className={`px-2 py-1 text-right align-top ${
@@ -395,6 +477,25 @@ export function WhyStatusPanel({
               </div>
             )}
 
+          {q.data.ignored_episode_files.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 border-t border-slate-800 pt-3">
+              <span className="text-[11px] text-slate-500 flex-1">
+                Saved ignores affect completion only while their episode NFO
+                is missing. Clear removes active and stale ignores.
+              </span>
+              <button
+                type="button"
+                className="text-[11px] px-2 py-1 rounded border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 disabled:opacity-50"
+                onClick={clearIgnored}
+                disabled={ignoreBusy}
+              >
+                {ignoreBusy
+                  ? "Updating…"
+                  : `Clear ignored (${q.data.ignored_episode_files.length})`}
+              </button>
+            </div>
+          )}
+
           <div className="text-[11px] text-slate-500 leading-snug">
             <b>partial</b>: tvshow.nfo exists but some episodes don't have NFOs.{" "}
             <b>mixed</b>: tvshow.nfo plus a mix of builder-written and outside
@@ -411,15 +512,15 @@ export function WhyStatusPanel({
 
 function ExpandedSeasonDetails({
   s,
+  busy,
+  onSetIgnored,
 }: {
-  s: {
-    season: number;
-    missing: string[];
-    missing_total: number;
-    foreign: string[];
-    foreign_total: number;
-  };
+  s: NfoExplainSeason;
+  busy: boolean;
+  onSetIgnored: (filePath: string, ignored: boolean) => void;
 }) {
+  const missing = filesWithPaths(s.missing, s.missing_paths);
+  const ignored = filesWithPaths(s.ignored, s.ignored_paths);
   return (
     <div className="mt-2 space-y-1.5 text-[11px] font-mono text-slate-400 max-w-md">
       {s.missing.length > 0 && (
@@ -428,13 +529,52 @@ function ExpandedSeasonDetails({
             Missing NFO
           </div>
           <ul className="list-disc pl-5">
-            {s.missing.map((n) => (
-              <li key={`m-${n}`} className="break-all">
-                {n}
+            {missing.map(({ name, path }) => (
+              <li key={`m-${path}`} className="flex items-start gap-2">
+                <span className="break-all flex-1" title={path}>
+                  {name}
+                </span>
+                <button
+                  type="button"
+                  className="font-sans text-[10px] text-indigo-300 hover:text-indigo-200 disabled:opacity-50"
+                  onClick={() => onSetIgnored(path, true)}
+                  disabled={busy}
+                  aria-label={`Ignore ${name} from completion checks`}
+                >
+                  {busy ? "Updating…" : "Ignore"}
+                </button>
               </li>
             ))}
             {s.missing_total > s.missing.length && (
               <li>+{s.missing_total - s.missing.length} more…</li>
+            )}
+          </ul>
+        </div>
+      )}
+      {ignored.length > 0 && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-indigo-300 font-sans">
+            Ignored missing NFO
+          </div>
+          <ul className="list-disc pl-5">
+            {ignored.map(({ name, path }) => (
+              <li key={`i-${path}`} className="flex items-start gap-2">
+                <span className="break-all flex-1" title={path}>
+                  {name}
+                </span>
+                <button
+                  type="button"
+                  className="font-sans text-[10px] text-indigo-300 hover:text-indigo-200 disabled:opacity-50"
+                  onClick={() => onSetIgnored(path, false)}
+                  disabled={busy}
+                  aria-label={`Restore ${name} to completion checks`}
+                >
+                  {busy ? "Updating…" : "Unignore"}
+                </button>
+              </li>
+            ))}
+            {s.ignored_total > ignored.length && (
+              <li>+{s.ignored_total - ignored.length} more…</li>
             )}
           </ul>
         </div>
@@ -458,6 +598,10 @@ function ExpandedSeasonDetails({
       )}
     </div>
   );
+}
+
+function filesWithPaths(names: string[], paths?: string[]) {
+  return names.map((name, index) => ({ name, path: paths?.[index] ?? name }));
 }
 
 function CounterCell({

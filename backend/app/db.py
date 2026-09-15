@@ -195,6 +195,17 @@ def _init_schema(c: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_episode_file_ovr_folder
                 ON episode_file_overrides(folder_path);
 
+            -- Per-series video paths whose currently-missing episode NFOs
+            -- are excluded from the computed completion status.
+            CREATE TABLE IF NOT EXISTS nfo_ignored_episodes (
+                folder_path TEXT NOT NULL,
+                file_path TEXT NOT NULL,       -- normalized path relative to folder_path
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (folder_path, file_path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_nfo_ignored_episodes_folder
+                ON nfo_ignored_episodes(folder_path);
+
             CREATE TABLE IF NOT EXISTS nfo_overrides (
                 folder_path TEXT NOT NULL,
                 scope TEXT NOT NULL,           -- 'series' | 'season-NN' | 'episode-<id>' | 'movie'
@@ -652,6 +663,7 @@ def delete_item_state(folder_path: str) -> int:
         c.execute("DELETE FROM artwork_required_slots WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM episode_overrides WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM episode_file_overrides WHERE folder_path = ?", (folder_path,))
+        c.execute("DELETE FROM nfo_ignored_episodes WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM active_artwork WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM custom_artwork WHERE folder_path = ?", (folder_path,))
         c.execute("DELETE FROM nfo_overrides WHERE folder_path = ?", (folder_path,))
@@ -827,7 +839,7 @@ def delete_library(name: str) -> dict:
         # A subquery avoids SQLite's parameter limit for large libraries.
         for table in (
             "bindings", "nfo_overrides", "artwork_selections", "artwork_required_slots", "episode_overrides",
-            "episode_file_overrides", "active_artwork", "custom_artwork", "custom_tags", "watcher_review",
+            "episode_file_overrides", "nfo_ignored_episodes", "active_artwork", "custom_artwork", "custom_tags", "watcher_review",
         ):
             cur = c.execute(
                 f"DELETE FROM {table} WHERE folder_path IN (SELECT folder_path FROM item_state WHERE library = ?)",
@@ -1007,6 +1019,46 @@ def get_episode_file_overrides(folder_path: str) -> dict[str, dict]:
         }
         for r in rows
     }
+
+
+# ---- Ignored missing episode NFOs -----------------------------------------
+
+def set_nfo_ignored_episode(folder_path: str, file_path: str) -> None:
+    """Ignore one folder-relative video path in series NFO status checks."""
+    c = conn()
+    with _lock:
+        c.execute(
+            """
+            INSERT OR REPLACE INTO nfo_ignored_episodes(folder_path, file_path, created_at)
+            VALUES (?,?,?)
+            """,
+            (folder_path, file_path, int(time.time())),
+        )
+
+
+def clear_nfo_ignored_episode(folder_path: str, file_path: Optional[str] = None) -> int:
+    c = conn()
+    with _lock:
+        if file_path is None:
+            cur = c.execute(
+                "DELETE FROM nfo_ignored_episodes WHERE folder_path = ?", (folder_path,)
+            )
+        else:
+            cur = c.execute(
+                "DELETE FROM nfo_ignored_episodes WHERE folder_path = ? AND file_path = ?",
+                (folder_path, file_path),
+            )
+        return cur.rowcount
+
+
+def get_nfo_ignored_episodes(folder_path: str) -> list[str]:
+    c = conn()
+    with _lock:
+        rows = c.execute(
+            "SELECT file_path FROM nfo_ignored_episodes WHERE folder_path = ? ORDER BY file_path",
+            (folder_path,),
+        ).fetchall()
+    return [str(row["file_path"]) for row in rows]
 
 
 # ---- NFO field overrides (v0.5.3) ------------------------------------------

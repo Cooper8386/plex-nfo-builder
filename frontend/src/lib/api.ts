@@ -77,7 +77,13 @@ export type NfoExplainSeason = {
   nfo_count: number;
   foreign_nfo_count: number;
   missing: string[];
+  /** Folder-relative paths paired with `missing` when names are ambiguous. */
+  missing_paths?: string[];
   missing_total: number;
+  ignored: string[];
+  /** Folder-relative paths paired with `ignored` when names are ambiguous. */
+  ignored_paths?: string[];
+  ignored_total: number;
   foreign: string[];
   foreign_total: number;
   season_nfo: boolean;
@@ -90,6 +96,10 @@ export type NfoExplain = {
   video_count: number;
   nfo_count: number;
   foreign_nfo_count: number;
+  /** Missing episode files excluded from computed completion status. */
+  ignored_episode_count: number;
+  /** Stored folder-relative ignores, including entries for files no longer present. */
+  ignored_episode_files: string[];
   show_nfo: { path: string | null; present: boolean; foreign: boolean } | null;
   movie_nfo: { path: string | null; present: boolean; foreign: boolean } | null;
   seasons: NfoExplainSeason[];
@@ -434,6 +444,26 @@ export const api = {
     nfoExplain: (path: string) =>
       J<NfoExplain>(
         fetch(`/api/items/nfo-explain?path=${encodeURIComponent(path)}`),
+      ),
+    nfoIgnore: (body: {
+      folder_path: string;
+      file_path: string;
+      ignored: boolean;
+    }) =>
+      J<{ ok: true; ignored: string[]; status: string }>(
+        fetch("/api/items/nfo-ignore", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      ),
+    clearNfoIgnores: (body: { folder_path: string }) =>
+      J<{ ok: true; ignored: string[]; status: string }>(
+        fetch("/api/items/nfo-ignore/clear", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
       ),
     tags: {
       add: (folder_path: string, tag: string) =>

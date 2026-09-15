@@ -5,7 +5,7 @@ import asyncio
 import hashlib
 import re
 from collections import deque
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
@@ -982,9 +982,108 @@ def items_nfo_explain(path: str):
         kind = "series"
     else:
         kind = "movie" if scanner.folder_looks_like_movie(p) else "series"
-    payload = scanner.explain_nfo_state(p, kind=kind)
+    payload = scanner.explain_nfo_state(
+        p, kind=kind, ignored_episode_files=set(db.get_nfo_ignored_episodes(str(p))),
+    )
     payload["path"] = str(p)
     return payload
+
+
+class NfoIgnoreIn(BaseModel):
+    folder_path: str
+    file_path: str
+    ignored: bool
+
+
+class NfoIgnoreClearIn(BaseModel):
+    folder_path: str
+
+
+def _nfo_ignore_relative_path(file_path: str) -> str:
+    relative = PurePosixPath(file_path.replace("\\", "/"))
+    if (str(relative) in {"", "."} or relative.is_absolute()
+            or PureWindowsPath(file_path).drive or ".." in relative.parts):
+        raise HTTPException(status_code=400, detail="file_path must be a folder-relative path")
+    return relative.as_posix()
+
+
+def _rescan_nfo_ignore_folder(folder: Path) -> str:
+    state = db.get_item_state(str(folder))
+    library = (state["library"] if state else None) or folder.parent.name
+    scanner.scan_series_folder(folder, library=library)
+    updated = db.get_item_state(str(folder))
+    return str(updated["nfo_status"]) if updated and updated["nfo_status"] else "none"
+
+
+@router.post("/items/nfo-ignore")
+def items_nfo_ignore(payload: NfoIgnoreIn):
+    """Include or exclude one currently-missing series episode from status."""
+    folder = _safe_item_folder(payload.folder_path)
+    state = db.get_item_state(str(folder))
+    kind = state["kind"] if state and state["kind"] else (
+        "movie" if folder_looks_like_movie(folder) else "series"
+    )
+    if kind != "series":
+        raise HTTPException(status_code=400, detail="NFO ignores apply only to series episodes")
+    relative = _nfo_ignore_relative_path(payload.file_path)
+    detail = scanner.explain_nfo_state(
+        folder, kind="series", ignored_episode_files=set(db.get_nfo_ignored_episodes(str(folder))),
+    )
+    missing = {path for season in detail["seasons"] for path in season["missing_paths"]}
+    ignored = {path for season in detail["seasons"] for path in season["ignored_paths"]}
+    if payload.ignored and relative not in missing:
+        raise HTTPException(status_code=400, detail="file_path must identify a currently-missing episode NFO")
+    if not payload.ignored and relative not in ignored:
+        raise HTTPException(status_code=400, detail="file_path must identify a currently-ignored episode")
+
+    if payload.ignored:
+        db.set_nfo_ignored_episode(str(folder), relative)
+    else:
+        db.clear_nfo_ignored_episode(str(folder), relative)
+    if not sidecar_svc.sync_sidecar_from_db(folder):
+        if payload.ignored:
+            db.clear_nfo_ignored_episode(str(folder), relative)
+        else:
+            db.set_nfo_ignored_episode(str(folder), relative)
+        raise HTTPException(status_code=500, detail="Could not save NFO ignore state")
+    try:
+        status = _rescan_nfo_ignore_folder(folder)
+    except Exception as error:
+        if payload.ignored:
+            db.clear_nfo_ignored_episode(str(folder), relative)
+        else:
+            db.set_nfo_ignored_episode(str(folder), relative)
+        sidecar_svc.sync_sidecar_from_db(folder)
+        logger.warning("post-NFO-ignore rescan failed for {}: {}", folder, error)
+        raise HTTPException(status_code=500, detail="Could not refresh NFO status") from error
+    return {"ok": True, "ignored": db.get_nfo_ignored_episodes(str(folder)), "status": status}
+
+
+@router.post("/items/nfo-ignore/clear")
+def items_nfo_ignore_clear(payload: NfoIgnoreClearIn):
+    """Clear every ignored episode path from one series."""
+    folder = _safe_item_folder(payload.folder_path)
+    state = db.get_item_state(str(folder))
+    kind = state["kind"] if state and state["kind"] else (
+        "movie" if folder_looks_like_movie(folder) else "series"
+    )
+    if kind != "series":
+        raise HTTPException(status_code=400, detail="NFO ignores apply only to series episodes")
+    previous = db.get_nfo_ignored_episodes(str(folder))
+    db.clear_nfo_ignored_episode(str(folder))
+    if not sidecar_svc.sync_sidecar_from_db(folder):
+        for relative in previous:
+            db.set_nfo_ignored_episode(str(folder), relative)
+        raise HTTPException(status_code=500, detail="Could not save NFO ignore state")
+    try:
+        status = _rescan_nfo_ignore_folder(folder)
+    except Exception as error:
+        for relative in previous:
+            db.set_nfo_ignored_episode(str(folder), relative)
+        sidecar_svc.sync_sidecar_from_db(folder)
+        logger.warning("post-clear-NFO-ignore rescan failed for {}: {}", folder, error)
+        raise HTTPException(status_code=500, detail="Could not refresh NFO status") from error
+    return {"ok": True, "ignored": [], "status": status}
 
 
 async def _gather_tags_for_detail(folder: Path, binding) -> dict:

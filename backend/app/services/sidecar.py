@@ -42,6 +42,8 @@ def read_sidecar(folder: Path | str) -> Optional[dict]:
         for section in ("binding", "overrides", "artwork_selections", "episode_overrides", "episode_file_overrides"):
             if data.get(section) is not None and not isinstance(data[section], dict):
                 raise ValueError(f"{section} must be an object")
+        if data.get("ignored_episode_files") is not None and not isinstance(data["ignored_episode_files"], list):
+            raise ValueError("ignored_episode_files must be an array")
         return data
     except (OSError, ValueError) as e:
         logger.warning("Sidecar at {} unreadable: {}", p, e)
@@ -95,6 +97,7 @@ def build_sidecar_payload(folder: Path | str) -> dict:
         if is_within_folder(Path(fp), Path(folder_str)):
             rel = Path(os.path.relpath(fp, folder_str)).as_posix()
             episode_file_overrides[rel] = payload
+    ignored_episode_files = db.get_nfo_ignored_episodes(folder_str)
     custom_tags = db.list_custom_tags(folder_str)
     return {
         "version": SIDECAR_VERSION,
@@ -103,6 +106,7 @@ def build_sidecar_payload(folder: Path | str) -> dict:
         "artwork_selections": artwork_selections,
         "episode_overrides": episode_overrides,
         "episode_file_overrides": episode_file_overrides,
+        "ignored_episode_files": ignored_episode_files,
         "custom_tags": custom_tags,
     }
 
@@ -216,6 +220,17 @@ def _restore_payload(folder_str: str, data: dict) -> bool:
                 folder_str, str(full), payload.get("season"),
                 payload.get("episode"), payload.get("external_id"),
             )
+            restored = True
+    ignored_files = data.get("ignored_episode_files") or []
+    if isinstance(ignored_files, list):
+        for rel in ignored_files:
+            relative = PurePosixPath(str(rel).replace("\\", "/"))
+            if relative.is_absolute() or PureWindowsPath(str(rel)).drive or ".." in relative.parts:
+                continue
+            full = Path(folder_str).joinpath(*relative.parts)
+            if full == Path(folder_str) or not is_within_folder(full, Path(folder_str)):
+                continue
+            db.set_nfo_ignored_episode(folder_str, relative.as_posix())
             restored = True
     # v0.8.0: custom user-added tags
     custom_tags = data.get("custom_tags")

@@ -125,6 +125,45 @@ def test_sidecar_restore_blocks_traversal_and_normalizes_cross_platform_paths(tm
     assert list(payload["episode_file_overrides"]) == ["Season 01/Live.mkv"]
 
 
+def test_sidecar_restores_ignored_episode_paths_safely(tmp_path, isolated_db):
+    data = {"ignored_episode_files": ["Season 01\\Live.mkv", "../outside.mkv", "C:\\outside.mkv"]}
+    assert sidecar.write_sidecar(tmp_path, data)
+    assert sidecar.restore_from_sidecar(tmp_path)
+    assert db.get_nfo_ignored_episodes(str(tmp_path)) == ["Season 01/Live.mkv"]
+    assert sidecar.build_sidecar_payload(tmp_path)["ignored_episode_files"] == ["Season 01/Live.mkv"]
+
+
+def test_ignored_missing_episode_changes_only_effective_series_status(tmp_path, touch, isolated_db):
+    touch("tvshow.nfo", scanner.PROVENANCE_TAG)
+    touch("Season 01/Live.mkv")
+    touch("Season 01/Live.nfo", scanner.PROVENANCE_TAG)
+    touch("Season 01/Missing.mkv")
+    folder = tmp_path
+    db.set_nfo_ignored_episode(str(folder), "Season 01/Missing.mkv")
+    db.set_nfo_ignored_episode(str(folder), "Season 01/Deleted.mkv")
+
+    scanner.scan_series_folder(folder, library="TV")
+    assert db.get_item_state(str(folder))["nfo_status"] == "complete"
+    detail = scanner.explain_nfo_state(
+        folder, "series", ignored_episode_files=set(db.get_nfo_ignored_episodes(str(folder))),
+    )
+    assert detail["status"] == "complete"
+    assert detail["video_count"] == 2 and detail["nfo_count"] == 1
+    assert detail["ignored_episode_count"] == 1
+    assert detail["ignored_episode_files"] == ["Season 01/Deleted.mkv", "Season 01/Missing.mkv"]
+    assert detail["seasons"][0]["missing"] == []
+    assert detail["seasons"][0]["ignored"] == ["Missing.mkv"]
+    assert detail["seasons"][0]["ignored_paths"] == ["Season 01/Missing.mkv"]
+
+    db.clear_nfo_ignored_episode(str(folder))
+    detail = scanner.explain_nfo_state(folder, "series", ignored_episode_files=set())
+    assert detail["ignored_episode_files"] == []
+
+    touch("Season 01/New.mkv")
+    scanner.scan_series_folder(folder, library="TV")
+    assert db.get_item_state(str(folder))["nfo_status"] == "partial"
+
+
 def test_sidecar_restore_rolls_back_partial_binding_for_retry(tmp_path, isolated_db, monkeypatch):
     data = {"binding": {"kind": "series", "provider": "tvdb", "external_id": "42"},
             "custom_tags": ["Favourite"]}

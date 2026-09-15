@@ -39,10 +39,11 @@ def _has_provenance(path: Path) -> bool:
 
 
 def _series_status(has_show: bool, show_prov: bool, nfo_eps: int,
-                   foreign_eps: int, expected: int) -> str:
+                   foreign_eps: int, expected: int, ignored_missing: int = 0) -> str:
     if not has_show and nfo_eps == 0:
         return "none"
-    if has_show and show_prov and nfo_eps == expected and expected > 0 and foreign_eps == 0:
+    if (has_show and show_prov and nfo_eps == expected and foreign_eps == 0
+            and (expected > 0 or ignored_missing > 0)):
         return "complete"
     if not show_prov and nfo_eps > 0 and foreign_eps == nfo_eps:
         return "foreign"
@@ -204,6 +205,7 @@ def scan_series_folder(folder: Path, library: str) -> SeriesFolderScan:
     # over each season directory so we don't iterdir() each season twice.
     nfo_state, has_prov, nfo_count, orphan_count = _scan_series_state(
         folder, season_dirs_resolved, root_eps, total_eps,
+        set(db.get_nfo_ignored_episodes(str(folder))),
     )
     poster = _local_poster_for(folder)
     binding = db.get_binding(str(folder))
@@ -305,7 +307,8 @@ def scan_movie_folder(folder: Path, library: str) -> dict:
 def _scan_series_state(folder: Path,
                        season_dirs_resolved: list[tuple[Path, list]],
                        root_eps: list,
-                       expected_episodes: int) -> tuple[str, bool, int, int]:
+                       expected_episodes: int,
+                       ignored_episode_files: Optional[set[str]] = None) -> tuple[str, bool, int, int]:
     """Single-pass series scan.
 
     v0.11.11 — walks every season directory exactly once and computes:
@@ -328,14 +331,23 @@ def _scan_series_state(folder: Path,
     nfo_eps = 0
     foreign_eps = 0
     orphan_count = 0
+    ignored_missing = 0
+    ignored_episode_files = ignored_episode_files or set()
+
+    def _relative_path(path: Path) -> Optional[str]:
+        try:
+            return path.relative_to(folder).as_posix()
+        except ValueError:
+            return None
 
     def _scan_one(season_dir: Path, eps: list) -> None:
-        nonlocal nfo_eps, foreign_eps, orphan_count
+        nonlocal nfo_eps, foreign_eps, orphan_count, ignored_missing
         try:
             entries = list(season_dir.iterdir())
         except (PermissionError, OSError):
             return
         video_stems = {os.path.normcase(ep.path.stem) for ep in eps}
+        nfo_stems: set[str] = set()
         for f in entries:
             if not f.is_file():
                 continue
@@ -349,11 +361,18 @@ def _scan_series_state(folder: Path,
                         orphan_count += 1
                     continue
                 nfo_eps += 1
+                nfo_stems.add(os.path.normcase(f.stem))
                 if not _has_provenance(f):
                     foreign_eps += 1
                 continue
             if video_stems and orphan_kind(name, video_stems):
                 orphan_count += 1
+        for ep in eps:
+            if os.path.normcase(ep.path.stem) in nfo_stems:
+                continue
+            relative = _relative_path(ep.path)
+            if relative in ignored_episode_files:
+                ignored_missing += 1
 
     for sd, eps in season_dirs_resolved:
         _scan_one(sd, eps)
@@ -363,7 +382,10 @@ def _scan_series_state(folder: Path,
 
     has_prov_anywhere = show_prov or (nfo_eps > foreign_eps and nfo_eps > 0)
 
-    status = _series_status(has_show, show_prov, nfo_eps, foreign_eps, expected_episodes)
+    status = _series_status(
+        has_show, show_prov, nfo_eps, foreign_eps,
+        expected_episodes - ignored_missing, ignored_missing,
+    )
     return status, has_prov_anywhere, nfo_eps, orphan_count
 
 
@@ -426,7 +448,8 @@ def hash_text(text: str) -> str:
 # reasons. The Detail page renders this as a "Why partial?" panel.
 
 
-def explain_nfo_state(folder: Path, kind: str) -> dict:
+def explain_nfo_state(folder: Path, kind: str,
+                      ignored_episode_files: Optional[set[str]] = None) -> dict:
     """Diagnose why a folder is in its current NFO state.
 
     Returns a dict shaped roughly like::
@@ -473,6 +496,8 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
         "video_count": 0,
         "nfo_count": 0,
         "foreign_nfo_count": 0,
+        "ignored_episode_count": 0,
+        "ignored_episode_files": [],
         "show_nfo": None,
         "movie_nfo": None,
         "seasons": [],
@@ -510,6 +535,8 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
         return out
 
     # Series ---------------------------------------------------------------
+    ignored_episode_files = ignored_episode_files or set()
+    out["ignored_episode_files"] = sorted(ignored_episode_files)
     show_nfo = folder / "tvshow.nfo"
     show_present = show_nfo.exists()
     show_foreign = show_present and not _has_provenance(show_nfo)
@@ -522,6 +549,7 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
     total_videos = 0
     total_nfos = 0
     total_foreign_nfos = 0
+    total_ignored = 0
     season_entries: list[dict] = []
 
     season_dirs = list(detect_season_dirs(folder))
@@ -552,10 +580,15 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
                         and os.path.normcase(f.stem) in video_stems]
 
         nfo_stems = {os.path.normcase(f.stem): f for f in episode_nfos}
-        missing: list[str] = []
+        missing: list[tuple[str, str]] = []
+        ignored: list[tuple[str, str]] = []
         for stem, video_name in video_stems.items():
             if stem not in nfo_stems:
-                missing.append(video_name)
+                try:
+                    relative = (sd / video_name).relative_to(folder).as_posix()
+                except ValueError:
+                    continue
+                (ignored if relative in ignored_episode_files else missing).append((video_name, relative))
         foreign = [f.name for f in nfo_stems.values() if not _has_provenance(f)]
 
         season_entries.append({
@@ -564,8 +597,12 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
             "video_count": len(eps),
             "nfo_count": len(episode_nfos),
             "foreign_nfo_count": len(foreign),
-            "missing": sorted(missing)[:50],          # cap to keep payload small
+            "missing": [name for name, _path in sorted(missing)],
             "missing_total": len(missing),
+            "missing_paths": [path for _name, path in sorted(missing)],
+            "ignored": [name for name, _path in sorted(ignored)],
+            "ignored_total": len(ignored),
+            "ignored_paths": [path for _name, path in sorted(ignored)],
             "foreign": sorted(foreign)[:50],
             "foreign_total": len(foreign),
             "season_nfo": season_nfo is not None,
@@ -573,6 +610,7 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
         total_videos += len(eps)
         total_nfos += len(episode_nfos)
         total_foreign_nfos += len(foreign)
+        total_ignored += len(ignored)
 
     # Loose root videos (anime/OVAs sitting at the series root, no Season XX).
     if root_eps:
@@ -582,9 +620,11 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
     out["video_count"] = total_videos
     out["nfo_count"] = total_nfos
     out["foreign_nfo_count"] = total_foreign_nfos
+    out["ignored_episode_count"] = total_ignored
 
     status = _series_status(show_present, show_present and not show_foreign,
-                            total_nfos, total_foreign_nfos, total_videos)
+                            total_nfos, total_foreign_nfos,
+                            total_videos - total_ignored, total_ignored)
     out["status"] = status
 
     # Friendly reasons.
@@ -598,8 +638,9 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
         )
     if total_videos == 0:
         reasons.append("No episode video files found under any Season folder.")
-    if status in ("partial", "mixed") and total_nfos < total_videos:
-        gap = total_videos - total_nfos
+    unresolved_missing = total_videos - total_nfos - total_ignored
+    if status in ("partial", "mixed") and unresolved_missing > 0:
+        gap = unresolved_missing
         reasons.append(
             f"{gap} episode file{'s' if gap != 1 else ''} have no matching .nfo yet."
         )
@@ -609,9 +650,13 @@ def explain_nfo_state(folder: Path, kind: str) -> dict:
             "were not written by plex-nfo-builder. Enable foreign NFO overwrite in Settings to replace them."
         )
     for s in out["seasons"]:
-        if s["video_count"] > 0 and s["nfo_count"] < s["video_count"]:
+        if s["missing_total"] > 0:
             reasons.append(
                 f"Season {s['season']:02d}: {s['nfo_count']} of {s['video_count']} episode NFOs present."
+            )
+        if s["ignored_total"] > 0:
+            reasons.append(
+                f"Season {s['season']:02d}: {s['ignored_total']} missing episode NFO(s) ignored."
             )
         if s["foreign_nfo_count"] > 0:
             reasons.append(

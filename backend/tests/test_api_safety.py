@@ -8,7 +8,7 @@ from httpx import ConnectError
 
 from app import config, db, main
 from app.routes import api, settings
-from app.services import artwork_download, matcher, tmdb, tvdb
+from app.services import artwork_download, matcher, scanner, sidecar, tmdb, tvdb
 
 
 @pytest.fixture
@@ -96,6 +96,98 @@ def test_only_sidecar_deletion_clears_artwork_picks(client):
     assert not sidecar.exists()
     assert db.get_artwork_selections(str(folder)) == {}
     assert db.get_binding(str(folder))["external_id"] == "1"
+
+
+def test_nfo_ignore_updates_status_and_sidecar(client):
+    http, media = client
+    headers = {"X-API-Token": "test-secret"}
+    folder = media / "TV" / "Show"
+    season = folder / "Season 01"
+    season.mkdir(parents=True)
+    (folder / "tvshow.nfo").write_text(scanner.PROVENANCE_TAG, encoding="utf-8")
+    (season / "Show S01E01.mkv").write_bytes(b"")
+    (season / "Show S01E01.nfo").write_text(scanner.PROVENANCE_TAG, encoding="utf-8")
+    (season / "Show S01E02.mkv").write_bytes(b"")
+    scanner.scan_series_folder(folder, library="TV")
+
+    response = http.post(
+        "/api/items/nfo-ignore", headers=headers,
+        json={"folder_path": str(folder), "file_path": "Season 01/Show S01E02.mkv", "ignored": True},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "ignored": ["Season 01/Show S01E02.mkv"],
+        "status": "complete",
+    }
+    assert sidecar.read_sidecar(folder)["ignored_episode_files"] == ["Season 01/Show S01E02.mkv"]
+    db.set_nfo_ignored_episode(str(folder), "Season 01/Deleted.mkv")
+    detail = http.get("/api/items/nfo-explain", headers=headers, params={"path": str(folder)}).json()
+    assert detail["video_count"] == 2 and detail["nfo_count"] == 1
+    assert detail["ignored_episode_count"] == 1
+    assert detail["ignored_episode_files"] == ["Season 01/Deleted.mkv", "Season 01/Show S01E02.mkv"]
+    assert detail["seasons"][0]["missing"] == []
+    assert detail["seasons"][0]["ignored_paths"] == ["Season 01/Show S01E02.mkv"]
+
+    unignore = http.post(
+        "/api/items/nfo-ignore", headers=headers,
+        json={"folder_path": str(folder), "file_path": "Season 01/Show S01E02.mkv", "ignored": False},
+    )
+    assert unignore.status_code == 200
+    assert unignore.json()["status"] == "partial"
+
+    assert http.post(
+        "/api/items/nfo-ignore", headers=headers,
+        json={"folder_path": str(folder), "file_path": "Season 01/Show S01E02.mkv", "ignored": True},
+    ).json()["status"] == "complete"
+    clear = http.post("/api/items/nfo-ignore/clear", headers=headers, json={"folder_path": str(folder)})
+    assert clear.status_code == 200
+    assert clear.json() == {"ok": True, "ignored": [], "status": "partial"}
+    assert sidecar.read_sidecar(folder)["ignored_episode_files"] == []
+
+
+def test_nfo_ignore_rejects_non_missing_or_escaping_target(client):
+    http, media = client
+    headers = {"X-API-Token": "test-secret"}
+    folder = media / "TV" / "Show"
+    season = folder / "Season 01"
+    season.mkdir(parents=True)
+    (folder / "tvshow.nfo").write_text(scanner.PROVENANCE_TAG, encoding="utf-8")
+    (season / "Show S01E01.mkv").write_bytes(b"")
+    (season / "Show S01E01.nfo").write_text(scanner.PROVENANCE_TAG, encoding="utf-8")
+    scanner.scan_series_folder(folder, library="TV")
+    for file_path in ("../outside.mkv", "Season 01/Show S01E01.mkv"):
+        response = http.post(
+            "/api/items/nfo-ignore", headers=headers,
+            json={"folder_path": str(folder), "file_path": file_path, "ignored": True},
+        )
+        assert response.status_code == 400
+
+
+def test_nfo_ignore_accepts_missing_episode_beyond_diagnostic_50_item_cap(client):
+    http, media = client
+    headers = {"X-API-Token": "test-secret"}
+    folder = media / "TV" / "Show"
+    season = folder / "Season 01"
+    season.mkdir(parents=True)
+    (folder / "tvshow.nfo").write_text(scanner.PROVENANCE_TAG, encoding="utf-8")
+    for episode in range(1, 52):
+        (season / f"Show S01E{episode:02d}.mkv").write_bytes(b"")
+    scanner.scan_series_folder(folder, library="TV")
+    target = "Season 01/Show S01E51.mkv"
+
+    ignored = http.post(
+        "/api/items/nfo-ignore", headers=headers,
+        json={"folder_path": str(folder), "file_path": target, "ignored": True},
+    )
+    assert ignored.status_code == 200
+    assert ignored.json()["ignored"] == [target]
+    unignored = http.post(
+        "/api/items/nfo-ignore", headers=headers,
+        json={"folder_path": str(folder), "file_path": target, "ignored": False},
+    )
+    assert unignored.status_code == 200
+    assert unignored.json()["ignored"] == []
 
 
 def test_single_item_auto_match_writes_binding_without_building(client, monkeypatch):
