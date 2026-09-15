@@ -98,6 +98,29 @@ def test_tvdb_nfo_does_not_mislabel_crew_as_cast(build):
     assert root.findtext("credits") == "Writer"
 
 
+@pytest.mark.parametrize(
+    "build,record",
+    [
+        (nfo.build_series_nfo, {"id": 1, "name": "Title", "characters": [
+            {"personName": "Second", "peopleType": "Actor", "sort": 2},
+            {"personName": "Unranked", "peopleType": "Actor"},
+            {"personName": "First", "peopleType": "Actor", "sort": 1},
+        ]}),
+        (nfo.build_series_nfo_tmdb, {"id": 1, "name": "Title", "credits": {"cast": [
+            {"name": "Second", "order": 2},
+            {"name": "Unranked"},
+            {"name": "First", "order": 1},
+        ]}}),
+    ],
+)
+def test_nfo_cast_follows_primary_provider_order(build, record):
+    root = ET.fromstring(build(record, language="eng", fallbacks=[]))
+    assert [actor.findtext("name") for actor in root.findall("actor")] == [
+        "First", "Second", "Unranked",
+    ]
+    assert [actor.findtext("order") for actor in root.findall("actor")] == ["0", "1", "2"]
+
+
 def test_tmdb_episode_fetch_includes_credits_and_episode_ids(monkeypatch):
     client = tmdb.TMDBClient.__new__(tmdb.TMDBClient)
     client._get = AsyncMock(return_value={"id": 12, "credits": {}, "external_ids": {}})

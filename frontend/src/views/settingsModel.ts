@@ -10,6 +10,10 @@ export type Settings = {
   fanart_enabled: boolean;
   tmdb_artwork_enabled: boolean;
   preferred_artwork_source: string;
+  preferred_poster_source: string;
+  preferred_background_source: string;
+  preferred_clearlogo_source: string;
+  preferred_season_source: string;
   plex_url: string | null;
   plex_auto_refresh: boolean;
   plex_refresh_delay_seconds: number;

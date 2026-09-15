@@ -26,3 +26,22 @@ def test_omdb_key_is_write_only_and_blank_preserves_saved_value(tmp_path, monkey
         assert "environment-omdb-key" not in str(payload)
 
     asyncio.run(run())
+
+
+def test_legacy_artwork_source_populates_each_slot(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SETTINGS_PATH", tmp_path / "settings.json")
+    (tmp_path / "settings.json").write_text('{"preferred_artwork_source":"tmdb"}', encoding="utf-8")
+
+    loaded = config.get_user_settings()
+    assert loaded.preferred_poster_source == "tmdb"
+    assert loaded.preferred_background_source == "tmdb"
+    assert loaded.preferred_clearlogo_source == "tmdb"
+    assert loaded.preferred_season_source == "tmdb"
+
+    async def run():
+        await settings.update_settings(settings.SettingsIn(preferred_season_source="tvdb"))
+        saved = config.get_user_settings()
+        assert saved.preferred_poster_source == "tmdb"
+        assert saved.preferred_season_source == "tvdb"
+
+    asyncio.run(run())

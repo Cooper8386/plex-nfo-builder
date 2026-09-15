@@ -1252,10 +1252,13 @@ async def _build_movie_tmdb(folder: Path, binding, settings, lang: str,
         bg = _pick_art(folder, "background", preferred_overrides,
                        tmdb_image_url(data.get("backdrop_path"), "original"))
         banner = _pick_art(folder, "banner", preferred_overrides, None)
+        clearlogo = _pick_art(folder, "clearlogo", preferred_overrides, None)
         await _download_url(poster, folder / "poster.jpg", force=force)
         await _download_url(bg, folder / "background.jpg", force=force)
         if banner:
             await _download_url(banner, folder / "banner.jpg", force=force)
+        if clearlogo:
+            await _download_url(clearlogo, folder / "clearlogo.png", force=force)
         # v0.11.17: see TVDB series build for the rationale on `.actors/`.
         try:
             tmdb_cast = credit_people(data)

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,6 +71,12 @@ class UserSettings(BaseModel):
     tmdb_artwork_enabled: bool = True
     # v0.5.8: which provider's artwork wins by default (independent of metadata source)
     preferred_artwork_source: str = "auto"
+    # Per-slot artwork source preferences. Keep the legacy global field above so
+    # old settings files and API clients keep their previous behaviour.
+    preferred_poster_source: str = "auto"
+    preferred_background_source: str = "auto"
+    preferred_clearlogo_source: str = "auto"
+    preferred_season_source: str = "auto"
     # v0.6.0: Plex Media Server integration.
     plex_url: Optional[str] = None
     plex_token: Optional[str] = None
@@ -90,6 +96,22 @@ class UserSettings(BaseModel):
     # value so every consumer can call one accessor instead of branching.
     watcher_enabled: Optional[bool] = None
     watcher_debounce_seconds: Optional[int] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_artwork_source(cls, value):
+        if not isinstance(value, dict):
+            return value
+        legacy = value.get("preferred_artwork_source")
+        if legacy in {"auto", "tvdb", "tmdb"}:
+            for field in (
+                "preferred_poster_source",
+                "preferred_background_source",
+                "preferred_clearlogo_source",
+                "preferred_season_source",
+            ):
+                value.setdefault(field, legacy)
+        return value
 
     @field_validator("plex_url")
     @classmethod

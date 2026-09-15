@@ -127,11 +127,17 @@ def _emit_genres(root: ET.Element, source_genres: list, folder_path: Optional[st
 
 def _emit_people(root: ET.Element, record: dict, provider: str) -> None:
     """Emit cast portraits and Plex-supported director/writer credits."""
+    def source_order(person: dict) -> tuple[bool, int]:
+        value = person.get("sort" if provider == "tvdb" else "order")
+        ranked = isinstance(value, int) and not isinstance(value, bool)
+        if provider == "tvdb" and value == 0:
+            ranked = False
+        return not ranked, value if ranked else 0
+
     people: list[tuple[dict, str]] = []
     if provider == "tvdb":
-        for person in record.get("characters") or []:
-            if not isinstance(person, dict):
-                continue
+        characters = [person for person in record.get("characters") or [] if isinstance(person, dict)]
+        for person in sorted(characters, key=source_order):
             kind = str(person.get("peopleType") or "Actor").lower()
             tag = "director" if kind == "director" else "credits" if kind in {"writer", "screenwriter"} else "actor"
             if tag == "actor" and kind not in {"actor", "guest star", "guest actor", "voice actor", "self"}:
@@ -140,7 +146,8 @@ def _emit_people(root: ET.Element, record: dict, provider: str) -> None:
     else:
         credits = record.get("credits") or {}
         for group in (credits.get("cast"), credits.get("guest_stars"), record.get("guest_stars")):
-            people.extend((person, "actor") for person in group or [] if isinstance(person, dict))
+            cast = [person for person in group or [] if isinstance(person, dict)]
+            people.extend((person, "actor") for person in sorted(cast, key=source_order))
         for group in (credits.get("crew"), record.get("crew")):
             for person in group or []:
                 if not isinstance(person, dict):

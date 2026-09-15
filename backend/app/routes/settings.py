@@ -87,6 +87,10 @@ class SettingsIn(BaseModel):
     fanart_enabled: Optional[bool] = None
     tmdb_artwork_enabled: Optional[bool] = None
     preferred_artwork_source: Optional[str] = None
+    preferred_poster_source: Optional[str] = None
+    preferred_background_source: Optional[str] = None
+    preferred_clearlogo_source: Optional[str] = None
+    preferred_season_source: Optional[str] = None
     # v0.6.0 Plex integration
     plex_url: Optional[str] = None
     plex_token: Optional[str] = None
@@ -145,10 +149,35 @@ async def update_settings(payload: SettingsIn):
                 cleaned_codes.append(c)
             v = cleaned_codes
         data[k] = v
+    touched = payload.model_dump(exclude_unset=True)
+    if "preferred_artwork_source" in touched and not any(
+        key in touched
+        for key in (
+            "preferred_poster_source",
+            "preferred_background_source",
+            "preferred_clearlogo_source",
+            "preferred_season_source",
+        )
+    ):
+        for key in (
+            "preferred_poster_source",
+            "preferred_background_source",
+            "preferred_clearlogo_source",
+            "preferred_season_source",
+        ):
+            data[key] = data["preferred_artwork_source"]
     if data.get("metadata_source") not in ("tvdb", "tmdb"):
         data["metadata_source"] = "tvdb"
     if data.get("preferred_artwork_source") not in ("auto", "tvdb", "tmdb"):
         data["preferred_artwork_source"] = "auto"
+    for key in (
+        "preferred_poster_source",
+        "preferred_background_source",
+        "preferred_clearlogo_source",
+        "preferred_season_source",
+    ):
+        if data.get(key) not in ("auto", "tvdb", "tmdb"):
+            data[key] = "auto"
     try:
         new = UserSettings(**data)
     except ValidationError as error:
@@ -157,7 +186,6 @@ async def update_settings(payload: SettingsIn):
     # v0.12.0: if anything touched the watcher knobs, ask the watcher to
     # re-evaluate immediately so the user doesn't have to restart the app.
     try:
-        touched = payload.model_dump(exclude_unset=True)
         if "watcher_enabled" in touched or "watcher_debounce_seconds" in touched:
             _watcher.reload()
     except Exception as e:

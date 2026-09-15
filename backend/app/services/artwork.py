@@ -446,10 +446,18 @@ async def download_movie_canonical(folder: Path, movie: dict,
         banner = _pick(
             "banner", best_artwork_url(artworks_list, MOVIE_BANNER, prefer_languages)
         )
+        clearlogo = _pick(
+            "clearlogo",
+            next(
+                (url for kind in MOVIE_CLEARLOGO_TYPES if (url := best_artwork_url(artworks_list, kind, prefer_languages))),
+                None,
+            ),
+        )
         tasks = [
             asyncio.create_task(_grab(poster, folder / "poster.jpg", "poster")),
             asyncio.create_task(_grab(background, folder / "background.jpg", "background")),
             asyncio.create_task(_grab(banner, folder / "banner.jpg", "banner")),
+            asyncio.create_task(_grab(clearlogo, folder / "clearlogo.png", "clearlogo")),
         ]
         await asyncio.gather(*tasks)
     return manifest

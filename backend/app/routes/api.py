@@ -1946,20 +1946,18 @@ async def artwork_candidates(path: str, kind: str = "series"):
             for s in target_slots:
                 _extend(s, [c])
 
-    # Sort each slot: prefer-language first, then score, with provider as a
-    # mild secondary preference. The ranking honours the user's
-    # `preferred_artwork_source` setting so manual picker views match what
-    # the build pipeline will write to disk by default.
-    pref_source = (settings.preferred_artwork_source or "auto").lower()
-    if pref_source == "tmdb":
-        provider_rank = {"custom": 0, "tmdb": 1, "tvdb": 2, "fanart": 3}
-    elif pref_source == "tvdb":
-        provider_rank = {"custom": 0, "tvdb": 1, "tmdb": 2, "fanart": 3}
-    else:
-        # "auto": tie TVDB and TMDB; the binding-primary provider already
-        # comes first in the slot since it was extended first.
-        provider_rank = {"custom": 0, "tvdb": 1, "tmdb": 1, "fanart": 2}
     for slot, items in slots.items():
+        setting = (
+            "preferred_season_source" if slot.startswith("season-")
+            else f"preferred_{slot}_source"
+        )
+        pref_source = str(getattr(settings, setting, "auto") or "auto").lower()
+        if pref_source == "tmdb":
+            provider_rank = {"custom": 0, "tmdb": 1, "tvdb": 2, "fanart": 3}
+        elif pref_source == "tvdb":
+            provider_rank = {"custom": 0, "tvdb": 1, "tmdb": 2, "fanart": 3}
+        else:
+            provider_rank = {"custom": 0, "tvdb": 1, "tmdb": 1, "fanart": 2}
         items.sort(key=lambda c: (
             provider_rank.get(c.get("provider", ""), 9),
             -(c.get("score") or 0),

@@ -625,21 +625,14 @@ function ArtworkPane({ s, update }: { s: Settings; update: UpdateSetting }) {
         title="Artwork"
         subtitle="Choose which provider's images win during a build, and filter by the language the art is tagged with. Independent of the metadata source — e.g. use TVDB for descriptions and TMDB for posters."
       />
-      <Field label="Preferred artwork source">
-        <select
-          className="bg-slate-800 px-2 py-1 rounded"
-          value={s.preferred_artwork_source || "auto"}
-          onChange={(e) => update("preferred_artwork_source", e.target.value)}
-        >
-          <option value="auto">Auto (match metadata source)</option>
-          <option value="tvdb">Prefer TVDB artwork</option>
-          <option value="tmdb">Prefer TMDB artwork</option>
-        </select>
-      </Field>
+      <ArtworkSourceField label="Poster" value={s.preferred_poster_source} onChange={(value) => update("preferred_poster_source", value)} />
+      <ArtworkSourceField label="Background / fanart" value={s.preferred_background_source} onChange={(value) => update("preferred_background_source", value)} />
+      <ArtworkSourceField label="Clear logo" value={s.preferred_clearlogo_source} onChange={(value) => update("preferred_clearlogo_source", value)} />
+      <ArtworkSourceField label="Season posters" value={s.preferred_season_source} onChange={(value) => update("preferred_season_source", value)} />
       <p className="text-xs text-slate-500 ml-64 pl-3 max-w-xl mb-6">
-        Applies to posters, backgrounds, and season posters. Your per-show
-        manual picks always override this. When the preferred provider can't be
-        reached for a show, the metadata source's own artwork is used.
+        Poster, background, and clear-logo choices apply to shows and movies.
+        Season posters apply to shows only. Manual picks always override these
+        preferences. Missing preferred art falls back to metadata-source artwork.
       </p>
 
       <div className="border-t border-slate-800 pt-4">
@@ -691,6 +684,30 @@ function ArtworkPane({ s, update }: { s: Settings; update: UpdateSetting }) {
         />
       </div>
     </>
+  );
+}
+
+function ArtworkSourceField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Field label={label}>
+      <select
+        className="bg-slate-800 px-2 py-1 rounded"
+        value={value || "auto"}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="auto">Auto (match metadata source)</option>
+        <option value="tvdb">Prefer TVDB artwork</option>
+        <option value="tmdb">Prefer TMDB artwork</option>
+      </select>
+    </Field>
   );
 }
 

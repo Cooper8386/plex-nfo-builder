@@ -140,7 +140,7 @@ in the settings API; configured indicators also account for environment keys.
 | --- | --- |
 | Metadata | Primary TVDB/TMDB source, preferred language (`eng`), fallback languages (`eng`), cache TTL (168 hours), auto-match threshold (85), foreign NFO overwrite (off), orphan sweep after builds (on). |
 | Providers | TVDB key/PIN, TMDB key and supplementary artwork (on), fanart.tv key and artwork (on), optional OMDb ratings key. |
-| Artwork | Preferred artwork source (`auto`), provider language allowlists (empty means all), language-less artwork (allowed). |
+| Artwork | Per-slot preferred sources for poster, background, clear logo, and season posters (`auto`), provider language allowlists (empty means all), language-less artwork (allowed). |
 | Plex | Server URL/token, connection test, automatic refresh (off), refresh delay (5 seconds), Builder-to-Plex path mappings. |
 | Schedules / Watcher | Recurring scan/match/build schedules and filesystem watcher controls. The watcher starts enabled unless configured otherwise. |
 | Security / About | Access and file-safety guidance, running version, project links. |
@@ -299,7 +299,7 @@ compare the stored content hash with the file contents:
 
 ## Artwork
 
-Artwork is written directly to the item folder using Plex-standard filenames — no hidden `.artwork/` subfolder, no symlinks. Automatic selection follows the configured source and language preferences, with fallback artwork when needed. Use the **Artwork** tab on a show or movie to override a slot — including per-season posters — with a provider image or custom upload. Standard slots remain available when a provider has no candidates. Selections persist in SQLite and are re-applied on builds.
+Artwork is written directly to the item folder using Plex-standard filenames — no hidden `.artwork/` subfolder, no symlinks. Configure TVDB, TMDB, or `Auto` independently for posters, backgrounds, clear logos, and season posters in **Settings → Artwork**. Poster, background, and clear-logo choices apply to shows and movies; season posters apply to shows only. A missing preferred-provider image falls back to metadata-source artwork. Use the **Artwork** tab on a show or movie to override a slot — including per-season posters — with a provider image or custom upload. Standard slots remain available when a provider has no candidates. Selections persist in SQLite and are re-applied on builds.
 
 ```
 <series>/poster.jpg
