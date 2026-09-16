@@ -727,7 +727,12 @@ export const api = {
         slots: Record<string, ArtworkCandidate[]>;
         selections: Record<
           string,
-          { url: string; language: string | null; score: number | null }
+          {
+            url: string;
+            language: string | null;
+            score: number | null;
+            ignored: boolean;
+          }
         >;
         binding_provider?: string;
       }>(
@@ -752,6 +757,14 @@ export const api = {
     clear: (body: { folder_path: string; slot?: string }) =>
       J<{ ok: true; cleared: number }>(
         fetch("/api/artwork/clear", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      ),
+    ignore: (body: { folder_path: string; slot: string; ignored?: boolean }) =>
+      J<{ ok: true; ignored: boolean }>(
+        fetch("/api/artwork/ignore", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),

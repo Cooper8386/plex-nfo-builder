@@ -43,6 +43,65 @@ test("allows custom artwork when the provider has no candidates", async () => {
   );
   expect(screen.getByRole("button", { name: "Upload image" })).toBeEnabled();
 });
+
+test("can ignore a show artwork slot", async () => {
+  vi.spyOn(api.artwork, "candidates").mockResolvedValue({
+    path: "/fixture",
+    kind: "series",
+    slots: { "season-08-poster": [] },
+    selections: {},
+  });
+  const ignore = vi.spyOn(api.artwork, "ignore").mockResolvedValue({
+    ok: true,
+    ignored: true,
+  });
+  render(
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <ConfirmProvider>
+        <ArtworkPicker path="/fixture" kind="series" />
+      </ConfirmProvider>
+    </QueryClientProvider>,
+  );
+
+  await userEvent.click(await screen.findByRole("button", { name: "Season 8 Poster" }));
+  await userEvent.click(screen.getByRole("button", { name: "Ignore Season 8 Poster" }));
+  await waitFor(() =>
+    expect(ignore).toHaveBeenCalledWith({
+      folder_path: "/fixture",
+      slot: "season-08-poster",
+    }),
+  );
+});
+
+test("keeps ignored season slots visible when providers stop returning them", async () => {
+  vi.spyOn(api.artwork, "candidates").mockResolvedValue({
+    path: "/fixture",
+    kind: "series",
+    slots: {},
+    selections: {
+      "season-08-poster": {
+        url: "",
+        language: null,
+        score: null,
+        ignored: true,
+      },
+    },
+  });
+  render(
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <ConfirmProvider>
+        <ArtworkPicker path="/fixture" kind="series" />
+      </ConfirmProvider>
+    </QueryClientProvider>,
+  );
+
+  await userEvent.click(await screen.findByRole("button", { name: /Season 8 Poster/ }));
+  expect(screen.getByRole("button", { name: "Use auto for Season 8 Poster" })).toBeVisible();
+});
 const title = (name: string, path: string): Item => ({
   folder_path: path,
   library: "TV",

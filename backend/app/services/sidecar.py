@@ -181,7 +181,13 @@ def _restore_payload(folder_str: str, data: dict) -> bool:
     artwork = data.get("artwork_selections") or {}
     if isinstance(artwork, dict):
         for slot, sel in artwork.items():
-            if not isinstance(sel, dict) or not sel.get("url"):
+            if not isinstance(sel, dict):
+                continue
+            if sel.get("ignored"):
+                db.set_artwork_ignored(folder_str, slot)
+                restored = True
+                continue
+            if not sel.get("url"):
                 continue
             db.set_artwork_selection(
                 folder_str, slot, sel["url"],

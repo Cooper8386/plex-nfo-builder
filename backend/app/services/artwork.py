@@ -275,7 +275,8 @@ async def download_series_canonical(folder: Path, series: dict,
                                     episodes: Optional[Iterable[dict]] = None,
                                     *, prefer_languages: Optional[list[str]] = None,
                                     force: bool = False,
-                                    preferred_overrides: Optional[dict[str, str]] = None) -> dict:
+                                    preferred_overrides: Optional[dict[str, str]] = None,
+                                    local_season_numbers: Optional[Iterable[int]] = None) -> dict:
     """Download poster/background/banner/season-posters and episode thumbnails
     directly into `folder` using Plex canonical naming.
 
@@ -298,6 +299,8 @@ async def download_series_canonical(folder: Path, series: dict,
 
         def _pick(slot: str, default_url: Optional[str]) -> Optional[str]:
             sel = selections.get(slot)
+            if sel and sel.get("ignored"):
+                return None
             if sel and sel.get("url"):
                 return sel["url"]
             return (preferred_overrides or {}).get(slot) or default_url
@@ -356,9 +359,15 @@ async def download_series_canonical(folder: Path, series: dict,
                 sn = int(slot.split("-")[1])
             except Exception:
                 continue
+            if sel.get("ignored"):
+                season_posters.pop(sn, None)
+                continue
             if sel.get("url"):
                 season_posters[sn] = sel["url"]
+        local_seasons = {int(number) for number in local_season_numbers or []}
         for sn, url in season_posters.items():
+            if sn not in local_seasons:
+                continue
             dest = folder / season_poster_filename(int(sn), ".jpg")
             tasks.append(asyncio.create_task(_grab(url, dest, f"season{int(sn):02d}_poster")))
 
@@ -428,6 +437,8 @@ async def download_movie_canonical(folder: Path, movie: dict,
 
         def _pick(slot: str, default_url: Optional[str]) -> Optional[str]:
             sel = selections.get(slot)
+            if sel and sel.get("ignored"):
+                return None
             if sel and sel.get("url"):
                 return sel["url"]
             pv = prefs.get(slot)
@@ -475,6 +486,8 @@ def series_image_urls(series: dict, artworks: Iterable[dict],
 
     def _pick(slot: str, default: Optional[str]) -> Optional[str]:
         sel = selections.get(slot)
+        if sel and sel.get("ignored"):
+            return None
         if sel and sel.get("url"):
             return sel["url"]
         pv = prefs.get(slot)
@@ -505,6 +518,8 @@ def movie_image_urls(movie: dict, artworks: Iterable[dict],
 
     def _pick(slot: str, default: Optional[str]) -> Optional[str]:
         sel = selections.get(slot)
+        if sel and sel.get("ignored"):
+            return None
         if sel and sel.get("url"):
             return sel["url"]
         pv = prefs.get(slot)

@@ -71,9 +71,10 @@ export default function ArtworkPicker({
 
   const slotKeys = useMemo(() => {
     const slots = candidates.data?.slots ?? {};
+    const selections = candidates.data?.selections ?? {};
     // Local uploads must remain available when providers have no artwork.
     const ordered = ["poster", "background", "banner", "clearlogo", "clearart"];
-    const seasons = Object.keys(slots)
+    const seasons = [...new Set([...Object.keys(slots), ...Object.keys(selections)])]
       .filter((k) => k.startsWith("season-") && k.endsWith("-poster"))
       .sort((a, b) => Number(a.split("-")[1]) - Number(b.split("-")[1]));
     return [...ordered, ...seasons];
@@ -125,12 +126,30 @@ export default function ArtworkPicker({
     setBusy(true);
     setMsg(null);
     try {
-      await api.artwork.clear({ folder_path: path, slot });
+      if (slot && selections[slot]?.ignored) {
+        await api.artwork.ignore({ folder_path: path, slot, ignored: false });
+      } else {
+        await api.artwork.clear({ folder_path: path, slot });
+      }
       setMsg(
         slot
           ? `Reset ${slotLabel(slot)} to auto.`
           : "Cleared all artwork selections.",
       );
+      await qc.invalidateQueries({ queryKey: ["artwork-candidates", path] });
+    } catch (e: unknown) {
+      setMsg(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ignore = async (slot: string) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.artwork.ignore({ folder_path: path, slot });
+      setMsg(`Ignored ${slotLabel(slot)} for this show. Future builds will skip it.`);
       await qc.invalidateQueries({ queryKey: ["artwork-candidates", path] });
     } catch (e: unknown) {
       setMsg(errorMessage(e));
@@ -214,6 +233,7 @@ export default function ArtworkPicker({
           {slotKeys.map((s) => {
             const isActive = current === s;
             const hasSelection = !!selections[s];
+            const isIgnored = selections[s]?.ignored;
             return (
               <button
                 key={s}
@@ -229,7 +249,9 @@ export default function ArtworkPicker({
                 }`}
               >
                 {slotLabel(s)}
-                {hasSelection && (
+                {isIgnored ? (
+                  <span className="ml-1 text-[10px] text-slate-400">ignored</span>
+                ) : hasSelection && (
                   <span className="ml-1 text-[10px] text-amber-300">★</span>
                 )}
               </button>
@@ -243,7 +265,18 @@ export default function ArtworkPicker({
             onClick={() => clear(current)}
             className="text-xs px-2 py-1 rounded bg-slate-800 border border-slate-700 hover:border-amber-500 disabled:opacity-40"
           >
-            Reset {slotLabel(current)} to auto
+            {activeSelection.ignored
+              ? `Use auto for ${slotLabel(current)}`
+              : `Reset ${slotLabel(current)} to auto`}
+          </button>
+        )}
+        {kind === "series" && current && !activeSelection?.ignored && (
+          <button
+            disabled={busy}
+            onClick={() => ignore(current)}
+            className="text-xs px-2 py-1 rounded bg-slate-800 border border-slate-700 hover:border-slate-500 disabled:opacity-40"
+          >
+            Ignore {slotLabel(current)}
           </button>
         )}
         <button
@@ -317,8 +350,8 @@ export default function ArtworkPicker({
       </div>
 
       <p className="text-xs text-slate-400 mb-4">
-        Choose an image for each slot, then build NFOs to apply your selections
-        to the local artwork.
+        Choose or ignore each slot, then build NFOs to apply your selections.
+        Ignoring a slot prevents future writes but does not delete an existing file.
       </p>
       {msg && (
         <div role="status" className="text-xs text-slate-300 mb-3">

@@ -160,6 +160,7 @@ def _init_schema(c: sqlite3.Connection) -> None:
                 url TEXT NOT NULL,
                 language TEXT,
                 score INTEGER,
+                ignored INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (folder_path, slot)
             );
@@ -300,6 +301,12 @@ def _migrate(c: sqlite3.Connection) -> None:
         if "secondary_external_id" not in cols:
             try:
                 c.execute("ALTER TABLE bindings ADD COLUMN secondary_external_id TEXT")
+            except Exception:
+                pass
+        artwork_cols = {r[1] for r in c.execute("PRAGMA table_info(artwork_selections)").fetchall()}
+        if artwork_cols and "ignored" not in artwork_cols:
+            try:
+                c.execute("ALTER TABLE artwork_selections ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0")
             except Exception:
                 pass
         lib_cols = {r[1] for r in c.execute("PRAGMA table_info(libraries)").fetchall()}
@@ -870,10 +877,22 @@ def set_artwork_selection(folder_path: str, slot: str, url: str,
     with _lock:
         c.execute(
             """
-            INSERT OR REPLACE INTO artwork_selections(folder_path, slot, url, language, score, updated_at)
-            VALUES (?,?,?,?,?,?)
+            INSERT OR REPLACE INTO artwork_selections(folder_path, slot, url, language, score, ignored, updated_at)
+            VALUES (?,?,?,?,?,0,?)
             """,
             (folder_path, slot, url, language, score, int(time.time())),
+        )
+
+
+def set_artwork_ignored(folder_path: str, slot: str) -> None:
+    c = conn()
+    with _lock:
+        c.execute(
+            """
+            INSERT OR REPLACE INTO artwork_selections(folder_path, slot, url, language, score, ignored, updated_at)
+            VALUES (?,?,'',NULL,NULL,1,?)
+            """,
+            (folder_path, slot, int(time.time())),
         )
 
 
@@ -894,11 +913,16 @@ def get_artwork_selections(folder_path: str) -> dict[str, dict[str, Any]]:
     c = conn()
     with _lock:
         rows = c.execute(
-            "SELECT slot, url, language, score FROM artwork_selections WHERE folder_path = ?",
+            "SELECT slot, url, language, score, ignored FROM artwork_selections WHERE folder_path = ?",
             (folder_path,),
         ).fetchall()
     return {
-        r["slot"]: {"url": r["url"], "language": r["language"], "score": r["score"]}
+        r["slot"]: {
+            "url": r["url"],
+            "language": r["language"],
+            "score": r["score"],
+            "ignored": bool(r["ignored"]),
+        }
         for r in rows
     }
 

@@ -451,6 +451,8 @@ async def build_series(folder: Path, *, force: bool = False,
         local_season_nums: list[int] = []
         for sd in detect_season_dirs(folder):
             local_season_nums.append(season_number_from_dir(sd.name))
+        local_season_nums.extend(parsed.season for parsed in list_season_episodes(folder))
+        local_season_nums = sorted(set(local_season_nums))
         preferred_overrides = await resolve_preferred_artwork_series(
             settings=settings,
             bound_provider="tvdb",
@@ -616,6 +618,7 @@ async def build_series(folder: Path, *, force: bool = False,
             prefer_languages=[lang, *fallbacks],
             force=force,
             preferred_overrides=preferred_overrides,
+            local_season_numbers=local_season_nums,
         )
         log.info("Artwork download complete")
         # v0.11.17: write actor portraits as local files in `.actors/`.
@@ -873,6 +876,8 @@ async def _download_url(url: Optional[str], dest: Path, *, force: bool) -> bool:
 def _selections_or(folder: Path, slot: str, fallback: Optional[str]) -> Optional[str]:
     sels = db.get_artwork_selections(str(folder))
     sel = sels.get(slot)
+    if sel and sel.get("ignored"):
+        return None
     if sel and sel.get("url"):
         return sel["url"]
     return fallback
@@ -883,6 +888,8 @@ def _pick_art(folder: Path, slot: str, preferred_overrides: dict,
     """Priority: user per-folder selection > preferred-source override > fallback."""
     sels = db.get_artwork_selections(str(folder))
     sel = sels.get(slot)
+    if sel and sel.get("ignored"):
+        return None
     if sel and sel.get("url"):
         return sel["url"]
     pv = (preferred_overrides or {}).get(slot)
@@ -1131,6 +1138,8 @@ async def _build_series_tmdb(folder: Path, binding, settings, lang: str,
             slot = f"season-{snum:02d}-poster"
             sels = db.get_artwork_selections(str(folder))
             user_sel = sels.get(slot)
+            if user_sel and user_sel.get("ignored"):
+                continue
             if user_sel and user_sel.get("url"):
                 await _download_url(user_sel["url"], folder / season_poster_filename(snum, ".jpg"), force=force)
                 continue

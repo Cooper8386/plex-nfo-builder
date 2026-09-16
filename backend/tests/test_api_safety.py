@@ -8,7 +8,7 @@ from httpx import ConnectError
 
 from app import config, db, main
 from app.routes import api, settings
-from app.services import artwork_download, matcher, scanner, sidecar, tmdb, tvdb
+from app.services import artwork, artwork_download, matcher, scanner, sidecar, tmdb, tvdb
 
 
 @pytest.fixture
@@ -96,6 +96,94 @@ def test_only_sidecar_deletion_clears_artwork_picks(client):
     assert not sidecar.exists()
     assert db.get_artwork_selections(str(folder)) == {}
     assert db.get_binding(str(folder))["external_id"] == "1"
+
+
+def test_artwork_ignore_persists_and_resets(client):
+    http, media = client
+    headers = {"X-API-Token": "test-secret"}
+    folder = media / "TV" / "Show"
+    folder.mkdir(parents=True)
+    db.upsert_item_state(str(folder), library="TV", kind="series", title="Show")
+    db.upsert_binding(str(folder), "series", "tvdb", "1")
+
+    response = http.post(
+        "/api/artwork/ignore", headers=headers,
+        json={"folder_path": str(folder), "slot": "season-08-poster"},
+    )
+
+    assert response.status_code == 200
+    assert db.get_artwork_selections(str(folder))["season-08-poster"]["ignored"] is True
+    assert sidecar.read_sidecar(folder)["artwork_selections"]["season-08-poster"]["ignored"] is True
+
+    reset = http.post(
+        "/api/artwork/ignore", headers=headers,
+        json={"folder_path": str(folder), "slot": "season-08-poster", "ignored": False},
+    )
+    assert reset.status_code == 200
+    assert db.get_artwork_selections(str(folder)) == {}
+    assert sidecar.read_sidecar(folder)["artwork_selections"] == {}
+
+
+def test_artwork_ignore_rejects_unsupported_slots_and_rolls_back(client, monkeypatch):
+    http, media = client
+    headers = {"X-API-Token": "test-secret"}
+    folder = media / "TV" / "Show"
+    folder.mkdir(parents=True)
+    db.upsert_binding(str(folder), "series", "tvdb", "1")
+
+    unsupported = http.post(
+        "/api/artwork/ignore", headers=headers,
+        json={"folder_path": str(folder), "slot": "episode-thumb-123"},
+    )
+    assert unsupported.status_code == 400
+
+    db.set_artwork_selection(str(folder), "poster", "https://example.com/poster.jpg")
+    monkeypatch.setattr(sidecar, "sync_sidecar_from_db", lambda _folder: False)
+    failed = http.post(
+        "/api/artwork/ignore", headers=headers,
+        json={"folder_path": str(folder), "slot": "poster"},
+    )
+    assert failed.status_code == 500
+    restored = db.get_artwork_selections(str(folder))["poster"]
+    assert restored["url"] == "https://example.com/poster.jpg"
+    assert restored["ignored"] is False
+
+
+def test_series_artwork_skips_ignored_and_nonlocal_season_posters(client, monkeypatch):
+    _, media = client
+    folder = media / "TV" / "Show"
+    folder.mkdir(parents=True)
+    downloaded: list[str] = []
+
+    async def fake_download(_client, _url, dest, *, force=False):
+        downloaded.append(dest.name)
+        return True
+
+    monkeypatch.setattr(artwork, "_download", fake_download)
+    remote = [
+        {"type": artwork.SEASON_POSTER, "seasonNumber": 1, "image": "/season-1.jpg"},
+        {"type": artwork.SEASON_POSTER, "seasonNumber": 8, "image": "/season-8.jpg"},
+    ]
+    series = {"seasons": [{"number": 1}, {"number": 8}]}
+
+    asyncio.run(artwork.download_series_canonical(
+        folder, series, remote, local_season_numbers=[1],
+    ))
+    assert downloaded == ["Season01-poster.jpg"]
+
+    downloaded.clear()
+    db.set_artwork_ignored(str(folder), "season-01-poster")
+    asyncio.run(artwork.download_series_canonical(
+        folder, series, remote, local_season_numbers=[1],
+    ))
+    assert downloaded == []
+
+    db.clear_artwork_selection(str(folder), "season-01-poster")
+    db.set_artwork_ignored(str(folder), "poster")
+    images = artwork.series_image_urls(
+        {"image": "/poster.jpg"}, [], folder_path=str(folder),
+    )
+    assert images["poster"] is None
 
 
 def test_nfo_ignore_updates_status_and_sidecar(client):

@@ -133,6 +133,13 @@ def test_sidecar_restores_ignored_episode_paths_safely(tmp_path, isolated_db):
     assert sidecar.build_sidecar_payload(tmp_path)["ignored_episode_files"] == ["Season 01/Live.mkv"]
 
 
+def test_sidecar_restores_ignored_artwork_slot(tmp_path, isolated_db):
+    data = {"artwork_selections": {"season-08-poster": {"ignored": True}}}
+    assert sidecar.write_sidecar(tmp_path, data)
+    assert sidecar.restore_from_sidecar(tmp_path)
+    assert db.get_artwork_selections(str(tmp_path))["season-08-poster"]["ignored"] is True
+
+
 def test_ignored_missing_episode_changes_only_effective_series_status(tmp_path, touch, isolated_db):
     touch("tvshow.nfo", scanner.PROVENANCE_TAG)
     touch("Season 01/Live.mkv")

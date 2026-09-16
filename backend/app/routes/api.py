@@ -2027,6 +2027,40 @@ async def artwork_select(payload: ArtworkSelectIn):
     return {"ok": True}
 
 
+class ArtworkIgnoreIn(BaseModel):
+    folder_path: str
+    slot: str
+    ignored: bool = True
+
+
+@router.post("/artwork/ignore")
+def artwork_ignore(payload: ArtworkIgnoreIn):
+    p = _safe_item_folder(payload.folder_path)
+    binding = db.get_binding(str(p))
+    if not binding or binding["kind"] != "series":
+        raise HTTPException(status_code=400, detail="Artwork ignores apply only to series")
+    if payload.slot not in {"poster", "background", "banner", "clearlogo", "clearart"} \
+            and not re.fullmatch(r"season-\d+-poster", payload.slot):
+        raise HTTPException(status_code=400, detail="Unsupported artwork slot")
+    previous = db.get_artwork_selections(str(p)).get(payload.slot)
+    if payload.ignored:
+        db.set_artwork_ignored(str(p), payload.slot)
+    else:
+        db.clear_artwork_selection(str(p), payload.slot)
+    if not sidecar_svc.sync_sidecar_from_db(p):
+        if previous and previous.get("ignored"):
+            db.set_artwork_ignored(str(p), payload.slot)
+        elif previous and previous.get("url"):
+            db.set_artwork_selection(
+                str(p), payload.slot, previous["url"],
+                language=previous.get("language"), score=previous.get("score"),
+            )
+        else:
+            db.clear_artwork_selection(str(p), payload.slot)
+        raise HTTPException(status_code=500, detail="Could not save artwork ignore state")
+    return {"ok": True, "ignored": payload.ignored}
+
+
 class ArtworkClearIn(BaseModel):
     folder_path: str
     slot: Optional[str] = None
