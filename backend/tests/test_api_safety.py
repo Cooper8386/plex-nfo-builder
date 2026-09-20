@@ -8,7 +8,7 @@ from httpx import ConnectError
 
 from app import config, db, main
 from app.routes import api, settings
-from app.services import artwork, artwork_download, matcher, scanner, sidecar, tmdb, tvdb
+from app.services import artwork, artwork_download, builder, matcher, scanner, sidecar, tmdb, tvdb
 
 
 @pytest.fixture
@@ -184,6 +184,34 @@ def test_series_artwork_skips_ignored_and_nonlocal_season_posters(client, monkey
         {"image": "/poster.jpg"}, [], folder_path=str(folder),
     )
     assert images["poster"] is None
+
+
+def test_banner_artwork_requires_manual_selection(client, monkeypatch):
+    _, media = client
+    folder = media / "TV" / "Show"
+    folder.mkdir(parents=True)
+    downloaded: list[tuple[str, str]] = []
+
+    async def fake_download(_client, url, dest, *, force=False):
+        downloaded.append((url, dest.name))
+        return True
+
+    monkeypatch.setattr(artwork, "_download", fake_download)
+    series_artwork = [{"type": artwork.SERIES_BANNER, "image": "/series-banner.jpg"}]
+    movie_artwork = [{"type": artwork.MOVIE_BANNER, "image": "/movie-banner.jpg"}]
+
+    assert artwork.series_image_urls({}, series_artwork, folder_path=str(folder))["banner"] is None
+    assert artwork.movie_image_urls({}, movie_artwork, folder_path=str(folder))["banner"] is None
+    assert builder._pick_art(folder, "banner", {"banner": "https://example.com/automatic.jpg"}, "https://example.com/default.jpg") is None
+    asyncio.run(artwork.download_series_canonical(folder, {}, series_artwork))
+    asyncio.run(artwork.download_movie_canonical(folder, {}, movie_artwork))
+    assert downloaded == []
+
+    db.set_artwork_selection(str(folder), "banner", "https://example.com/banner.jpg")
+    assert artwork.series_image_urls({}, series_artwork, folder_path=str(folder))["banner"] == "https://example.com/banner.jpg"
+    assert builder._pick_art(folder, "banner", {}, None) == "https://example.com/banner.jpg"
+    asyncio.run(artwork.download_series_canonical(folder, {}, series_artwork))
+    assert downloaded == [("https://example.com/banner.jpg", "banner.jpg")]
 
 
 def test_nfo_ignore_updates_status_and_sidecar(client):

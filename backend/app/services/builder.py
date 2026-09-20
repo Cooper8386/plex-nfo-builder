@@ -892,6 +892,8 @@ def _pick_art(folder: Path, slot: str, preferred_overrides: dict,
         return None
     if sel and sel.get("url"):
         return sel["url"]
+    if slot == "banner":
+        return None
     pv = (preferred_overrides or {}).get(slot)
     if pv:
         return pv

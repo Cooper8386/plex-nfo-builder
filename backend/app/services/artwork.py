@@ -303,6 +303,8 @@ async def download_series_canonical(folder: Path, series: dict,
                 return None
             if sel and sel.get("url"):
                 return sel["url"]
+            if slot == "banner":
+                return None
             return (preferred_overrides or {}).get(slot) or default_url
 
         # Series poster
@@ -441,6 +443,8 @@ async def download_movie_canonical(folder: Path, movie: dict,
                 return None
             if sel and sel.get("url"):
                 return sel["url"]
+            if slot == "banner":
+                return None
             pv = prefs.get(slot)
             if pv:
                 return pv
@@ -490,6 +494,8 @@ def series_image_urls(series: dict, artworks: Iterable[dict],
             return None
         if sel and sel.get("url"):
             return sel["url"]
+        if slot == "banner":
+            return None
         pv = prefs.get(slot)
         if pv:
             return pv
@@ -522,6 +528,8 @@ def movie_image_urls(movie: dict, artworks: Iterable[dict],
             return None
         if sel and sel.get("url"):
             return sel["url"]
+        if slot == "banner":
+            return None
         pv = prefs.get(slot)
         if pv:
             return pv
