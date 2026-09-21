@@ -14,6 +14,7 @@ export default function LibraryMaintenance(props: {
   btnHazardOutline: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
   const confirmDlg = useConfirm();
   const queryClient = useQueryClient();
   const selectedCount = props.selectedPaths.length;
@@ -21,9 +22,14 @@ export default function LibraryMaintenance(props: {
 
   const requestScope = () =>
     selectedCount ? { folder_paths: [...props.selectedPaths] } : {};
+  const report = (message: string) => {
+    setFeedback(message);
+    props.flash(message);
+  };
 
   const runWipeNfo = async () => {
     if (props.busy) return;
+    setFeedback(null);
     const scope = requestScope();
     props.setBusy(
       selectedCount
@@ -37,7 +43,7 @@ export default function LibraryMaintenance(props: {
         dry_run: true,
       });
     } catch (e: unknown) {
-      props.flash(
+      report(
         `Wipe preview failed: ${e instanceof Error ? e.message : String(e)}`,
       );
       props.setBusy(null);
@@ -45,7 +51,7 @@ export default function LibraryMaintenance(props: {
     }
     props.setBusy(null);
     if (!preview.file_count) {
-      props.flash(
+      report(
         `Nothing to wipe ${selectedCount ? `in ${selectedLabel}` : `in "${props.library}"`} — checked ${preview.folder_count} folder(s).`,
       );
       return;
@@ -76,7 +82,7 @@ export default function LibraryMaintenance(props: {
         ...scope,
         dry_run: false,
       });
-      props.flash(
+      report(
         `Wiped ${res.nfo_deleted ?? 0} NFO(s) + ${res.artwork_deleted ?? 0} artwork file(s) ` +
           `across ${res.folder_count} folder(s)` +
           (res.failed && res.failed.length
@@ -85,7 +91,7 @@ export default function LibraryMaintenance(props: {
       );
       props.invalidateItems();
     } catch (e: unknown) {
-      props.flash(`Wipe failed: ${e instanceof Error ? e.message : String(e)}`);
+      report(`Wipe failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       props.setBusy(null);
     }
@@ -93,6 +99,7 @@ export default function LibraryMaintenance(props: {
 
   const runSweepOrphans = async () => {
     if (props.busy) return;
+    setFeedback(null);
     const scope = requestScope();
     props.setBusy(
       selectedCount
@@ -116,7 +123,7 @@ export default function LibraryMaintenance(props: {
         dry_run: true,
       });
     } catch (e: unknown) {
-      props.flash(
+      report(
         `Orphan scan failed: ${e instanceof Error ? e.message : String(e)}`,
       );
       props.setBusy(null);
@@ -125,7 +132,7 @@ export default function LibraryMaintenance(props: {
     props.setBusy(null);
     const total = preview.nfo_removed + preview.thumb_removed;
     if (!total) {
-      props.flash(
+      report(
         `No orphaned sidecars found ${selectedCount ? `in ${selectedLabel}` : `in "${props.library}"`} — checked ${preview.folder_count} folder(s).`,
       );
       return;
@@ -170,7 +177,7 @@ export default function LibraryMaintenance(props: {
         dry_run: false,
         rescan: true,
       });
-      props.flash(
+      report(
         `Removed ${res.nfo_removed} orphaned NFO(s) and ${res.thumb_removed} orphaned ` +
           `thumb(s) across ${res.affected_folder_count} folder(s)` +
           (res.failed && res.failed.length
@@ -179,7 +186,7 @@ export default function LibraryMaintenance(props: {
       );
       props.invalidateItems();
     } catch (e: unknown) {
-      props.flash(
+      report(
         `Orphan sweep failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
@@ -189,6 +196,7 @@ export default function LibraryMaintenance(props: {
 
   const runWipeSidecars = async () => {
     if (props.busy) return;
+    setFeedback(null);
     const scope = requestScope();
     props.setBusy(
       selectedCount
@@ -202,7 +210,7 @@ export default function LibraryMaintenance(props: {
         dry_run: true,
       });
     } catch (e: unknown) {
-      props.flash(
+      report(
         `Sidecar preview failed: ${e instanceof Error ? e.message : String(e)}`,
       );
       props.setBusy(null);
@@ -210,7 +218,7 @@ export default function LibraryMaintenance(props: {
     }
     props.setBusy(null);
     if (!preview.sidecar_count) {
-      props.flash(
+      report(
         `No .plex-nfo-builder.json sidecars found ${selectedCount ? `in ${selectedLabel}` : `in "${props.library}"`}.`,
       );
       return;
@@ -237,7 +245,7 @@ export default function LibraryMaintenance(props: {
         ...scope,
         dry_run: false,
       });
-      props.flash(
+      report(
         `Deleted ${res.deleted?.length ?? 0} sidecar file(s) and cleared ` +
           `${res.artwork_selections_cleared ?? 0} artwork pick(s)` +
           (res.failed && res.failed.length
@@ -246,7 +254,7 @@ export default function LibraryMaintenance(props: {
       );
       await queryClient.invalidateQueries({ queryKey: ["artwork-candidates"] });
     } catch (e: unknown) {
-      props.flash(
+      report(
         `Sidecar wipe failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
@@ -327,6 +335,11 @@ export default function LibraryMaintenance(props: {
                 : "Preview sidecar deletion"}
             </button>
           </div>
+          {(props.busy || feedback) && (
+            <div className="notice" aria-live="polite">
+              {props.busy ?? feedback}
+            </div>
+          )}
         </div>
       )}
     </div>

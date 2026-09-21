@@ -376,7 +376,18 @@ test("library maintenance targets the selected titles", async () => {
       nfo_deleted: 2,
       artwork_deleted: 2,
     });
-  const sweep = vi.spyOn(api.libraries, "sweepOrphans").mockResolvedValue({
+  let finishSweep!: (
+    value: Awaited<ReturnType<typeof api.libraries.sweepOrphans>>,
+  ) => void;
+  const sweep = vi.spyOn(api.libraries, "sweepOrphans").mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finishSweep = resolve;
+      }),
+  );
+  const emptySweep: Awaited<
+    ReturnType<typeof api.libraries.sweepOrphans>
+  > = {
     ok: true,
     dry_run: true,
     library: "TV",
@@ -386,13 +397,10 @@ test("library maintenance targets the selected titles", async () => {
     thumb_removed: 0,
     folders: [],
     failed: [],
-  });
-  const sidecars = vi.spyOn(api.libraries, "wipeSidecars").mockResolvedValue({
-    ok: true,
-    dry_run: true,
-    library: "TV",
-    sidecar_count: 0,
-  });
+  };
+  const sidecars = vi
+    .spyOn(api.libraries, "wipeSidecars")
+    .mockRejectedValue(new Error("Preview unavailable"));
   mountLibrary();
   await userEvent.click(
     await screen.findByRole("button", { name: "Select Aurora" }),
@@ -403,6 +411,9 @@ test("library maintenance targets the selected titles", async () => {
   await userEvent.click(
     screen.getByRole("button", { name: /Library maintenance/ }),
   );
+  const maintenance = screen
+    .getByRole("button", { name: /Library maintenance/ })
+    .closest(".maintenance");
   expect(screen.getByText("Actions apply only to 2 selected titles.")).toBeVisible();
   await userEvent.click(
     screen.getByRole("button", { name: "Preview selected NFO + artwork wipe" }),
@@ -426,11 +437,18 @@ test("library maintenance targets the selected titles", async () => {
   await userEvent.click(
     screen.getByRole("button", { name: "Preview selected orphan cleanup" }),
   );
+  expect(maintenance).toHaveTextContent(
+    "Scanning 2 selected titles for orphaned NFO + thumbnail sidecars",
+  );
+  await act(async () => finishSweep(emptySweep));
   await waitFor(() =>
     expect(sweep).toHaveBeenCalledWith("TV", {
       dry_run: true,
       folder_paths: ["/TV/Aurora", "/TV/Daybreak"],
     }),
+  );
+  expect(maintenance).toHaveTextContent(
+    "No orphaned sidecars found in 2 selected titles",
   );
   await userEvent.click(
     screen.getByRole("button", { name: "Preview selected sidecar deletion" }),
@@ -440,6 +458,9 @@ test("library maintenance targets the selected titles", async () => {
       dry_run: true,
       folder_paths: ["/TV/Aurora", "/TV/Daybreak"],
     }),
+  );
+  expect(maintenance).toHaveTextContent(
+    "Sidecar preview failed: Preview unavailable",
   );
 });
 test("manual artwork filter is independent and saved per library", async () => {
