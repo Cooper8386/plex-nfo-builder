@@ -5,6 +5,7 @@ import { useConfirm } from "../components/confirm";
 
 export default function LibraryMaintenance(props: {
   library: string;
+  selectedPaths: string[];
   busy: string | null;
   setBusy: (v: string | null) => void;
   flash: (msg: string) => void;
@@ -15,13 +16,26 @@ export default function LibraryMaintenance(props: {
   const [open, setOpen] = useState(false);
   const confirmDlg = useConfirm();
   const queryClient = useQueryClient();
+  const selectedCount = props.selectedPaths.length;
+  const selectedLabel = `${selectedCount} selected ${selectedCount === 1 ? "title" : "titles"}`;
+
+  const requestScope = () =>
+    selectedCount ? { folder_paths: [...props.selectedPaths] } : {};
 
   const runWipeNfo = async () => {
     if (props.busy) return;
-    props.setBusy("Scanning library for NFOs and artwork…");
+    const scope = requestScope();
+    props.setBusy(
+      selectedCount
+        ? `Scanning ${selectedLabel} for NFOs and artwork…`
+        : "Scanning library for NFOs and artwork…",
+    );
     let preview: { folder_count: number; file_count?: number };
     try {
-      preview = await api.libraries.wipeNfo(props.library, { dry_run: true });
+      preview = await api.libraries.wipeNfo(props.library, {
+        ...scope,
+        dry_run: true,
+      });
     } catch (e: unknown) {
       props.flash(
         `Wipe preview failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -32,12 +46,14 @@ export default function LibraryMaintenance(props: {
     props.setBusy(null);
     if (!preview.file_count) {
       props.flash(
-        `Nothing to wipe in "${props.library}" — checked ${preview.folder_count} folder(s).`,
+        `Nothing to wipe ${selectedCount ? `in ${selectedLabel}` : `in "${props.library}"`} — checked ${preview.folder_count} folder(s).`,
       );
       return;
     }
     const ok = await confirmDlg({
-      title: `Wipe NFOs + artwork across “${props.library}”?`,
+      title: selectedCount
+        ? `Wipe NFOs + artwork from ${selectedLabel}?`
+        : `Wipe NFOs + artwork across “${props.library}”?`,
       message:
         `This will delete ${preview.file_count} file(s) across ` +
         `${preview.folder_count} folder(s):\n` +
@@ -57,6 +73,7 @@ export default function LibraryMaintenance(props: {
     );
     try {
       const res = await api.libraries.wipeNfo(props.library, {
+        ...scope,
         dry_run: false,
       });
       props.flash(
@@ -76,7 +93,12 @@ export default function LibraryMaintenance(props: {
 
   const runSweepOrphans = async () => {
     if (props.busy) return;
-    props.setBusy("Scanning library for orphaned NFO + thumbnail sidecars…");
+    const scope = requestScope();
+    props.setBusy(
+      selectedCount
+        ? `Scanning ${selectedLabel} for orphaned NFO + thumbnail sidecars…`
+        : "Scanning library for orphaned NFO + thumbnail sidecars…",
+    );
     let preview: {
       folder_count: number;
       affected_folder_count: number;
@@ -90,6 +112,7 @@ export default function LibraryMaintenance(props: {
     };
     try {
       preview = await api.libraries.sweepOrphans(props.library, {
+        ...scope,
         dry_run: true,
       });
     } catch (e: unknown) {
@@ -103,7 +126,7 @@ export default function LibraryMaintenance(props: {
     const total = preview.nfo_removed + preview.thumb_removed;
     if (!total) {
       props.flash(
-        `No orphaned sidecars found in "${props.library}" — checked ${preview.folder_count} folder(s).`,
+        `No orphaned sidecars found ${selectedCount ? `in ${selectedLabel}` : `in "${props.library}"`} — checked ${preview.folder_count} folder(s).`,
       );
       return;
     }
@@ -119,7 +142,9 @@ export default function LibraryMaintenance(props: {
         ? `\n  … and ${preview.affected_folder_count - 6} more folder(s)`
         : "";
     const ok = await confirmDlg({
-      title: `Sweep orphaned sidecars across “${props.library}”?`,
+      title: selectedCount
+        ? `Sweep orphaned sidecars from ${selectedLabel}?`
+        : `Sweep orphaned sidecars across “${props.library}”?`,
       message:
         `Found ${preview.nfo_removed} orphaned NFO(s) and ${preview.thumb_removed} ` +
         `orphaned thumbnail(s) across ${preview.affected_folder_count} folder(s):\n` +
@@ -141,6 +166,7 @@ export default function LibraryMaintenance(props: {
     );
     try {
       const res = await api.libraries.sweepOrphans(props.library, {
+        ...scope,
         dry_run: false,
         rescan: true,
       });
@@ -163,10 +189,16 @@ export default function LibraryMaintenance(props: {
 
   const runWipeSidecars = async () => {
     if (props.busy) return;
-    props.setBusy("Scanning library for sidecar files…");
+    const scope = requestScope();
+    props.setBusy(
+      selectedCount
+        ? `Scanning ${selectedLabel} for sidecar files…`
+        : "Scanning library for sidecar files…",
+    );
     let preview: { sidecar_count: number; files?: string[] };
     try {
       preview = await api.libraries.wipeSidecars(props.library, {
+        ...scope,
         dry_run: true,
       });
     } catch (e: unknown) {
@@ -179,12 +211,14 @@ export default function LibraryMaintenance(props: {
     props.setBusy(null);
     if (!preview.sidecar_count) {
       props.flash(
-        `No .plex-nfo-builder.json sidecars found in "${props.library}".`,
+        `No .plex-nfo-builder.json sidecars found ${selectedCount ? `in ${selectedLabel}` : `in "${props.library}"`}.`,
       );
       return;
     }
     const ok = await confirmDlg({
-      title: `Blast every sidecar in “${props.library}”?`,
+      title: selectedCount
+        ? `Delete sidecars from ${selectedLabel}?`
+        : `Blast every sidecar in “${props.library}”?`,
       message:
         `Found ${preview.sidecar_count} .plex-nfo-builder.json sidecar file(s) to delete.\n\n` +
         `The sidecar is the on-disk record of bindings, overrides, and manual ` +
@@ -200,6 +234,7 @@ export default function LibraryMaintenance(props: {
     props.setBusy(`Deleting ${preview.sidecar_count} sidecar file(s)…`);
     try {
       const res = await api.libraries.wipeSidecars(props.library, {
+        ...scope,
         dry_run: false,
       });
       props.flash(
@@ -246,35 +281,50 @@ export default function LibraryMaintenance(props: {
       {open && (
         <div className="px-4 pb-4 pt-1 border-t border-slate-800 space-y-3">
           <p className="text-xs text-slate-300/80 leading-relaxed">
-            These actions touch every folder tracked under{" "}
-            <span className="font-mono text-slate-200">{props.library}</span>.
-            Each one shows you exactly what it will delete and asks for
-            confirmation before touching disk. Don't press unless you're sure.
+            {selectedCount ? (
+              <span>Actions apply only to {selectedLabel}.</span>
+            ) : (
+              <>
+                These actions touch every folder tracked under{" "}
+                <span className="font-mono text-slate-200">
+                  {props.library}
+                </span>
+                .
+              </>
+            )}{" "}
+            Each action previews exactly what it will delete and asks for
+            confirmation before touching disk.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <button
               onClick={runSweepOrphans}
               disabled={!!props.busy}
               className={props.btnHazard}
-              title="Delete orphaned <stem>.nfo and <stem>-thumb.* sidecars left behind by Sonarr/Radarr release upgrades. Live videos, tvshow.nfo, season.nfo, and show/season artwork are preserved."
+              title={`Delete orphaned <stem>.nfo and <stem>-thumb.* sidecars ${selectedCount ? "from selected titles" : "across this library"}. Live videos, tvshow.nfo, season.nfo, and show/season artwork are preserved.`}
             >
-              Preview orphan cleanup
+              {selectedCount
+                ? "Preview selected orphan cleanup"
+                : "Preview orphan cleanup"}
             </button>
             <button
               onClick={runWipeNfo}
               disabled={!!props.busy}
               className={props.btnHazard}
-              title="Delete every generated NFO and artwork file across this whole library. Bindings survive via the sidecar."
+              title={`Delete generated NFO and artwork files ${selectedCount ? "from selected titles" : "across this whole library"}. Bindings survive via the sidecar.`}
             >
-              Preview NFO + artwork wipe
+              {selectedCount
+                ? "Preview selected NFO + artwork wipe"
+                : "Preview NFO + artwork wipe"}
             </button>
             <button
               onClick={runWipeSidecars}
               disabled={!!props.busy}
               className={props.btnHazardOutline}
-              title="Delete every .plex-nfo-builder.json sidecar in this library. Database is untouched."
+              title={`Delete .plex-nfo-builder.json sidecars ${selectedCount ? "from selected titles" : "across this library"}. Database is untouched.`}
             >
-              Preview sidecar deletion
+              {selectedCount
+                ? "Preview selected sidecar deletion"
+                : "Preview sidecar deletion"}
             </button>
           </div>
         </div>

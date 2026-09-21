@@ -542,6 +542,7 @@ export default function LibraryView(props: {
       </details>
       <LibraryMaintenance
         library={props.library}
+        selectedPaths={selectedPaths}
         busy={busy}
         setBusy={setBusy}
         flash={flash}

@@ -447,10 +447,10 @@ def items_prune_empty(payload: ItemsPruneEmptyIn):
 # ---- Library-wide DANGER ZONE ----------------------------------------------
 #
 # These two endpoints power the "big yellow buttons" on the Library view.
-# They iterate every folder tracked under a given library and either wipe
-# generated NFOs/artwork (clean_folder) or delete the .plex-nfo-builder.json
-# sidecar files. Both support dry-run mode so the UI can show a preview
-# before the user confirms.
+# They operate on every folder tracked under a library, or only an explicit
+# set of tracked folder paths, and either wipe generated NFOs/artwork
+# (clean_folder) or delete .plex-nfo-builder.json sidecars. Both support a
+# dry-run preview before the user confirms.
 
 
 class LibraryWipeIn(BaseModel):
@@ -458,11 +458,44 @@ class LibraryWipeIn(BaseModel):
     dry_run: bool = False
     keep_sidecar: bool = True       # ignored when wiping sidecars
     rescan: bool = True
+    folder_paths: Optional[list[str]] = None
+
+
+def _library_maintenance_rows(name: str, folder_paths: Optional[list[str]]) -> list[dict]:
+    """Return the requested tracked rows without widening an explicit scope."""
+    rows = [dict(r) for r in db.list_item_state(library=name)]
+    if folder_paths is None:
+        return rows
+    if not folder_paths:
+        raise HTTPException(400, "folder_paths must contain at least one item")
+
+    tracked: dict[Path, dict] = {}
+    for row in rows:
+        folder_path = row.get("folder_path")
+        if not folder_path:
+            continue
+        try:
+            tracked[_safe_item_folder(folder_path)] = row
+        except HTTPException:
+            continue
+
+    selected: list[dict] = []
+    seen: set[Path] = set()
+    for folder_path in folder_paths:
+        path = _safe_item_folder(folder_path)
+        tracked_row = tracked.get(path)
+        if tracked_row is None:
+            raise HTTPException(400, "Selected folder is not tracked in this library")
+        if path in seen:
+            continue
+        selected.append({**tracked_row, "folder_path": str(path)})
+        seen.add(path)
+    return selected
 
 
 @router.post("/libraries/{name}/wipe-nfo")
 def library_wipe_nfo(name: str, payload: LibraryWipeIn):
-    """Wipe generated NFOs and artwork from EVERY tracked folder in ``name``.
+    """Wipe generated NFOs and artwork from the requested scope in ``name``.
 
     For each folder this is the same operation as `/items/clean`. Sidecar
     files are preserved by default so bindings + overrides survive. Pass
@@ -470,7 +503,7 @@ def library_wipe_nfo(name: str, payload: LibraryWipeIn):
     """
     if payload.library != name:
         raise HTTPException(400, "library mismatch")
-    rows = [dict(r) for r in db.list_item_state(library=name)]
+    rows = _library_maintenance_rows(name, payload.folder_paths)
     folders: list[Path] = []
     for r in rows:
         fp = r.get("folder_path")
@@ -554,7 +587,7 @@ def library_wipe_nfo(name: str, payload: LibraryWipeIn):
 
 @router.post("/libraries/{name}/wipe-sidecars")
 def library_wipe_sidecars(name: str, payload: LibraryWipeIn):
-    """Delete every ``.plex-nfo-builder.json`` sidecar in ``name``.
+    """Delete ``.plex-nfo-builder.json`` sidecars from the requested scope.
 
     The sidecar is the only on-disk record of bindings + overrides, so this
     is destructive. Matching database rows remain, but artwork selections are
@@ -563,7 +596,7 @@ def library_wipe_sidecars(name: str, payload: LibraryWipeIn):
     """
     if payload.library != name:
         raise HTTPException(400, "library mismatch")
-    rows = [dict(r) for r in db.list_item_state(library=name)]
+    rows = _library_maintenance_rows(name, payload.folder_paths)
     targets: list[Path] = []
     for r in rows:
         fp = r.get("folder_path")
@@ -751,13 +784,15 @@ class LibraryOrphansSweepIn(BaseModel):
     library: str
     dry_run: bool = False
     rescan: bool = True
+    folder_paths: Optional[list[str]] = None
 
 
 @router.post("/libraries/{name}/orphans/sweep")
 async def library_orphans_sweep(name: str, payload: LibraryOrphansSweepIn):
-    """Sweep orphaned NFO/thumb companions from every tracked folder in
-    ``name``. This is the one-shot fix for libraries that have accumulated
-    duplicate Plex entries from prior Sonarr/Radarr file upgrades.
+    """Sweep orphaned NFO/thumb companions from the requested library scope.
+
+    This is the one-shot fix for libraries that have accumulated duplicate
+    Plex entries from prior Sonarr/Radarr file upgrades.
 
     Pass ``dry_run=true`` for a preview.
     """
@@ -768,7 +803,7 @@ async def library_orphans_sweep(name: str, payload: LibraryOrphansSweepIn):
     # Folders whose count is NULL (never scanned) are still included as a
     # safety net — they get walked once and then the cache picks up the
     # zero result.
-    rows = [dict(r) for r in db.list_item_state(library=name)]
+    rows = _library_maintenance_rows(name, payload.folder_paths)
     candidates: list[tuple[Path, str, Optional[int]]] = []  # (path, kind, cached)
     for r in rows:
         fp = r.get("folder_path")
@@ -842,7 +877,7 @@ async def library_orphans_sweep(name: str, payload: LibraryOrphansSweepIn):
         "ok": True,
         "dry_run": bool(payload.dry_run),
         "library": name,
-        "folder_count": len(candidates),
+        "folder_count": len(rows) if payload.folder_paths is not None else len(candidates),
         "affected_folder_count": len(per_folder),
         "nfo_removed": total_nfo,
         "thumb_removed": total_thumb,

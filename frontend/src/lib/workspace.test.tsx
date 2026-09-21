@@ -353,6 +353,95 @@ test("filter change clears selection and cannot submit hidden titles", async () 
     expect(screen.queryByRole("button", { name: "Build selected" })).toBeNull(),
   );
 });
+test("library maintenance targets the selected titles", async () => {
+  vi.spyOn(api.items, "list").mockResolvedValue({
+    items: [
+      title("Aurora", "/TV/Aurora"),
+      title("Daybreak", "/TV/Daybreak"),
+    ],
+  });
+  const wipe = vi
+    .spyOn(api.libraries, "wipeNfo")
+    .mockResolvedValueOnce({
+      ok: true,
+      dry_run: true,
+      library: "TV",
+      folder_count: 1,
+      file_count: 4,
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      library: "TV",
+      folder_count: 1,
+      nfo_deleted: 2,
+      artwork_deleted: 2,
+    });
+  const sweep = vi.spyOn(api.libraries, "sweepOrphans").mockResolvedValue({
+    ok: true,
+    dry_run: true,
+    library: "TV",
+    folder_count: 2,
+    affected_folder_count: 0,
+    nfo_removed: 0,
+    thumb_removed: 0,
+    folders: [],
+    failed: [],
+  });
+  const sidecars = vi.spyOn(api.libraries, "wipeSidecars").mockResolvedValue({
+    ok: true,
+    dry_run: true,
+    library: "TV",
+    sidecar_count: 0,
+  });
+  mountLibrary();
+  await userEvent.click(
+    await screen.findByRole("button", { name: "Select Aurora" }),
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Select Daybreak" }),
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: /Library maintenance/ }),
+  );
+  expect(screen.getByText("Actions apply only to 2 selected titles.")).toBeVisible();
+  await userEvent.click(
+    screen.getByRole("button", { name: "Preview selected NFO + artwork wipe" }),
+  );
+  expect(
+    await screen.findByRole("dialog", {
+      name: "Wipe NFOs + artwork from 2 selected titles?",
+    }),
+  ).toBeVisible();
+  expect(wipe).toHaveBeenLastCalledWith("TV", {
+    dry_run: true,
+    folder_paths: ["/TV/Aurora", "/TV/Daybreak"],
+  });
+  await userEvent.click(screen.getByRole("button", { name: "Wipe" }));
+  await waitFor(() =>
+    expect(wipe).toHaveBeenLastCalledWith("TV", {
+      dry_run: false,
+      folder_paths: ["/TV/Aurora", "/TV/Daybreak"],
+    }),
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Preview selected orphan cleanup" }),
+  );
+  await waitFor(() =>
+    expect(sweep).toHaveBeenCalledWith("TV", {
+      dry_run: true,
+      folder_paths: ["/TV/Aurora", "/TV/Daybreak"],
+    }),
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Preview selected sidecar deletion" }),
+  );
+  await waitFor(() =>
+    expect(sidecars).toHaveBeenCalledWith("TV", {
+      dry_run: true,
+      folder_paths: ["/TV/Aurora", "/TV/Daybreak"],
+    }),
+  );
+});
 test("manual artwork filter is independent and saved per library", async () => {
   localStorage.setItem("pnb.artworkFilter.TV", "incomplete");
   const list = vi.spyOn(api.items, "list").mockResolvedValue({

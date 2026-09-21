@@ -332,6 +332,7 @@ export const api = {
         dry_run?: boolean;
         keep_sidecar?: boolean;
         rescan?: boolean;
+        folder_paths?: string[];
       } = {},
     ) =>
       J<{
@@ -352,7 +353,10 @@ export const api = {
           body: JSON.stringify({ library: name, ...body }),
         }),
       ),
-    wipeSidecars: (name: string, body: { dry_run?: boolean } = {}) =>
+    wipeSidecars: (
+      name: string,
+      body: { dry_run?: boolean; folder_paths?: string[] } = {},
+    ) =>
       J<{
         ok: true;
         dry_run?: boolean;
@@ -371,11 +375,15 @@ export const api = {
       ),
     /**
      * v0.11.10 — sweep orphaned NFO + thumb sidecars left behind by a
-     * Sonarr/Radarr file upgrade across every folder in the library.
+     * Sonarr/Radarr file upgrade across a library or selected folders.
      */
     sweepOrphans: (
       name: string,
-      body: { dry_run?: boolean; rescan?: boolean } = {},
+      body: {
+        dry_run?: boolean;
+        rescan?: boolean;
+        folder_paths?: string[];
+      } = {},
     ) =>
       J<{
         ok: true;

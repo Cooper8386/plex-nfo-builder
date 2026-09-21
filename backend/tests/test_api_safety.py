@@ -98,6 +98,117 @@ def test_only_sidecar_deletion_clears_artwork_picks(client):
     assert db.get_binding(str(folder))["external_id"] == "1"
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "deleted_names", "preserved_names"),
+    [
+        (
+            "/api/libraries/TV/wipe-nfo",
+            {"tvshow.nfo", "poster.jpg", "Old.nfo", "Old-thumb.jpg"},
+            {"Live.mkv", ".plex-nfo-builder.json"},
+        ),
+        (
+            "/api/libraries/TV/wipe-sidecars",
+            {".plex-nfo-builder.json"},
+            {"Live.mkv", "tvshow.nfo", "poster.jpg", "Old.nfo", "Old-thumb.jpg"},
+        ),
+        (
+            "/api/libraries/TV/orphans/sweep",
+            {"Old.nfo", "Old-thumb.jpg"},
+            {"Live.mkv", "tvshow.nfo", "poster.jpg", ".plex-nfo-builder.json"},
+        ),
+    ],
+)
+def test_library_maintenance_scopes_preview_and_execution_to_selected_folders(
+    client, endpoint, deleted_names, preserved_names,
+):
+    http, media = client
+    headers = {"X-API-Token": "test-secret"}
+    selected = media / "TV" / "Selected"
+    unselected = media / "TV" / "Unselected"
+    for folder in (selected, unselected):
+        folder.mkdir(parents=True)
+        db.upsert_item_state(
+            str(folder), library="TV", kind="movie", title=folder.name,
+            orphan_count=2,
+        )
+        for name in (
+            "Live.mkv", "tvshow.nfo", "poster.jpg",
+            "Old.nfo", "Old-thumb.jpg", ".plex-nfo-builder.json",
+        ):
+            (folder / name).write_bytes(b"fixture")
+
+    body = {
+        "library": "TV",
+        "folder_paths": [str(selected)],
+        "dry_run": True,
+        "rescan": False,
+    }
+    preview = http.post(endpoint, headers=headers, json=body)
+    assert preview.status_code == 200
+    count_key = "sidecar_count" if endpoint.endswith("wipe-sidecars") else "folder_count"
+    assert preview.json()[count_key] == 1
+    assert all((folder / name).exists() for folder in (selected, unselected) for name in deleted_names)
+
+    result = http.post(endpoint, headers=headers, json={**body, "dry_run": False})
+    assert result.status_code == 200
+    assert all(not (selected / name).exists() for name in deleted_names)
+    assert all((selected / name).exists() for name in preserved_names)
+    assert all((unselected / name).exists() for name in deleted_names | preserved_names)
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "/api/libraries/TV/wipe-nfo",
+        "/api/libraries/TV/wipe-sidecars",
+        "/api/libraries/TV/orphans/sweep",
+    ],
+)
+def test_library_maintenance_rejects_empty_and_wrong_library_scope(client, endpoint):
+    http, media = client
+    headers = {"X-API-Token": "test-secret"}
+    tracked = media / "TV" / "Tracked"
+    wrong_library = media / "Movies" / "Wrong"
+    for folder, library in ((tracked, "TV"), (wrong_library, "Movies")):
+        folder.mkdir(parents=True)
+        db.upsert_item_state(str(folder), library=library, kind="movie", title=folder.name)
+        (folder / "tvshow.nfo").write_bytes(b"fixture")
+
+    for folder_paths in ([], [str(wrong_library)]):
+        response = http.post(
+            endpoint,
+            headers=headers,
+            json={"library": "TV", "folder_paths": folder_paths, "rescan": False},
+        )
+        assert response.status_code == 400
+
+    assert (tracked / "tvshow.nfo").exists()
+    assert (wrong_library / "tvshow.nfo").exists()
+
+
+def test_selected_orphan_preview_reports_full_scope_when_cache_skips_clean_items(client):
+    http, media = client
+    headers = {"X-API-Token": "test-secret"}
+    selected: list[str] = []
+    for name in ("First", "Second"):
+        folder = media / "TV" / name
+        folder.mkdir(parents=True)
+        db.upsert_item_state(
+            str(folder), library="TV", kind="series", title=name, orphan_count=0,
+        )
+        selected.append(str(folder))
+
+    response = http.post(
+        "/api/libraries/TV/orphans/sweep",
+        headers=headers,
+        json={"library": "TV", "folder_paths": selected, "dry_run": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["folder_count"] == 2
+    assert response.json()["affected_folder_count"] == 0
+
+
 def test_artwork_ignore_persists_and_resets(client):
     http, media = client
     headers = {"X-API-Token": "test-secret"}

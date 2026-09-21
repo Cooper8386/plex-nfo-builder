@@ -487,24 +487,26 @@ export default function HelpView() {
           The on-disk <Code>.plex-nfo-builder.json</Code> sidecar is preserved
           by Wipe so your binding and overrides survive. It only gets removed if
           you call the API with <Code>keep_sidecar=false</Code> — or hit the
-          <b> Blast every sidecar </b> button in the library Danger Zone.
+          sidecar deletion button in the library Danger Zone.
         </Callout>
       </Section>
 
       <Section title="Library maintenance (Danger Zone)">
         <p>
           Each library page has a collapsible <b>Library maintenance</b> panel
-          with three actions that operate across <i>every</i> folder tracked
-          under the current library. Each runs a dry-run preview and requires
-          explicit confirmation before touching disk. Preview counts describe
-          the current files; the filesystem is checked again when you apply.
+          with three actions. When titles are selected, the actions operate only
+          on those titles. With no selection, they operate across every folder
+          tracked under the current library. Each runs a dry-run preview and
+          requires explicit confirmation before touching disk. Preview counts
+          describe the current files; the filesystem is checked again when you
+          apply.
         </p>
         <Bullets>
           <li>
-            <b>Wipe ALL NFOs + artwork</b> — same operation as the per-show Wipe
-            button, but applied to every folder in the library at once. Sidecars
-            are preserved so bindings + overrides survive and you can rebuild
-            straight after.
+            <b>Wipe NFOs + artwork</b> — same operation as the per-show Wipe
+            button, applied to the current selection or the whole library.
+            Sidecars are preserved so bindings + overrides survive and you can
+            rebuild straight after.
           </li>
           <li>
             <b>Sweep orphaned sidecars</b> — deletes orphaned{" "}
@@ -514,8 +516,8 @@ export default function HelpView() {
             mechanism.
           </li>
           <li>
-            <b>Blast every sidecar</b> — deletes every{" "}
-            <Code>.plex-nfo-builder.json</Code> file in the library. The
+            <b>Delete sidecars</b> — deletes each{" "}
+            <Code>.plex-nfo-builder.json</Code> file in the current scope. The
             database keeps its bindings and overrides, but manual artwork picks
             reset to automatic selection. The only on-disk recovery copy is
             gone, so a future database wipe would no longer restore those
@@ -525,9 +527,9 @@ export default function HelpView() {
           </li>
         </Bullets>
         <Callout>
-          Both library-wide buttons are intentionally hazard-yellow rather than
-          red — they're powerful but recoverable: the wipe is reversible by
-          rebuilding, and the sidecar blast is reversible by re-saving any
+          Maintenance buttons are intentionally hazard-yellow rather than red —
+          they're powerful but recoverable: the wipe is reversible by
+          rebuilding, and sidecar deletion is reversible by re-saving any
           binding/override (which writes a fresh sidecar).
         </Callout>
       </Section>
