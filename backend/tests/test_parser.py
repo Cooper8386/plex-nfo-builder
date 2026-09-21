@@ -162,6 +162,11 @@ def test_parse_movie_filename_edition_tag_stripped():
     assert (pm.title, pm.year, pm.external_id) == ("Movie", 2020, "9")
 
 
+def test_parse_movie_filename_removes_stray_closing_bracket_after_id_tag():
+    pm = parse_movie_filename(Path("Movie (2020) {tmdb-123}].mkv"))
+    assert (pm.title, pm.year, pm.external_id) == ("Movie", 2020, "123")
+
+
 def test_parse_movie_filename_fallback_title():
     pm = parse_movie_filename(Path("justafile.mkv"))
     assert pm.title == "justafile"

@@ -245,6 +245,7 @@ def parse_movie_filename(path: Path) -> ParsedMovie:
     if yr_match:
         cleaned = (cleaned[: yr_match.start()] + cleaned[yr_match.end():]).strip(" -")
     title = re.sub(r"-[^\s-]+$", "", cleaned).strip(" -.")
+    title = re.sub(r"\s+\]+$", "", title)
     return ParsedMovie(
         path=path,
         title=title or stem,
