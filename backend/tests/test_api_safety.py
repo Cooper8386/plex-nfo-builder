@@ -739,3 +739,41 @@ def test_artwork_candidates_record_counted_slots(client, monkeypatch):
         "/api/items", params={"library": "TV", "manual_artwork": "complete"}, headers=headers,
     )
     assert [item["title"] for item in filtered.json()["items"]] == ["Show"]
+
+
+def test_artwork_candidates_auto_follows_library_source(client, monkeypatch):
+    http, media = client
+    folder = media / "Anime" / "Show"
+    folder.mkdir(parents=True)
+    db.upsert_library("Anime", "series")
+    db.upsert_binding(str(folder), "series", "tvdb", "1")
+
+    tvdb_client = type("Tvdb", (), {})()
+    tvdb_client.series_extended = AsyncMock(return_value={
+        "artworks": [{"type": artwork.SERIES_POSTER, "image": "https://example.com/tvdb.jpg", "score": 99}],
+        "seasons": [],
+        "remoteIds": [{"sourceName": "TMDB", "id": "2"}],
+    })
+    tmdb_client = type("Tmdb", (), {})()
+    tmdb_client.tv_images = AsyncMock(return_value={
+        "posters": [{"file_path": "/tmdb.jpg", "vote_average": 1}],
+        "backdrops": [], "logos": [],
+    })
+    tmdb_client.tv_details = AsyncMock(return_value={"seasons": []})
+    monkeypatch.setattr(api, "get_client", lambda: tvdb_client)
+    monkeypatch.setattr(api, "get_tmdb_client", lambda: tmdb_client)
+    monkeypatch.setattr(api, "effective_tmdb_credentials", lambda: "key")
+
+    headers = {"X-API-Token": "test-secret"}
+    for source in ("tmdb", "tvdb"):
+        response = http.post(
+            "/api/libraries/Anime", json={"metadata_source": source}, headers=headers,
+        )
+        assert response.status_code == 200
+        result = http.get(
+            "/api/artwork/candidates", params={"path": str(folder), "kind": "series"}, headers=headers,
+        )
+        assert result.status_code == 200
+        assert [item["provider"] for item in result.json()["slots"]["poster"]] == [
+            source, "tvdb" if source == "tmdb" else "tmdb",
+        ]

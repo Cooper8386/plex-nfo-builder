@@ -62,6 +62,7 @@ export default function Sidebar(props: {
     // Empty string clears the override and inherits the global setting.
     await api.libraries.update(name, { metadata_source: source });
     qc.invalidateQueries({ queryKey: ["libraries"] });
+    qc.invalidateQueries({ queryKey: ["artwork-candidates"] });
   }
 
   async function removeLib(name: string) {

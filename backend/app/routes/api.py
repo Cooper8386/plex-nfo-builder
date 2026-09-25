@@ -1987,6 +1987,8 @@ async def artwork_candidates(path: str, kind: str = "series"):
             else f"preferred_{slot}_source"
         )
         pref_source = str(getattr(settings, setting, "auto") or "auto").lower()
+        if pref_source == "auto":
+            pref_source = effective_metadata_source(p.relative_to(MEDIA_ROOT.resolve()).parts[0])
         if pref_source == "tmdb":
             provider_rank = {"custom": 0, "tmdb": 1, "tvdb": 2, "fanart": 3}
         elif pref_source == "tvdb":
