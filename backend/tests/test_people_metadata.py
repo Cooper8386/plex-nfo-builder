@@ -1,10 +1,37 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from xml.etree import ElementTree as ET
 
 import pytest
 
-from app.services import nfo, tmdb, tvdb
+from app.services import builder, nfo, tmdb, tvdb
+
+
+def test_tvdb_episode_can_use_tmdb_cast_without_mixing_episode_orders(monkeypatch):
+    episode = {"id": 332083, "seasonNumber": 2, "number": 2, "aired": "2007-07-20",
+               "characters": [{"personName": "Tim Henry", "peopleType": "Guest Star"},
+                              {"personName": "TVDB Only", "peopleType": "Guest Star"},
+                              {"personName": "Tim Matheson", "peopleType": "Director"}]}
+    client = SimpleNamespace(tv_episode=AsyncMock(return_value={
+        "air_date": "2007-07-20",
+        "credits": {"cast": [{"name": "James Roday Rodriguez", "character": "Shawn Spencer",
+                             "profile_path": "/shawn.jpg"}]},
+        "guest_stars": [{"name": "Tim Henry", "character": "Farmer Walker"}],
+    }))
+    monkeypatch.setattr(builder, "get_tmdb_client", lambda: client)
+    log = SimpleNamespace(warning=lambda *args: None)
+    enriched = asyncio.run(builder._with_tmdb_episode_cast(episode, "1447", language="eng", force=True, log=log))
+    root = ET.fromstring(nfo.build_episode_nfo(enriched, language="eng", fallbacks=[]))
+    assert [actor.findtext("name") for actor in root.findall("actor")] == [
+        "James Roday Rodriguez", "Tim Henry", "TVDB Only"]
+    assert root.findtext("actor/role") == "Shawn Spencer"
+    assert root.findtext("actor/thumb") == "https://image.tmdb.org/t/p/w500/shawn.jpg"
+    assert root.findtext("director") == "Tim Matheson"
+    client.tv_episode.assert_awaited_once_with("1447", 2, 2, language="eng", force=True)
+
+    client.tv_episode.return_value["air_date"] = "2007-07-27"
+    assert asyncio.run(builder._with_tmdb_episode_cast(episode, "1447", language="eng", force=True, log=log)) == episode
 
 
 def test_missing_tmdb_portraits_are_shared_and_failures_keep_other_credits(monkeypatch):
