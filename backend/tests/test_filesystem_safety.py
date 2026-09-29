@@ -6,6 +6,7 @@ import sqlite3
 import stat
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -366,6 +367,7 @@ def test_scan_movie_library_detects_root_series_and_preserves_empty_binding(tmp_
 def test_build_honors_file_mapping_and_root_daily_episodes(
     tmp_path, isolated_db, monkeypatch, provider, layout, binding_mode,
 ):
+    use_tmdb_cast = provider == "tvdb" and layout == "daily" and binding_mode == "bound"
     folder = tmp_path / "Show"
     relative = {"unparsed": "Season 01/random-release.mkv", "root": "Show - S01E01.mkv",
                 "daily": "Show - 2020-01-07.mkv"}[layout]
@@ -382,6 +384,9 @@ def test_build_honors_file_mapping_and_root_daily_episodes(
     monkeypatch.setattr(builder, "MEDIA_ROOT", tmp_path)
     monkeypatch.setattr(builder, "get_user_settings", lambda: settings)
     monkeypatch.setattr(builder, "effective_metadata_source", lambda _: initial_provider)
+    monkeypatch.setattr(builder, "effective_tmdb_credentials", lambda: "test-key" if use_tmdb_cast else None)
+    discover_secondary = AsyncMock(return_value="42")
+    monkeypatch.setattr(builder, "discover_secondary", discover_secondary)
     log = SimpleNamespace(**{method: lambda *args, **kwargs: None for method in ("info", "warning", "error", "exception")})
     monkeypatch.setattr(builder, "job_logger", lambda _: log)
     monkeypatch.setattr(builder, "close_job_logger", lambda _: None)
@@ -430,7 +435,11 @@ def test_build_honors_file_mapping_and_root_daily_episodes(
     monkeypatch.setattr(builder, "get_client", lambda: SimpleNamespace(
         series_extended=tvdb_series, series_episodes=tvdb_episodes, episode_extended=tvdb_episode, best_translation=nothing))
     async def tmdb_episode(identifier, season, episode, **kwargs):
-        assert (identifier, season, episode) == (42, 2, 7)
+        assert (str(identifier), season, episode) == ("42", 2, 7)
+        if use_tmdb_cast:
+            return {"air_date": "2020-01-07", "credits": {"cast": [
+                {"name": "Lead", "character": "Hero", "profile_path": "/portrait.jpg"}]},
+                "guest_stars": [{"name": "Guest", "character": "Visitor", "profile_path": "/portrait.jpg"}]}
         return {"credits": {"cast": [{"name": "Guest"}]}}
 
     async def hydrate(record, *, force):
@@ -464,10 +473,14 @@ def test_build_honors_file_mapping_and_root_daily_episodes(
     assert generated.findtext("title") == "Chosen"
     assert generated.findtext("uniqueid") == "107"
     assert generated.find("uniqueid").get("type") == provider
-    assert generated.findtext("actor/name") == "Guest"
+    assert generated.findtext("actor/name") == ("Lead" if use_tmdb_cast else "Guest")
+    if use_tmdb_cast:
+        assert [actor.findtext("name") for actor in generated.findall("actor")] == ["Lead", "Guest"]
+        assert generated.findtext("actor/role") == "Hero"
+        discover_secondary.assert_awaited_once()
     assert generated.findtext("actor/thumb").endswith("/portrait.jpg")
     assert ET.parse(folder / "tvshow.nfo").findtext("actor/thumb").endswith("/portrait.jpg")
-    assert portraits == ["Guest", "Lead"]
+    assert portraits == (["Lead", "Guest", "Lead"] if use_tmdb_cast else ["Guest", "Lead"])
     assert generated.findtext("ratings/rating[@name='imdb']/value") == "9.1"
     assert ET.parse(folder / "tvshow.nfo").findtext("ratings/rating[@name='imdb']/value") == "8.7"
     assert scanner._scan_nfo_state(folder, 1, "series")[0] == "complete"

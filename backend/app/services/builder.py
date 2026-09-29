@@ -11,7 +11,7 @@ from typing import Optional
 from loguru import logger
 
 from .. import db
-from ..config import MEDIA_ROOT, effective_metadata_source, get_user_settings
+from ..config import MEDIA_ROOT, effective_metadata_source, effective_tmdb_credentials, get_user_settings
 from ..logging_setup import job_logger, close_job_logger
 from .artwork import absolutize_tvdb_url, download_movie_canonical, download_series_canonical, season_poster_filename
 from .artwork_download import download_image
@@ -31,6 +31,7 @@ from .matcher import (
     auto_match_movie_tmdb,
     auto_match_series,
     auto_match_series_tmdb,
+    discover_secondary,
 )
 from .orphans import sweep_movie_orphans, sweep_series_orphans
 from .nfo import (
@@ -140,6 +141,38 @@ def _manual_secondary_tuple(binding) -> Optional[tuple[str, str]]:
     if not sp or not sid:
         return None
     return (sp, sid)
+
+
+async def _with_tmdb_episode_cast(episode: dict, tmdb_series_id: str, *, language: str,
+                                  force: bool, log) -> dict:
+    """Use exact linked episode credits only when both providers agree on air date."""
+    aired = episode.get("aired")
+    season, number = episode.get("seasonNumber"), episode.get("number")
+    if not aired or season is None or number is None:
+        return episode
+    try:
+        data = await get_tmdb_client().tv_episode(tmdb_series_id, int(season), int(number),
+                                                  language=language, force=force)
+        if data.get("air_date") != aired:
+            log.warning("TMDB cast skipped for s{:02d}e{:02d}: air dates differ", int(season), int(number))
+            return episode
+        credits = data.get("credits") or {}
+        people = [person for group in (credits.get("cast"), credits.get("guest_stars") or data.get("guest_stars"))
+                  for person in group or [] if isinstance(person, dict) and person.get("name")]
+        if not people:
+            return episode
+        cast = [{"personName": person["name"], "name": person.get("character") or "",
+                 "personImgURL": tmdb_image_url(person.get("profile_path"), "w500"),
+                 "peopleType": "Actor", "sort": order + 1}
+                for order, person in enumerate(people)]
+        names = {person["personName"].casefold() for person in cast}
+        remaining = [{**person, "sort": len(cast) + order} for order, person in
+                     enumerate(episode.get("characters") or [], 1)
+                     if isinstance(person, dict) and str(person.get("personName") or "").casefold() not in names]
+        return {**episode, "characters": [*cast, *remaining]}
+    except Exception as error:
+        log.warning("TMDB episode cast unavailable for s{}e{} ({})", season, number, type(error).__name__)
+        return episode
 
 
 async def _hydrate_tvdb_character_thumbs(
@@ -435,6 +468,14 @@ async def build_series(folder: Path, *, force: bool = False,
         episodes = await client.series_episodes(data["id"], season_type="default", language=lang, force=force)  # type: ignore[arg-type]
         log.info("Fetched {} episodes from TVDB", len(episodes))
         job["total"] = 1 + len(episodes)
+        tmdb_series_id = None
+        if effective_tmdb_credentials():
+            try:
+                tmdb_series_id = _manual_secondary_id(binding, "tmdb") or (
+                    await discover_secondary(dict(binding)) if binding else None
+                )
+            except Exception as error:
+                log.warning("TMDB cast source unavailable ({}); keeping TVDB cast", type(error).__name__)
 
         # Series NFO — translation must be fetched from /series/{id}/translations/{lang}
         series_translation = await client.best_translation(
@@ -591,6 +632,9 @@ async def build_series(folder: Path, *, force: bool = False,
                     force=force,
                 )
                 await hydrate_ratings(full_ep, kind="episode", provider="tvdb", series=data, log=log, force=force)
+                if tmdb_series_id:
+                    full_ep = await _with_tmdb_episode_cast(full_ep, tmdb_series_id,
+                                                            language=lang, force=force, log=log)
                 ep_text = build_episode_nfo(
                     full_ep, language=lang, fallbacks=fallbacks,
                     translation=ep_translation,
